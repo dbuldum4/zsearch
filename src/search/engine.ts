@@ -263,7 +263,7 @@ export class SearchEngine {
 
   private async runSemantic(q: ParsedQuery, limit: number, res: SearchResponse, fromAuto: boolean) {
     if (!this.config.semantic.enabled) {
-      res.notice = "semantic search is off — enable it with Ctrl-E in the app or `zsearch config set semantic.enabled true`, then re-index"
+      res.notice = "semantic search is off — enable it in settings (Ctrl-S) or `zsearch config set semantic.enabled true`, then re-index"
     }
     const sem = await this.semanticMatches(q, Math.max(limit, 50))
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [
