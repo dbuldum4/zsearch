@@ -145,13 +145,20 @@ def main():
                 pump(step.get("settle", 0.3))
                 out["snapshots"][step["snapshot"]] = text()
             elif "wait_exit" in step:
+                # The terminal can close (EOF) a moment before the exit status is available,
+                # so keep polling waitpid until the deadline either way.
                 deadline = time.time() + step["wait_exit"]
+                open_fd = True
                 while time.time() < deadline:
-                    if not pump(0.1):
-                        break
+                    if open_fd:
+                        open_fd = pump(0.1)
+                    else:
+                        time.sleep(0.05)
                     done, status = os.waitpid(pid, os.WNOHANG)
                     if done:
                         out["exit"] = os.waitstatus_to_exitcode(status)
+                        if open_fd:
+                            pump(0.2)  # drain the last output
                         break
     except StopIteration:
         pass
