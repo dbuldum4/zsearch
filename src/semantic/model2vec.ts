@@ -88,10 +88,19 @@ export function readTensor(st: SafeTensors, name: string): { shape: number[]; f3
 
 export const MODEL2VEC_FILES = ["config.json", "tokenizer.json", "model.safetensors"] as const
 
+const WORD_CACHE_MAX = 200_000
+
 export class Model2Vec {
   readonly dims: number
   private unkId: number | null
   private maxTokens: number
+  /**
+   * Token ids per whitespace-separated word. Tokenizers work word by word after
+   * pre-tokenization, so caching per word gives the same ids at a fraction of the cost.
+   */
+  private wordIds = new Map<string, number[]>()
+  /** Byte-level BPE (GPT-2 style) marks a preceding space inside the token. */
+  private spacePrefix = false
 
   private constructor(
     private tokenizer: Tokenizer,
@@ -124,17 +133,37 @@ export class Model2Vec {
     const model = (tokJson.model ?? {}) as { unk_token?: string; vocab?: Record<string, number> | [string, number][] }
     let unkId: number | null = null
     if (model.unk_token && model.vocab && !Array.isArray(model.vocab)) unkId = model.vocab[model.unk_token] ?? null
-    return new Model2Vec(tokenizer, emb.f32, vocab, dims, weights, mapping, config.normalize !== false, unkId, 512)
+    const m = new Model2Vec(tokenizer, emb.f32, vocab, dims, weights, mapping, config.normalize !== false, unkId, 512)
+    m.spacePrefix = JSON.stringify(tokJson.pre_tokenizer ?? null).includes("ByteLevel")
+    return m
+  }
+
+  private tokenize(text: string): number[] {
+    const out: number[] = []
+    let first = true
+    for (const word of text.split(/\s+/)) {
+      if (!word) continue
+      const key = this.spacePrefix && !first ? ` ${word}` : word
+      first = false
+      let ids = this.wordIds.get(key)
+      if (!ids) {
+        try {
+          ids = this.tokenizer.encode(key, { add_special_tokens: false }).ids as number[]
+        } catch {
+          ids = []
+        }
+        if (this.wordIds.size >= WORD_CACHE_MAX) this.wordIds.clear()
+        this.wordIds.set(key, ids)
+      }
+      for (const id of ids) out.push(id)
+      if (out.length >= this.maxTokens) break
+    }
+    return out
   }
 
   embedOne(text: string): Float32Array {
     const out = new Float32Array(this.dims)
-    let ids: number[]
-    try {
-      ids = this.tokenizer.encode(text, { add_special_tokens: false }).ids as number[]
-    } catch {
-      ids = []
-    }
+    const ids = this.tokenize(text)
     let n = 0
     const limit = Math.min(ids.length, this.maxTokens)
     for (let i = 0; i < limit; i++) {

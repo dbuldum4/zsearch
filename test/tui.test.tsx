@@ -184,6 +184,25 @@ describe("search screen", () => {
     expect(g).not.toContain("report.docx")
   })
 
+  test("Ctrl-F / Ctrl-B jump between matches in the preview; Alt-digits pick a mode", async () => {
+    corpus.write("notes/long.txt", Array.from({ length: 120 }, (_, i) => (i % 40 === 5 ? `line ${i} mentions zebra` : `filler line ${i}`)).join("\n"))
+    s.mockInput.pressKey("r", { ctrl: true })
+    await until(s, (f) => f.includes("Index ready") && f.includes("1 new"))
+    await esc(s)
+    await type(s, "zebra")
+    await until(s, (f) => f.includes("long.txt") && f.includes("▶ line 5 mentions zebra"))
+    s.mockInput.pressKey("f", { ctrl: true })
+    await until(s, (f) => f.includes("▶ line 45 mentions zebra"))
+    s.mockInput.pressKey("f", { ctrl: true })
+    await until(s, (f) => f.includes("▶ line 85 mentions zebra"))
+    s.mockInput.pressKey("b", { ctrl: true })
+    await until(s, (f) => f.includes("▶ line 45 mentions zebra"))
+    s.mockInput.pressKey("3", { meta: true })
+    await until(s, (f) => f.includes(" EXACT "))
+    s.mockInput.pressKey("1", { meta: true })
+    await until(s, (f) => f.includes(" AUTO "))
+  })
+
   test("help overlay", async () => {
     s.mockInput.pressKey("F1")
     const f = await until(s, (f) => f.includes("zsearch help"))

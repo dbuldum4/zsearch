@@ -101,6 +101,14 @@ for (const [name, cmd] of variants) {
       expect(r.stdout_tail).toContain(join(corpus.home, "notes", "recipes", "pancakes.txt"))
     })
 
+    test("print mode with redirected stdout draws on the terminal", () => {
+      const out = join(corpus.home, "picked.txt")
+      const shell = `${cmd.map((c) => `'${c}'`).join(" ")} -p pancakes > '${out}'`
+      const r = drive(["sh", "-c", shell], env, [{ expect: "pancakes.txt", timeout: 20 }, { sleep: 0.5 }, { key: "enter" }, { wait_exit: 5 }])
+      expect(r.exit).toBe(0)
+      expect(readFileSync(out, "utf8").trim()).toBe(join(corpus.home, "notes", "recipes", "pancakes.txt"))
+    })
+
     test("Ctrl-E opens a terminal editor at the matching line and returns", () => {
       const log = join(corpus.home, "editor-args.txt")
       const editor = join(corpus.home, "bin", "vim")
