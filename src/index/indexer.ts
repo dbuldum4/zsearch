@@ -284,12 +284,12 @@ export class Indexer {
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
           if (wants && prev.state === ContentState.None) batch.push(() => this.st.setState.run(ContentState.Pending, 0, null, prev.id))
-          else if (!wants && prev.state !== ContentState.None) batch.push(() => this.dropContent(prev.id, e.path, prev.state, ContentState.None, null))
+          else if (!wants && prev.state !== ContentState.None) batch.push(() => this.dropContent(prev.id, e.path, ContentState.None, null))
           continue
         }
         this.progress.updated++
         batch.push(() => {
-          if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, prev.state, ContentState.None, null)
+          if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, ContentState.None, null)
           this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, wants ? ContentState.Pending : ContentState.None, prev.id)
         })
       } else {
@@ -320,7 +320,7 @@ export class Indexer {
   }
 
   /** Remove a file's content and searchable body, keeping the file entry. */
-  private dropContent(id: number, path: string, _prevState: number, newState: number, note: string | null) {
+  private dropContent(id: number, path: string, newState: number, note: string | null) {
     const body = this.manualDelete ? this.storedBody(id) : null
     this.ftsDelete(id, path, body)
     const f = this.ftsFields(path)

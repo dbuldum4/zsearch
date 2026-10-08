@@ -10,7 +10,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "test": "bun test --timeout 60000",
-    "typecheck": "tsc --noEmit -p .",
+    "typecheck": "tsc --noEmit -p . --noUnusedLocals --noUnusedParameters",
     "build": "bun run scripts/build.ts",
     "fixtures": "python3 scripts/make-fixtures.py test/fixtures"
   },

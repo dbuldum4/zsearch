@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { type Config, defaultConfig } from "../src/config.ts"
 import { indexStats, openDb } from "../src/index/db.ts"
@@ -275,7 +275,3 @@ describe("semantic search end to end", () => {
     expect(e.semanticAvailable()).toBe(false)
   })
 })
-
-// Keep fixture writer import used for type-checking helpers.
-void mkdirSync
-void writeFileSync

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite"
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
@@ -862,13 +862,6 @@ export class SearchEngine {
     } catch (err) {
       return { ...base, message: `cannot list folder: ${(err as Error).message}` }
     }
-    let total = 0
-    try {
-      total = statSync(base.path).size
-    } catch {
-      // ignore
-    }
-    void total
     return {
       ...base,
       source: "disk",

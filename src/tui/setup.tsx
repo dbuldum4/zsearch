@@ -1,7 +1,7 @@
 import type { InputRenderable, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { createMemo, createSignal, For, Show } from "solid-js"
-import { type Config, home, resolvePath, tildify } from "../config.ts"
+import { type Config, home, resolvePath } from "../config.ts"
 import { isMac } from "../platform.ts"
 import { StyledLine } from "./line.tsx"
 import { type Seg, truncate } from "./styled.ts"
@@ -196,13 +196,10 @@ export function Setup(props: SetupProps) {
     const { rows, cursorRow, intro } = layout()
     const avail = Math.max(1, props.height - 2)
     if (rows.length <= avail) return rows
-    let list = rows.slice(intro)
-    let cur = cursorRow - intro
+    const list = rows.slice(intro)
     if (list.length <= avail) return list
-    const start = Math.max(0, Math.min(list.length - avail, cur - Math.floor(avail / 2)))
-    list = list.slice(start, start + avail)
-    cur -= start
-    return list
+    const start = Math.max(0, Math.min(list.length - avail, cursorRow - intro - Math.floor(avail / 2)))
+    return list.slice(start, start + avail)
   })
 
   return (
