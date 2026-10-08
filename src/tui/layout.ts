@@ -38,7 +38,7 @@ function locationLabel(h: SearchHit, line: { line: number; page: number }): stri
     case "slides":
       return `slide ${line.page}`
     case "sheet":
-      return line.page > 1 ? `sheet ${line.page}` : `row ${line.line}`
+      return `sheet ${line.page}`
     default:
       return `L${line.line}`
   }

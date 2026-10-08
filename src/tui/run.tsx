@@ -56,5 +56,6 @@ export async function runTui(opts: RunOptions): Promise<string | null> {
   )
   await closed
   services.search.close()
+  await services.dispose?.()
   return selection
 }

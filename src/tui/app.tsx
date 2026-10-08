@@ -264,19 +264,13 @@ export function App(props: AppProps) {
     if (err) notify(`Could not reveal: ${err}`, "error")
   }
 
-  const copySelected = () => {
+  const copySelected = async () => {
     const h = current()
     if (!h) return
-    if (svc.copy(h.path)) notify(`Copied ${tildify(h.path)}`, "ok", 2500)
-    else {
-      // Fall back to OSC 52, which most modern terminals support.
-      try {
-        ;(renderer as unknown as { copyToClipboardOSC52?: (t: string) => boolean }).copyToClipboardOSC52?.(h.path)
-        notify(`Copied ${tildify(h.path)} (via terminal)`, "ok", 2500)
-      } catch {
-        notify("No clipboard tool found (install wl-clipboard, xclip or xsel)", "warn")
-      }
-    }
+    const where = await svc.copy(h.path, renderer)
+    if (where === "host") notify(`Copied ${tildify(h.path)}`, "ok", 2500)
+    else if (where === "terminal") notify(`Copied ${tildify(h.path)} (through the terminal)`, "ok", 2500)
+    else notify("Could not reach a clipboard (install wl-clipboard, xclip or xsel)", "warn")
   }
 
   const move = (delta: number) => {
@@ -653,25 +647,45 @@ const HELP: [string, [string, string][]][] = [
   ],
 ]
 
+function helpSection(title: string, items: [string, string][], keyWidth: number, t: Theme): Seg[][] {
+  const out: Seg[][] = [[{ text: ` ${title}`, fg: t.accent, bold: true }]]
+  for (const [k, v] of items) out.push([{ text: `   ${k.padEnd(keyWidth)}`, fg: t.text, bold: true }, { text: v, fg: t.muted }])
+  return out
+}
+
 function Help(props: { theme: Theme; width: number; height: number }) {
-  const w = () => Math.min(86, props.width - 4)
+  // Two columns when there is room: keys on the left, modes and syntax on the right.
+  const twoCol = () => props.width >= 140
+  const w = () => (twoCol() ? Math.min(150, props.width - 4) : Math.min(90, props.width - 4))
   const rows = createMemo(() => {
-    const out: Seg[][] = []
-    for (const [title, items] of HELP) {
-      out.push([{ text: ` ${title}`, fg: props.theme.accent, bold: true }])
-      for (const [k, v] of items) out.push([{ text: `   ${k.padEnd(28)}`, fg: props.theme.text, bold: true }, { text: v, fg: props.theme.muted }])
-      out.push([])
+    const t = props.theme
+    const [keys, modes, syntax] = HELP
+    if (!twoCol()) {
+      const out: Seg[][] = []
+      for (const [title, items] of HELP) out.push(...helpSection(title, items, 26, t), [])
+      out.push([{ text: " Esc to close", fg: t.subtle }])
+      return out
     }
-    out.push([{ text: " Esc to close", fg: props.theme.subtle }])
+    const left = helpSection(keys![0], keys![1], 26, t)
+    const right = [...helpSection(modes![0], modes![1], 26, t), [], ...helpSection(syntax![0], syntax![1], 26, t)]
+    const colW = Math.floor((w() - 2) / 2)
+    const out: Seg[][] = []
+    for (let i = 0; i < Math.max(left.length, right.length); i++) {
+      const l = fitSegs(left[i] ?? [], colW)
+      const used = l.reduce((n, sg) => n + Bun.stringWidth(sg.text), 0)
+      out.push([...l, { text: " ".repeat(Math.max(0, colW - used)) }, ...(right[i] ?? [])])
+    }
+    out.push([], [{ text: " Esc to close", fg: t.subtle }])
     return out
   })
+  const height = () => Math.min(props.height - 2, rows().length + 2)
   return (
     <box
       position="absolute"
       left={Math.max(0, Math.floor((props.width - w()) / 2))}
       top={1}
       width={w()}
-      height={Math.min(props.height - 2, rows().length + 2)}
+      height={height()}
       border
       borderStyle="rounded"
       borderColor={props.theme.borderFocus}
@@ -679,9 +693,10 @@ function Help(props: { theme: Theme; width: number; height: number }) {
       title=" zsearch help "
       titleColor={props.theme.accent}
       flexDirection="column"
+      overflow="hidden"
       zIndex={20}
     >
-      <For each={rows()}>{(segs) => <StyledLine segs={segs} width={w() - 2} bg={props.theme.panel} />}</For>
+      <For each={rows().slice(0, Math.max(0, height() - 2))}>{(segs) => <StyledLine segs={segs} width={w() - 2} bg={props.theme.panel} />}</For>
     </box>
   )
 }

@@ -1,3 +1,4 @@
+import { type ClipboardService, type CliRenderer, createClipboard, createHostClipboard, createRendererClipboardAdapter } from "@opentui/core"
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { type Config, configExists, type Paths, paths, saveConfig } from "../config.ts"
@@ -39,11 +40,15 @@ export interface Services {
   reveal(path: string, isDir: boolean): Promise<string | null>
   /** Open in an editor; `suspend`/`resume` wrap terminal editors. */
   edit(path: string, line: number | undefined, suspend: () => Promise<void>, resume: () => Promise<void>): Promise<string | null>
-  copy(text: string): boolean
+  /** Copy to the clipboard. Resolves with where it went, or null if nowhere. */
+  copy(text: string, renderer: CliRenderer): Promise<"host" | "terminal" | null>
+  /** Release resources held by the services. */
+  dispose?(): Promise<void>
 }
 
 export function realServices(config: Config): Services {
   const p = paths()
+  let clipboard: ClipboardService | null = null
   const client = new SearchClient(p.db, config)
   return {
     paths: p,
@@ -55,7 +60,22 @@ export function realServices(config: Config): Services {
     indexLockedBy: () => lockHolder(p.lock),
     open: openWithDefault,
     reveal: revealInFileManager,
-    copy: copyToClipboard,
+    async copy(text, renderer) {
+      try {
+        // OpenTUI's clipboard: native pasteboard/Wayland/X11, and OSC 52 for remote terminals.
+        clipboard ??= createClipboard({ host: createHostClipboard(), terminal: createRendererClipboardAdapter(renderer) })
+        const r = await clipboard.writeText(text, { destination: "best-available" })
+        if (r.host.status === "written") return "host"
+        if (r.terminal.status === "attempted") return "terminal"
+      } catch {
+        // fall back to command-line tools
+      }
+      return copyToClipboard(text) ? "host" : null
+    },
+    async dispose() {
+      await clipboard?.dispose().catch(() => {})
+      clipboard = null
+    },
     edit: async (path, line, suspend, resume) => {
       const cmd = editorCommand(config.editor, path, line)
       if (isTerminalEditor(cmd)) {

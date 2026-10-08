@@ -60,9 +60,9 @@ export function testServices(config: Config, opts: { firstRun?: boolean; dbPath?
       calls.edit.push({ path, line })
       return null
     },
-    copy(text) {
+    async copy(text) {
       calls.copy.push(text)
-      return true
+      return "host"
     },
   }
   return {
