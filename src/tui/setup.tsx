@@ -159,36 +159,58 @@ export function Setup(props: SetupProps) {
     return [{ text: `  ${label}  `, fg: active ? t().accentText : primary ? t().accent : t().muted, bg: active ? t().accent : undefined, bold: true }]
   }
 
-  const rows = createMemo((): (Seg[] | "input")[] => {
+  const layout = createMemo((): { rows: (Seg[] | "input")[]; cursorRow: number; intro: number } => {
     const out: (Seg[] | "input")[] = []
-    out.push([{ text: "  Fast search for everything in your files: names, text inside documents,", fg: t().muted }])
-    out.push([{ text: "  code, PDFs, Office files — with fuzzy, exact, regex and semantic modes.", fg: t().muted }])
-    out.push([])
-    out.push([{ text: "  What should zsearch index?", fg: t().text, bold: true }])
-    out.push(radio("home", "Home folder", tildify(h) === "~" ? h : h))
-    out.push(radio("disk", "Entire disk", isMac ? "/  (grant Full Disk Access for protected folders)" : "/  (system folders: names only)"))
-    out.push(radio("custom", "Custom folders", scope() === "custom" && !editing() ? truncate(custom(), w() - 30) : "comma-separated, e.g. ~/Documents, ~/code"))
-    if (editing()) out.push("input")
-    out.push([])
-    out.push([{ text: "  Options", fg: t().text, bold: true }])
-    out.push(check("content", content(), "Search inside files", "PDF, Word, Excel, PowerPoint, code, text…"))
-    out.push(check("hidden", hidden(), "Include hidden files and folders", "dotfiles like ~/.config"))
-    out.push(check("gitignore", gitignore(), "Skip files ignored by .gitignore", "build output, dependencies"))
-    out.push(check("semantic", semantic(), "Semantic search", "find by meaning; downloads a ~30 MB model once"))
-    out.push([])
-    out.push([{ text: "    " }, ...button("start", props.firstRun ? "Start indexing" : "Save", true), { text: "   " }, ...button("cancel", props.firstRun ? "Quit" : "Cancel", false)])
-    out.push([])
+    let cursorRow = 0
+    const push = (row: Seg[] | "input", it?: Item) => {
+      if (it && ITEMS[cursor()] === it) cursorRow = out.length
+      out.push(row)
+    }
+    push([{ text: "  Fast search for everything in your files: names, text inside documents,", fg: t().muted }])
+    push([{ text: "  code, PDFs, Office files — with fuzzy, exact, regex and semantic modes.", fg: t().muted }])
+    push([])
+    const intro = out.length
+    push([{ text: "  What should zsearch index?", fg: t().text, bold: true }])
+    push(radio("home", "Home folder", h), "home")
+    push(radio("disk", "Entire disk", isMac ? "/  (grant Full Disk Access for protected folders)" : "/  (system folders: names only)"), "disk")
+    push(radio("custom", "Custom folders", scope() === "custom" && !editing() ? truncate(custom(), w() - 30) : "comma-separated, e.g. ~/Documents, ~/code"), "custom")
+    if (editing()) push("input", "custom")
+    push([])
+    push([{ text: "  Options", fg: t().text, bold: true }])
+    push(check("content", content(), "Search inside files", "PDF, Word, Excel, PowerPoint, code, text…"), "content")
+    push(check("hidden", hidden(), "Include hidden files and folders", "dotfiles like ~/.config"), "hidden")
+    push(check("gitignore", gitignore(), "Skip files ignored by .gitignore", "build output, dependencies"), "gitignore")
+    push(check("semantic", semantic(), "Semantic search", "find by meaning; downloads a ~30 MB model once"), "semantic")
+    push([])
+    const buttons: Seg[] = [{ text: "    " }, ...button("start", props.firstRun ? "Start indexing" : "Save", true), { text: "   " }, ...button("cancel", props.firstRun ? "Quit" : "Cancel", false)]
+    push(buttons, ITEMS[cursor()] === "start" ? "start" : "cancel")
+    push([])
     const err = error()
-    if (err) out.push([{ text: `  ${err}`, fg: t().error }])
-    out.push([{ text: "  ↑↓ move · space toggle · enter select · s save · esc " + (props.firstRun ? "quit" : "cancel"), fg: t().subtle }])
-    return out
+    if (err) push([{ text: `  ${err}`, fg: t().error }])
+    push([{ text: "  ↑↓ move · space toggle · enter select · s save · esc " + (props.firstRun ? "quit" : "cancel"), fg: t().subtle }])
+    return { rows: out, cursorRow, intro }
+  })
+
+  /** The rows that fit: drop the introduction first, then scroll to keep the cursor visible. */
+  const visible = createMemo(() => {
+    const { rows, cursorRow, intro } = layout()
+    const avail = Math.max(1, props.height - 2)
+    if (rows.length <= avail) return rows
+    let list = rows.slice(intro)
+    let cur = cursorRow - intro
+    if (list.length <= avail) return list
+    const start = Math.max(0, Math.min(list.length - avail, cur - Math.floor(avail / 2)))
+    list = list.slice(start, start + avail)
+    cur -= start
+    return list
   })
 
   return (
     <box width={props.width} height={props.height} flexDirection="column" alignItems="center" justifyContent="center">
       <box
         width={w()}
-        height={Math.min(props.height, rows().length + 2)}
+        height={Math.min(props.height, visible().length + 2)}
+        overflow="hidden"
         border
         borderStyle="rounded"
         borderColor={t().borderFocus}
@@ -197,7 +219,7 @@ export function Setup(props: SetupProps) {
         flexDirection="column"
         backgroundColor={props.firstRun ? undefined : t().panel}
       >
-        <For each={rows()}>
+        <For each={visible()}>
           {(row) => (
             <Show
               when={row !== "input"}
