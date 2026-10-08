@@ -121,7 +121,8 @@ describe("filters", () => {
     const inNotes = names(await search("in:notes"))
     expect(inNotes.length).toBeGreaterThan(2)
     expect(inNotes.every((p) => p.startsWith("notes/"))).toBe(true)
-    expect(names(await search("path:recipes"))).toEqual(["notes/recipes", "notes/recipes/pancakes.txt"])
+    // Filter-only queries list newest first; the folder and its file can share a timestamp.
+    expect(names(await search("path:recipes")).sort()).toEqual(["notes/recipes", "notes/recipes/pancakes.txt"])
     expect(names(await search("type:folder in:code"))).toEqual(expect.arrayContaining(["code/app", "code/app/src"]))
   })
 
