@@ -19,15 +19,23 @@ export function hitHeight(h: SearchHit): number {
 /** Keep the selected item visible; returns the new scroll offset (in items). */
 export function clampScroll(hits: SearchHit[], selected: number, top: number, height: number): number {
   if (!hits.length) return 0
-  let t = Math.min(Math.max(0, top), hits.length - 1)
-  if (selected < t) return selected
+  selected = Math.min(Math.max(0, selected), hits.length - 1)
+  let t = Math.min(Math.max(0, top), selected)
   // Advance `t` until the selected item's bottom fits.
   for (;;) {
     let used = 0
     for (let i = t; i <= selected; i++) used += hitHeight(hits[i]!)
-    if (used <= height || t >= selected) return t
+    if (used <= height || t >= selected) break
     t++
   }
+  // Don't leave empty rows at the bottom when earlier items would fit.
+  let below = 0
+  for (let i = t; i < hits.length && below <= height; i++) below += hitHeight(hits[i]!)
+  while (t > 0 && below + hitHeight(hits[t - 1]!) <= height) {
+    t--
+    below += hitHeight(hits[t]!)
+  }
+  return t
 }
 
 function locationLabel(h: SearchHit, line: { line: number; page: number }): string {

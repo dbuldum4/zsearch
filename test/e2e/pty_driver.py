@@ -147,7 +147,8 @@ def main():
             elif "wait_exit" in step:
                 # The terminal can close (EOF) a moment before the exit status is available,
                 # so keep polling waitpid until the deadline either way.
-                deadline = time.time() + step["wait_exit"]
+                started = time.time()
+                deadline = started + step["wait_exit"]
                 open_fd = True
                 while time.time() < deadline:
                     if open_fd:
@@ -157,6 +158,7 @@ def main():
                     done, status = os.waitpid(pid, os.WNOHANG)
                     if done:
                         out["exit"] = os.waitstatus_to_exitcode(status)
+                        out["exit_seconds"] = round(time.time() - started, 3)
                         if open_fd:
                             pump(0.2)  # drain the last output
                         break
@@ -165,7 +167,14 @@ def main():
     finally:
         if out["exit"] is None:
             try:
-                done, status = os.waitpid(pid, os.WNOHANG)
+                # The program may have closed the terminal and still be exiting: give it time.
+                done, status = 0, 0
+                grace = time.time() + (8 if not alive else 0.5)
+                while True:
+                    done, status = os.waitpid(pid, os.WNOHANG)
+                    if done or time.time() > grace:
+                        break
+                    time.sleep(0.05)
                 if done:
                     out["exit"] = os.waitstatus_to_exitcode(status)
                 else:

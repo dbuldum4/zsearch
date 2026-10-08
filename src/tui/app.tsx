@@ -1,6 +1,6 @@
 import type { BoxRenderable, InputRenderable, KeyEvent, MouseEvent } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
 import { type Config, tildify } from "../config.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
@@ -78,7 +78,7 @@ export function App(props: AppProps) {
   const listWidth = () => (previewVisible() ? Math.floor(cols() * 0.5) : cols())
   const previewWidth = () => cols() - listWidth() - 1
   const hits = createMemo<SearchHit[]>(() => response()?.hits ?? [])
-  const current = () => hits()[selected()] ?? null
+  const current = () => hits()[Math.min(selected(), hits().length - 1)] ?? null
 
   /* ----------------------------------------------------------- search -- */
   let searchSeq = 0
@@ -95,14 +95,17 @@ export function App(props: AppProps) {
     // Keep the highlighted file if the user moved to it while this search was running.
     const prevId = current()?.id
     if (lastMove > issued) keepSelection = true
-    setResponse(res)
-    if (keepSelection && prevId !== undefined) {
-      const idx = res.hits.findIndex((h) => h.id === prevId)
-      setSelected(idx >= 0 ? idx : Math.min(selected(), Math.max(0, res.hits.length - 1)))
-    } else {
-      setSelected(0)
-      setTop(0)
-    }
+    // Update results and selection together so nothing observes a selection past the end.
+    batch(() => {
+      setResponse(res)
+      if (keepSelection && prevId !== undefined) {
+        const idx = res.hits.findIndex((h) => h.id === prevId)
+        setSelected(idx >= 0 ? idx : Math.min(selected(), Math.max(0, res.hits.length - 1)))
+      } else {
+        setSelected(0)
+        setTop(0)
+      }
+    })
   }
   const scheduleSearch = (delay = 25) => {
     clearTimeout(searchTimer)

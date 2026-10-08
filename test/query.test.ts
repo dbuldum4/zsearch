@@ -277,3 +277,15 @@ describe("configuration", () => {
     expect(() => setConfigValue(defaultConfig(), "semantic", "x")).toThrow()
   })
 })
+
+describe("result list layout", () => {
+  test("a selection past the end of a shorter result list is clamped", async () => {
+    const { clampScroll, resultRows } = await import("../src/tui/layout.ts")
+    const { DARK } = await import("../src/tui/theme.ts")
+    const hit = (id: number) => ({ id, path: `/x/${id}`, display: `x/${id}.txt`, kind: "text" as const, isDir: false, size: 1, mtime: 0, score: 1, sources: ["name" as const], namePositions: [], lines: [], matchCount: 0 })
+    const hits = [hit(1), hit(2)]
+    expect(clampScroll(hits, 7, 5, 10)).toBe(0)
+    expect(resultRows(hits, 7, 0, 60, 10, DARK)).toHaveLength(2)
+    expect(clampScroll([], 3, 2, 10)).toBe(0)
+  })
+})
