@@ -60,9 +60,12 @@ for (const [name, cmd] of variants) {
         { expect: "Index ready", timeout: 30 },
         { type: "budget" },
         { expect: "auto → names + text", timeout: 10 },
+        { expect: "3 results", timeout: 10 },
+        { expect: "budget.xlsx", timeout: 10 },
         { snapshot: "results" },
         { key: "down" },
         { expect: "~/Documents/report.docx", timeout: 10 },
+        { expect: "Quarterly Planning Report", timeout: 10 },
         { snapshot: "preview" },
         { key: "tab" },
         { expect: " FUZZY ", timeout: 5 },
@@ -73,6 +76,7 @@ for (const [name, cmd] of variants) {
       expect(r.snapshots.results).toContain("budget.xlsx")
       expect(r.snapshots.results).toMatch(/3 results/)
       expect(r.snapshots.preview).toContain("Quarterly Planning Report")
+      if (r.exit !== 0 || !r.stdout_tail.includes("\x1b[?1049l")) console.log("exit", r.exit, "final screen:\n" + r.final)
       expect(r.exit).toBe(0)
       // The terminal is restored (alternate screen left).
       expect(r.stdout_tail).toContain("\x1b[?1049l")

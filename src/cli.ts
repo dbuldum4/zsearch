@@ -333,6 +333,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         `Done in ${formatDuration(result.elapsedMs)}: ${formatCount(result.scanned)} items scanned, ${formatCount(result.added)} new, ${formatCount(result.updated)} changed, ${formatCount(result.removed)} removed.`,
       )
       console.error(`Index: ${formatCount(stats.files)} files, ${formatCount(stats.folders)} folders, ${formatCount(stats.withContent)} with text (${formatBytes(stats.contentBytes)}), ${formatBytes(stats.dbBytes)} on disk.`)
+      if (result.warning) console.error(`Warning: ${result.warning}`)
       if (result.contentErrors) console.error(`${formatCount(result.contentErrors)} files could not be read (see \`zsearch status --errors\`).`)
     }
     return 0

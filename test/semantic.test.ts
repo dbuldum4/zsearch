@@ -199,6 +199,22 @@ describe("HTTP embedding providers", () => {
   })
 })
 
+describe("semantic failures are not fatal", () => {
+  test("an unavailable model leaves names and contents indexed, with a warning", async () => {
+    const config = defaultConfig()
+    config.semantic.enabled = true
+    config.semantic.provider = "ollama"
+    config.semantic.url = "http://127.0.0.1:9"
+    const db = openDb(join(corpus.home, ".zsearch-data", "nomodel.db"))
+    const r = await new Indexer(db, config, { inProcess: true }).run()
+    expect(r.phase).toBe("done")
+    expect(r.warning).toMatch(/semantic index not built: cannot reach ollama/)
+    expect(indexStats(db).withContent).toBeGreaterThan(10)
+    expect(indexStats(db).lastIndexedAt).not.toBeNull()
+    db.close()
+  })
+})
+
 describe("semantic search end to end", () => {
   let db: Database
   let engine: SearchEngine

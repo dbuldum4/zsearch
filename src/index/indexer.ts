@@ -33,6 +33,8 @@ export interface IndexProgress {
   elapsedMs: number
   message?: string
   error?: string
+  /** Non-fatal problem, e.g. the semantic model could not be loaded. */
+  warning?: string
 }
 
 export interface IndexOptions {
@@ -197,7 +199,13 @@ export class Indexer {
       await this.content()
       if (this.aborted) return this.finish("cancelled")
       if (this.config.semantic.enabled && !this.opts.skipSemantic) {
-        await this.semantic()
+        try {
+          await this.semantic()
+        } catch (err) {
+          // Names and contents are indexed; semantic search just isn't available yet.
+          this.progress.warning = `semantic index not built: ${(err as Error).message}`
+          this.progress.message = undefined
+        }
         if (this.aborted) return this.finish("cancelled")
       }
       this.cleanup(removed)

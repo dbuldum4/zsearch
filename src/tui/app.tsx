@@ -184,7 +184,8 @@ export function App(props: AppProps) {
       if (outcome.status === "done") {
         const p = outcome.progress
         const changed = p.added + p.updated + p.removed
-        if (reason !== "auto" || changed > 0)
+        if (p.warning) notify(`Index ready, but ${p.warning}`, "warn", 12_000)
+        else if (reason !== "auto" || changed > 0)
           notify(
             `Index ready · ${formatCount(p.scanned)} items scanned${changed ? ` · ${formatCount(p.added)} new, ${formatCount(p.updated)} changed, ${formatCount(p.removed)} removed` : ""} · ${formatDuration(p.elapsedMs)}`,
             "ok",
