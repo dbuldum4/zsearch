@@ -5,7 +5,7 @@ import { parseDuration, parseQuery, parseSize } from "../src/search/query.ts"
 import { regexRequirements, type Req } from "../src/search/regex-plan.ts"
 import { termsPattern, findLines, keywordLines, clipLine } from "../src/search/snippet.ts"
 import { literalToFts, reqToFts, Vocab } from "../src/search/vocab.ts"
-import { editDistance, foldTerm, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
+import { editDistance, foldTerm, indexTerms, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
 import { Database } from "bun:sqlite"
 import { compressText } from "../src/index/db.ts"
 
@@ -244,6 +244,28 @@ describe("text utilities", () => {
   })
   test("unique terms", () => {
     expect([...uniqueTerms("Hello hello, WORLD_2 café")].sort()).toEqual(["2", "cafe", "hello", "world"])
+  })
+  test("index terms: the full text's words, once each", () => {
+    const db = new Database(":memory:")
+    const fts = (t: string) => db.exec(`CREATE VIRTUAL TABLE ${t} USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)`)
+    fts("full")
+    fts("once")
+    db.exec("CREATE VIRTUAL TABLE full_v USING fts5vocab(full, row)")
+    db.exec("CREATE VIRTUAL TABLE once_v USING fts5vocab(once, row)")
+    const texts = [
+      "The the THE; plan-B: 42 x42 x_42 " + "y".repeat(80),
+      "Crème brûlée, CRÈME Brulee! naïve façade Ångström e\u0301cole",
+      "東京都の検索 Привет мир, Straße STRASSE ﬁnance İstanbul 🎉 tab\tnbsp\u00a0em\u2003zero\u200bwidth",
+      "",
+    ]
+    texts.forEach((text, i) => {
+      db.query("INSERT INTO full(rowid, body) VALUES (?, ?)").run(i + 1, text)
+      db.query("INSERT INTO once(rowid, body) VALUES (?, ?)").run(i + 1, indexTerms(text).body)
+      expect([...indexTerms(text).terms].sort()).toEqual([...uniqueTerms(text)].sort())
+    })
+    const vocab = (t: string) => db.query(`SELECT term, doc FROM ${t}_v ORDER BY term`).all()
+    expect(vocab("once")).toEqual(vocab("full"))
+    expect(indexTerms("Plan plan PLAN 2 2").body).toBe("plan 2")
   })
   test("identifier splitting and name tokens", () => {
     expect(splitIdentifier("getHTTPResponse_v2")).toEqual(["get", "HTTP", "Response", "v", "2"])

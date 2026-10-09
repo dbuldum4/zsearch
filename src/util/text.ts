@@ -25,6 +25,33 @@ export function uniqueTerms(text: string, into: Set<string> = new Set()): Set<st
   return into
 }
 
+/** ASCII characters other than letters and digits: separators for unicode61, so no token spans one. */
+const ASCII_SEPARATORS = /[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/
+
+/**
+ * What the index keeps of a text: its distinct words for the FTS `body` column, and its
+ * vocabulary terms (as `uniqueTerms`). The index is contentless with detail=column, so it
+ * records which words a file holds but not where or how often: indexing each word once gives
+ * the same matches for a fraction of SQLite's work.
+ */
+export function indexTerms(text: string): { body: string; terms: Iterable<string> } {
+  if (!NON_ASCII.test(text)) {
+    // ASCII: the tokens are exactly the runs of letters and digits, lower-cased.
+    const words = new Set(text.toLowerCase().match(ASCII_WORD))
+    const body = [...words].join(" ")
+    for (const w of words) if (w.length > 64) words.delete(w)
+    return { body, terms: words }
+  }
+  // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer.
+  const body = [...new Set(text.split(ASCII_SEPARATORS))].join(" ")
+  return { body, terms: uniqueTerms(body) }
+}
+
+/** The FTS `body` of a text (see `indexTerms`). */
+export function ftsBody(text: string): string {
+  return indexTerms(text).body
+}
+
 /** Split identifiers: "getHTTPResponse_v2" -> ["get", "HTTP", "Response", "v", "2"]. */
 export function splitIdentifier(s: string): string[] {
   return s

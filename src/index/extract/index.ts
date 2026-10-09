@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises"
+import { closeSync, openSync, readFileSync, readSync } from "node:fs"
 import { DOCUMENT_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
@@ -30,18 +30,21 @@ export function wantsContent(ext: string, kind: Kind): boolean {
   return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox"
 }
 
+// Files are read synchronously: extraction runs on worker threads, where blocking is fine, and
+// an asynchronous read of a small file costs several times as much as the read itself.
 async function readFile(path: string): Promise<Uint8Array> {
-  return new Uint8Array(await Bun.file(path).arrayBuffer())
+  const b = readFileSync(path)
+  return new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
 }
 
 async function readHead(path: string, n: number): Promise<Uint8Array> {
-  const fh = await open(path, "r")
+  const fd = openSync(path, "r")
   try {
     const buf = new Uint8Array(n)
-    const { bytesRead } = await fh.read(buf, 0, n, 0)
+    const bytesRead = readSync(fd, buf, 0, n, 0)
     return buf.subarray(0, bytesRead)
   } finally {
-    await fh.close()
+    closeSync(fd)
   }
 }
 
