@@ -64,6 +64,11 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(cfg.type).toBe("config")
   expect((cfg.config as { roots: string[] }).roots).toEqual(["~"])
   expect(cfg.config).not.toHaveProperty("bogus")
+  // A patch changes only what it names: the folders set above stay.
+  s.send({ id: 10, type: "setConfig", config: { exclude: ["*.nothing"] } })
+  const patched = (await s.reply(10)).config as { roots: string[]; exclude: string[] }
+  expect(patched.roots).toEqual(["~"])
+  expect(patched.exclude).toEqual(["*.nothing"])
 
   s.send({ id: 2, type: "index" })
   expect((await s.reply(2)).type).toBe("ok")

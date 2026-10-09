@@ -7,7 +7,7 @@
  * The server exits when stdin closes.
  */
 import { createInterface } from "node:readline"
-import { type Config, configExists, defaultConfig, ensureDirs, loadConfig, mergeConfig, saveConfig } from "./config.ts"
+import { type Config, configExists, ensureDirs, loadConfig, mergeConfig, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import type { IndexProgress } from "./index/indexer.ts"
@@ -109,7 +109,8 @@ export async function serve(version: string): Promise<number> {
       case "config":
         return send({ id, type: "config", config })
       case "setConfig": {
-        config = mergeConfig(defaultConfig(), msg.config)
+        // A patch: settings it leaves out keep their current values.
+        config = mergeConfig(config, msg.config)
         saveConfig(config)
         client.setConfig(config)
         return send({ id, type: "config", config })

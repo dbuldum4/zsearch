@@ -93,6 +93,7 @@ function migrate(db: Database, opts: OpenOptions) {
     setMeta(db, "generation", "0")
     if (!getMeta(db, "created_at")) setMeta(db, "created_at", String(Date.now()))
   })()
+  compact(db)
 }
 
 /** Empty the index (files, texts, vocabulary) in place, so that the next run rebuilds it. */
@@ -109,6 +110,21 @@ export function clearIndex(db: Database): void {
     db.exec("DELETE FROM vocab_chunks")
     setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
   })()
+  compact(db)
+}
+
+/**
+ * Give the space of emptied tables back to the file system: SQLite otherwise keeps the file at
+ * its largest size and only reuses the free pages. Cheap right after the tables were emptied.
+ * With a reader still open the file shrinks at a later checkpoint instead.
+ */
+function compact(db: Database): void {
+  try {
+    db.exec("VACUUM")
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+  } catch {
+    // Busy: the free pages are reused by the next writes instead.
+  }
 }
 
 export function getMeta(db: Database, key: string): string | null {

@@ -78,7 +78,7 @@ Each line is one JSON object. Requests may carry a numeric `id`, and the reply c
 | `{"id":2,"type":"preview","file":17,"query":"budget","mode":"find","focusLine":3}` | `preview` with numbered lines and match ranges |
 | `{"id":6,"type":"previews","files":[17,18,19],"query":"budget","mode":"find"}` | `previews`: several at once, for prefetching |
 | `{"id":3,"type":"stats"}` | `stats` |
-| `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (merged with defaults, saved) |
+| `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (the fields sent are changed, the rest kept; saved) |
 | `{"id":5,"type":"index"}` (`"rebuild":true` to start from empty) / `{"type":"cancelIndex"}` | `ok`, then `indexProgress` events and one `indexDone` |
 | `{"type":"opened","path":"/…"}` | `ok` (records the open for ranking) |
 
