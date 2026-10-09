@@ -6,7 +6,7 @@ Fast search for everything in your files, in the terminal. zsearch indexes your 
 ╭─ zsearch ────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ❯ budget                                                                                   3 results · 6.3ms │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  AUTO   fuzzy   exact   regex                                                              auto → names + text
+  FIND   fuzzy                                                         exact text (indexed) · 3 of 3 files read
  XLS  budget.xlsx  Documents                            │ DOC  ~/Documents/report.docx
       sheet 1  Budget 2024                              │ 37 KB · modified 2026-10-08 20:12 (just now) · 1 matc…
 ▌DOC  report.docx  Documents                            │───────────────────────────────────────────────────────
@@ -23,12 +23,12 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 
 ## Highlights
 
-- **Four search modes.** *auto* (the default) combines file names and the text inside files. *fuzzy* is fzf-style name matching that forgives typos. *exact* is a literal text search. *regex* runs regular expressions over contents. Press <kbd>Tab</kbd> to switch.
+- **Two search modes, no guessing.** *Find* (the default) looks for the exact text you type in file names and contents; wrap the query in slashes (`/\d{4}-\d{2}/`) for a regular expression. *Fuzzy* is fzf-style name matching that forgives typos. Press <kbd>Tab</kbd> to switch.
 - **It looks inside files.** It reads PDF, DOCX, XLSX, PPTX, ODT, ODS, ODP, RTF, EPUB, EML, Jupyter notebooks, legacy `.doc`, `.xls` and `.ppt`, source code, Markdown, HTML, CSV, JSON, logs and other text. It shows which page, slide, sheet or line matched.
 - **Setup is guided.** On first launch, zsearch asks what to index (Documents and Downloads, home folder, whole disk or chosen folders) and whether to read file contents or include hidden files. Indexing runs in the background with a progress bar, and results appear while it runs.
 - **Updates are incremental.** Only new or changed files are read again. The index refreshes itself when it is older than an hour; press <kbd>Ctrl-R</kbd> to refresh it now.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
-- **It is fast.** In a test with 129k files and 215 MB of text, name search takes 25–90 ms, keyword search 40–80 ms, exact search about 125 ms, and a regex over every file about 1.3 s. Search runs in a worker thread, so typing never stutters.
+- **It is fast.** In a test with 129k files and 215 MB of text, fuzzy name search takes 25–90 ms, find about 125 ms, and a regex that has to read every file about 1.3 s. Search runs in a worker thread, so typing never stutters.
 - **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
 
 ## Install
@@ -65,12 +65,11 @@ Type to search. Use <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>Enter</kbd> to o
 
 | Mode | What it does | Good for |
 | --- | --- | --- |
-| **auto** | Matches file names (fuzzy, best name matches first) and the words inside files (ranked with BM25, accent- and case-insensitive, prefix matching while you type). It merges both lists. Queries that look like a regex run as a regex. `"Quoted text"` runs as an exact search. If nothing matches, it retries with typo tolerance. | Everyday use |
-| **fuzzy** | Matches file paths the way fzf does: subsequences, with bonuses for word starts, `camelCase`, path separators and runs of consecutive letters, and a preference for the file name over the folders. Typos are forgiven (`mian` finds `main.rs`, `recieve` finds `receive.py`). Content matches are typo-tolerant too. Supports fzf operators: `'exact` `^prefix` `suffix$` `!exclude`. | Finding a file you know |
-| **exact** | A literal substring search in file contents and names. It is smart-case: case-sensitive only if the query has a capital letter. | Error messages, IDs, snippets |
-| **regex** | JavaScript regular expressions over contents and paths. The literals in the pattern are used to narrow the candidates through the index first, so most regexes don't have to read every file. | Code and structured text |
+| **find** (default) | The exact text you type, in file contents and paths. Several words are one piece of text, in that order (`marketing budget`). It is smart-case: case-sensitive only if the query has a capital letter. `"Quotes"` around the whole query are optional. | Almost everything: names, phrases, error messages, IDs |
+| **find** with `/regex/` | Wrap the query in slashes, or start it with `re:`, and it runs as a JavaScript regular expression over contents and paths. Nothing else is ever treated as a regex. | Code, dates, emails, structured text |
+| **fuzzy** | Matches file paths the way fzf does: subsequences, with bonuses for word starts, `camelCase`, path separators and runs of consecutive letters, and a preference for the file name over the folders. Typos are forgiven (`mian` finds `main.rs`, `recieve` finds `receive.py`). Content matches are typo-tolerant too. Supports fzf operators: `'exact` `^prefix` `suffix$` `!exclude`. | Finding a file whose name you half remember |
 
-You can also choose the mode inside the query. `/regex/` or `re:…` forces regex, `f:` forces fuzzy and `grep:` forces exact.
+Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. Results are ordered by number of matches, newest files first among equals; a file whose name matches comes first. `f:…` runs one query in fuzzy mode.
 
 ## Query syntax
 
@@ -86,7 +85,7 @@ Filters can be combined with any mode:
 | `mtime:` | `mtime:<7d`, `mtime:>1y`, `mtime:today`, `mtime:2023`, `after:2024-01-01`, `before:2024-06` | Modification time |
 | `limit:` | `limit:20` | Number of results |
 
-Within the words of a query, `"a phrase"` must appear exactly, and `!word` or `-word` excludes files that contain the word. A query made only of filters, such as `type:pdf mtime:<7d`, lists the matching files with the newest first. An empty query shows the files you opened recently, then the files modified most recently.
+In fuzzy mode, `!word` excludes files whose path contains the word. A query made only of filters, such as `type:pdf mtime:<7d`, lists the matching files with the newest first. An empty query shows the files you opened recently, then the files modified most recently.
 
 ## Keys
 
@@ -98,7 +97,7 @@ Within the words of a query, `"a phrase"` must appear exactly, and `!word` or `-
 | <kbd>Ctrl-E</kbd> | Open in your editor, at the matching line (`$VISUAL`/`$EDITOR`, or vim, VS Code, Zed, Sublime, Helix…) |
 | <kbd>Ctrl-O</kbd> | Show in Finder or your file manager |
 | <kbd>Ctrl-Y</kbd> | Copy the path |
-| <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd>…<kbd>Alt-4</kbd> | Switch the search mode |
+| <kbd>Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> | Switch between find and fuzzy |
 | <kbd>Ctrl-T</kbd> | Show or hide the preview |
 | <kbd>Shift-↑</kbd> <kbd>Shift-↓</kbd>, <kbd>Ctrl-D</kbd> <kbd>Ctrl-U</kbd>, wheel over the preview | Scroll the preview |
 | <kbd>Ctrl-F</kbd> / <kbd>Ctrl-B</kbd> | Jump to the next or previous match in the preview |
@@ -170,7 +169,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
 | `workers` | `0` | Extraction threads (`0` = number of CPUs − 1, at most 8) |
 | `editor` | `""` | Editor command (defaults to `$VISUAL` / `$EDITOR`) |
-| `defaultMode` | `auto` | Initial search mode |
+| `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
 | `preview` | `true` | Show the preview pane |
 
 Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` forces the built-in PDF reader.
@@ -181,7 +180,7 @@ The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application
 
 ```text
 zsearch [query]                 open the interactive search
-zsearch search <query>          print matches and exit (-m mode, -n limit, -l paths only, --json)
+zsearch search <query>          print matches and exit (-m find|fuzzy, -e regex, -n limit, -l paths only, --json)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json)
 zsearch config [show|get|set|path|reset]
@@ -193,7 +192,7 @@ zsearch reset                   delete the index
 
 ```sh
 zsearch search -l 'type:pdf invoice mtime:<30d' | xargs -I{} cp {} ~/invoices/
-zsearch search --json -m regex 'TODO\(\w+\)' | jq '.hits[].path'
+zsearch search --json -e 'TODO\(\w+\)' | jq '.hits[].path'
 ```
 
 ## How it works
@@ -210,8 +209,8 @@ src/
 
 - **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, diacritics removed), and extracted text is stored once (small texts raw, large ones zstd-compressed). A `vocab` table lists every indexed term.
 - **Names.** All paths are kept in memory in the search worker and matched with an fzf v1-style algorithm. Each path has a precomputed character bitmask for quick rejection, a bounded top-k keeps only the best results, and the next keystroke searches only the previous matches (as fzf and fff do).
-- **Regex and exact.** The regex is parsed into a boolean condition over the literal strings every match must contain (in the spirit of Russ Cox's trigram index). Each literal is mapped onto index terms (whole token, prefix, suffix or substring), using an in-memory copy of the vocabulary for substring lookups. Only the candidate files are read and scanned with the real regex. Patterns with no usable literal fall back to a time-boxed scan of all stored text.
-- **Ranking.** Each mode produces ranked lists (names, keyword BM25). These are fused with reciprocal-rank fusion. Frecency and recency then adjust the result.
+- **Find.** Plain text is searched as a literal. A regex is parsed into a boolean condition over the literal strings every match must contain (in the spirit of Russ Cox's trigram index). Each literal is mapped onto index terms (whole token, prefix, suffix or substring), using an in-memory copy of the vocabulary for substring lookups. Only the candidate files are read and scanned with the real regex. Patterns with no usable literal fall back to a time-boxed scan of all stored text.
+- **Ranking.** Name matches and content matches are fused with reciprocal-rank fusion (fuzzy mode ranks content with BM25). Frecency and recency then adjust the result.
 - **Responsiveness.** Indexing runs in a worker thread with its own pool of extraction workers. Searching runs in another worker, which cancels superseded queries and is restarted by a watchdog if a pathological regex runs too long. The UI thread only draws.
 
 ## Development

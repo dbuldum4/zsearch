@@ -38,7 +38,7 @@ export interface Config {
   /** Command used to open files in an editor (defaults to $VISUAL / $EDITOR). */
   editor: string
   /** Default search mode in the TUI. */
-  defaultMode: "auto" | "fuzzy" | "exact" | "regex"
+  defaultMode: "find" | "fuzzy"
   /** Show the preview pane by default. */
   preview: boolean
 }
@@ -60,7 +60,7 @@ export function defaultConfig(): Config {
     autoRefreshMinutes: 60,
     workers: 0,
     editor: "",
-    defaultMode: "auto",
+    defaultMode: "find",
     preview: true,
   }
 }
@@ -136,8 +136,8 @@ export function mergeConfig(base: Config, patch: unknown): Config {
     }
   }
   walk(out, patch)
-  // Older versions had a semantic mode.
-  if (!["auto", "fuzzy", "exact", "regex"].includes(out.defaultMode as string)) out.defaultMode = "auto"
+  // Older versions had auto, exact, regex and semantic modes: all of them are "find" now.
+  if (out.defaultMode !== "fuzzy") out.defaultMode = "find"
   return out as unknown as Config
 }
 

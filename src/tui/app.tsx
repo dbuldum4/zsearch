@@ -25,7 +25,7 @@ export interface AppProps {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const MODE_LABEL: Record<Mode, string> = { auto: "auto", fuzzy: "fuzzy", exact: "exact", regex: "regex" }
+const MODE_LABEL: Record<Mode, string> = { find: "find", fuzzy: "fuzzy" }
 
 function RowText(props: { row: Row; width: number }) {
   return <StyledLine segs={props.row.segs} width={props.width} bg={props.row.bg} />
@@ -402,7 +402,7 @@ export function App(props: AppProps) {
           return handled(() => jumpMatch(-1))
       }
     }
-    if (key.meta && (k === "1" || k === "2" || k === "3" || k === "4")) return handled(() => setMode(MODES[Number(k) - 1]!))
+    if (key.meta && (k === "1" || k === "2")) return handled(() => setMode(MODES[Number(k) - 1]!))
   })
 
   /* ------------------------------------------------------------- view -- */
@@ -422,8 +422,11 @@ export function App(props: AppProps) {
 
   const modeBar = createMemo(() => {
     const segs: Seg[] = [{ text: " " }]
+    // A query can pick its own mode (`/regex/` is always find): show the one that ran.
+    const res = response()
+    const shown = res && res.query === query() && res.mode === mode() ? res.resolved : mode()
     for (const m of MODES) {
-      const active = m === mode()
+      const active = m === shown
       segs.push(active ? { text: ` ${MODE_LABEL[m].toUpperCase()} `, fg: t().accentText, bg: t().accent, bold: true } : { text: ` ${MODE_LABEL[m]} `, fg: t().subtle })
       segs.push({ text: " " })
     }
@@ -450,7 +453,7 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
-    if (mode() !== "auto") lines.push([{ text: "  Tip: press Tab to try another mode (auto, fuzzy, exact, regex).", fg: t().subtle }])
+    lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines
   })
@@ -611,7 +614,7 @@ const HELP: [string, [string, string][]][] = [
       ["^E", "open in your editor at the match"],
       ["^O", "reveal in the file manager"],
       ["^Y", "copy the path"],
-      ["Tab / Shift-Tab, Alt-1…4", "switch mode"],
+      ["Tab, Alt-1 / Alt-2", "switch between find and fuzzy"],
       ["^T", "toggle preview"],
       ["Shift-↑↓  ^D ^U", "scroll preview"],
       ["^F ^B", "next / previous match in preview"],
@@ -623,10 +626,9 @@ const HELP: [string, [string, string][]][] = [
   [
     "Modes",
     [
-      ["auto", "names + text; regex if it looks like one"],
-      ["fuzzy", "fzf-style name matching, forgives typos"],
-      ["exact", "literal text, smart case"],
-      ["regex", "regular expressions over contents"],
+      ["find", "exact text in names and contents, smart case"],
+      ["/regex/  re:…", "find with a regular expression"],
+      ["fuzzy", "fzf-style names, typo-tolerant contents"],
     ],
   ],
   [
@@ -635,9 +637,8 @@ const HELP: [string, [string, string][]][] = [
       ["ext:pdf,docx  type:doc", "extension / kind (doc, sheet, slides, code…)"],
       ["in:~/Documents  path:2024", "inside a folder / path contains"],
       ["size:>5mb  mtime:<7d", "size / age (also after:2024-01-01)"],
-      ['"exact phrase"  !word', "phrase / exclude a word"],
-      ["/regex/  re:…  f:…", "force regex / fuzzy"],
-      ["'exact ^prefix suffix$", "fzf operators in fuzzy name matching"],
+      ["f:…", "fuzzy for this query only"],
+      ["'exact ^prefix suffix$ !not", "fzf operators in fuzzy mode"],
     ],
   ],
 ]

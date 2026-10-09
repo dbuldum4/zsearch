@@ -37,13 +37,14 @@ Usage
   zsearch reset                   delete the index
 
 Interactive options
-  -m, --mode <mode>   start in auto | fuzzy | exact | regex
+  -m, --mode <mode>   start in find (default) | fuzzy
   -p, --print         print the chosen path instead of opening it
                       (e.g.  vim "$(zsearch -p)")
       --no-preview    start with the preview pane hidden
 
 Search options
-  -m, --mode <mode>   auto (default) | fuzzy | exact | regex
+  -m, --mode <mode>   find (default) | fuzzy
+  -e, --regex         treat the query as a regular expression
   -n, --limit <n>     maximum results (default 20)
   -l, --files         print paths only
       --json          JSON output
@@ -59,9 +60,10 @@ Index options
   -q, --quiet         no progress output
 
 Query syntax
-  words               match file names and text inside files
-  "a phrase"          exact phrase          !word / -word   exclude
-  /regex/  re:...     regular expression    f:...           fuzzy
+  text                find: this exact text in file names and contents
+                      (smart case: lowercase ignores case)
+  /regex/  re:...     find with a regular expression
+  f:...               fuzzy: fzf-style names, typo-tolerant contents
   ext:pdf,docx  type:doc|sheet|slides|code|image|folder  in:~/Documents
   path:2024  size:>5mb  mtime:<7d  after:2024-01-01  limit:50
 
@@ -192,7 +194,8 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
     console.error("zsearch: no index yet — run `zsearch index` first")
     return 2
   }
-  const mode = parseMode(flag(args, "mode", "m")) ?? "auto"
+  const mode = parseMode(flag(args, "mode", "m")) ?? "find"
+  if (flag(args, "regex", "e") === true) query = `re:${query}`
   const limitFlag = flag(args, "limit", "n")
   const limit = typeof limitFlag === "string" ? Math.max(1, Number(limitFlag) || 20) : 20
   const db = openDb(p.db)

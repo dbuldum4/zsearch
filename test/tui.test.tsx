@@ -44,6 +44,11 @@ async function esc(s: Setup) {
   await s.renderOnce()
 }
 
+/** File names in the result list, top to bottom. */
+function listed(frame: string): string[] {
+  return frame.split("\n").flatMap((l) => /^[▌ ][A-Z]+\s+(\S+)/.exec(l)?.[1] ?? [])
+}
+
 async function type(s: Setup, text: string) {
   for (const ch of text) {
     s.mockInput.pressKey(ch)
@@ -75,7 +80,7 @@ describe("first run", () => {
       expect(t.calls.saved[0]!.roots).toEqual(["~/Documents", "~/Downloads"])
       expect(t.calls.indexRuns).toBe(1)
       await type(s, "budget")
-      const frame = await until(s, (f) => f.includes("budget.xlsx") && f.includes("report.docx") && f.includes("auto → names + text"))
+      const frame = await until(s, (f) => f.includes("budget.xlsx") && f.includes("report.docx") && f.includes(" FIND ") && f.includes("exact text"))
       expect(frame).toMatch(/\d+ results?/)
       // Downloads is indexed too...
       await esc(s)
@@ -145,35 +150,32 @@ describe("search screen", () => {
   test("arrow keys move the selection and update the preview", async () => {
     await esc(s)
     await type(s, "budget")
-    await until(s, (f) => f.includes("report.docx") && f.includes("3 results"))
+    const list = listed(await until(s, (f) => f.includes("report.docx") && f.includes("3 results")))
+    expect(list.sort()).toEqual(["budget.xlsx", "deck.pptx", "report.docx"])
+    const order = listed(s.captureCharFrame())
     s.mockInput.pressArrow("down")
-    const f = await until(s, (f) => f.includes("~/Documents/report.docx"))
-    expect(f).toContain("Quarterly Planning Report")
+    await until(s, (f) => f.includes(`~/Documents/${order[1]}`))
     s.mockInput.pressKey("e", { ctrl: true })
     await Bun.sleep(50)
-    expect(t.calls.edit[t.calls.edit.length - 1]!.path).toEndWith("report.docx")
+    expect(t.calls.edit[t.calls.edit.length - 1]!.path).toEndWith(order[1]!)
   })
 
   test("mouse: click selects, wheel scrolls", async () => {
     await esc(s)
     await type(s, "budget")
-    await until(s, (f) => f.includes("report.docx") && f.includes("3 results"))
-    // Rows: 3 (search box) + 1 (mode bar); budget.xlsx occupies rows 4-5, report.docx rows 6-7.
+    const order = listed(await until(s, (f) => f.includes("report.docx") && f.includes("3 results")))
+    // Rows: 3 (search box) + 1 (mode bar); the first result occupies rows 4-5, the second rows 6-7.
     await s.mockMouse.click(10, 6)
-    await until(s, (f) => f.includes("~/Documents/report.docx"))
+    await until(s, (f) => f.includes(`~/Documents/${order[1]}`))
     await s.mockMouse.scroll(10, 6, "down")
-    await until(s, (f) => f.includes("~/Documents/deck.pptx"))
+    await until(s, (f) => f.includes(`~/Documents/${order[2]}`))
   })
 
-  test("Tab cycles modes", async () => {
+  test("Tab switches between find and fuzzy", async () => {
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FUZZY ") && f.includes("fuzzy names"))
     s.mockInput.pressTab()
-    await until(s, (f) => f.includes(" EXACT ") && f.includes("exact (indexed)"))
-    s.mockInput.pressTab()
-    await until(s, (f) => f.includes(" REGEX ") && f.includes("regex (indexed)"))
-    s.mockInput.pressTab()
-    await until(s, (f) => f.includes(" AUTO ") && f.includes("auto → names"))
+    await until(s, (f) => f.includes(" FIND ") && f.includes("exact text (indexed)"))
   })
 
   test("filters and regex from the query box", async () => {
@@ -181,7 +183,8 @@ describe("search screen", () => {
     await type(s, "/MAX_\\w+/")
     const f = await until(s, (f) => f.includes("MAX_RETRIES = 42"))
     expect(f).toContain("parse_config.py")
-    expect(f).toContain("regex")
+    expect(f).toContain("regex (indexed)")
+    expect(f).toContain(" FIND ")
     await esc(s)
     await type(s, "type:slides")
     const g = await until(s, (f) => f.includes("deck.pptx") && f.includes("slides.odp") && f.includes("recent files matching filters"))
@@ -201,10 +204,10 @@ describe("search screen", () => {
     await until(s, (f) => f.includes("▶ line 85 mentions zebra"))
     s.mockInput.pressKey("b", { ctrl: true })
     await until(s, (f) => f.includes("▶ line 45 mentions zebra"))
-    s.mockInput.pressKey("3", { meta: true })
-    await until(s, (f) => f.includes(" EXACT "))
+    s.mockInput.pressKey("2", { meta: true })
+    await until(s, (f) => f.includes(" FUZZY "))
     s.mockInput.pressKey("1", { meta: true })
-    await until(s, (f) => f.includes(" AUTO "))
+    await until(s, (f) => f.includes(" FIND "))
   })
 
   test("help overlay", async () => {
@@ -215,12 +218,14 @@ describe("search screen", () => {
     await until(s, (f) => !f.includes("zsearch help"))
   })
 
-  test("no results message suggests other modes", async () => {
+  test("no results message suggests the other mode", async () => {
     await esc(s)
-    s.mockInput.pressTab()
     await type(s, "qqqzzzxxx")
-    await until(s, (f) => f.includes("No matches") && f.includes("Tab"))
-    s.mockInput.pressKey("tab", { shift: true })
+    await until(s, (f) => f.includes("No matches") && f.includes("Tab for fuzzy search"))
+    s.mockInput.pressTab()
+    await until(s, (f) => f.includes("No matches") && f.includes("Tab to find the exact text"))
+    s.mockInput.pressTab()
+    await until(s, (f) => f.includes(" FIND "))
   })
 
   test("Ctrl-T toggles the preview; narrow terminals hide it", async () => {

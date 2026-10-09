@@ -57,11 +57,13 @@ for (const [name, cmd] of variants) {
         { key: "enter" },
         { expect: "Index ready", timeout: 30 },
         { type: "budget" },
-        { expect: "auto → names + text", timeout: 10 },
+        { expect: "exact text", timeout: 10 },
         { expect: "3 results", timeout: 10 },
         { expect: "budget.xlsx", timeout: 10 },
         { snapshot: "results" },
-        { key: "down" },
+        // Several words are one piece of text: only the report has this sentence.
+        { type: " for the northern" },
+        { expect: "1 result", timeout: 10 },
         { expect: "~/Documents/report.docx", timeout: 10 },
         { expect: "Quarterly Planning Report", timeout: 10 },
         { snapshot: "preview" },
@@ -81,12 +83,12 @@ for (const [name, cmd] of variants) {
       expect(r.stdout_tail).toContain("\x1b[?1049l")
     })
 
-    test("existing index: query from the command line, regex mode, help", () => {
+    test("existing index: query and mode from the command line, regex, help", () => {
       // The first run indexed Documents and Downloads; the rest of the tests search the whole home.
       const idx = spawnSync(cmd[0]!, [...cmd.slice(1), "index", "--home", "-q"], { env: { ...process.env, ...env }, encoding: "utf8" })
       if (idx.status !== 0) console.log(idx.stdout, idx.stderr)
       expect(idx.status).toBe(0)
-      const r = drive([...cmd, "-m", "regex", "MAX_\\w+"], env, [
+      const r = drive([...cmd, "-m", "fuzzy", "/MAX_\\w+/"], env, [
         { expect: "MAX_RETRIES = 42", timeout: 20 },
         { snapshot: "regex" },
         { key: "f1" },
@@ -98,7 +100,8 @@ for (const [name, cmd] of variants) {
         { wait_exit: 5 },
       ])
       expect(r.snapshots.regex).toContain("parse_config.py")
-      expect(r.snapshots.regex).toContain(" REGEX ")
+      expect(r.snapshots.regex).toContain(" FIND ")
+      expect(r.snapshots.regex).toContain("regex (indexed)")
       expect(r.exit).toBe(0)
     })
 

@@ -83,7 +83,7 @@ describe("zsearch command line", () => {
   })
 
   test("search modes, JSON and paths-only output", async () => {
-    const regex = await zs("search", "-m", "regex", "MAX_\\w+")
+    const regex = await zs("search", "--regex", "MAX_\\w+")
     expect(regex.code).toBe(0)
     expect(regex.out).toContain("MAX_RETRIES = 42")
     const json = await zs("search", "--json", "calvin")
@@ -98,10 +98,11 @@ describe("zsearch command line", () => {
 
   test("no matches exits 1; bad regex and bad mode exit 2", async () => {
     expect((await zs("search", "qqqzzzxxyy")).code).toBe(1)
-    const bad = await zs("search", "-m", "regex", "foo(")
+    const bad = await zs("search", "re:foo(")
     expect(bad.code).toBe(2)
     expect(bad.err).toContain("invalid regex")
     expect((await zs("search", "-m", "nonsense", "x")).code).toBe(2)
+    expect((await zs("search", "-m", "regex", "x")).code).toBe(2)
   })
 
   test("status and doctor", async () => {

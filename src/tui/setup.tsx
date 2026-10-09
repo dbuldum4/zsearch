@@ -165,7 +165,7 @@ export function Setup(props: SetupProps) {
       out.push(row)
     }
     push([{ text: "  Fast search for everything in your files: names, text inside documents,", fg: t().muted }])
-    push([{ text: "  code, PDFs, Office files — with fuzzy, exact and regex modes.", fg: t().muted }])
+    push([{ text: "  code, PDFs, Office files — by exact text, regex or fuzzy matching.", fg: t().muted }])
     push([])
     const intro = out.length
     push([{ text: "  What should zsearch index?", fg: t().text, bold: true }])

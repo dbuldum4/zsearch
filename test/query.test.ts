@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { home } from "../src/config.ts"
-import { isNaturalLanguage, looksLikeRegex } from "../src/search/engine.ts"
 import { fuzzyMatch, matchPath, parseFuzzyTerms } from "../src/search/fuzzy.ts"
 import { parseDuration, parseQuery, parseSize } from "../src/search/query.ts"
 import { regexRequirements, type Req } from "../src/search/regex-plan.ts"
@@ -60,14 +59,18 @@ describe("query parsing", () => {
   })
 
   test("mode prefixes", () => {
-    expect(parseQuery("re:foo.*bar").forcedMode).toBe("regex")
+    const re = parseQuery("re:foo.*bar")
+    expect([re.forcedMode, re.regex, re.text]).toEqual(["find", true, "foo.*bar"])
     expect(parseQuery("re:foo  bar").text).toBe("foo  bar")
-    expect(parseQuery("/a+b/").forcedMode).toBe("regex")
-    expect(parseQuery("/a+b/").text).toBe("a+b")
-    expect(parseQuery("?how do plants make energy").forcedMode).toBe(null)
-    expect(parseQuery('"exact words"').forcedMode).toBe("exact")
+    const slashes = parseQuery("/a+b/")
+    expect([slashes.forcedMode, slashes.regex, slashes.text]).toEqual(["find", true, "a+b"])
+    // Nothing is guessed: regex-looking text without slashes is plain text.
+    const plain = parseQuery("foo.*bar")
+    expect([plain.forcedMode, plain.regex]).toEqual([null, false])
+    expect(parseQuery('"exact words"').forcedMode).toBe(null)
     expect(parseQuery("f:srvr").forcedMode).toBe("fuzzy")
-    expect(parseQuery("grep:TODO").forcedMode).toBe("exact")
+    const grep = parseQuery("grep:TODO")
+    expect([grep.forcedMode, grep.regex]).toEqual(["find", false])
   })
 
   test("sizes and durations", () => {
@@ -76,20 +79,6 @@ describe("query parsing", () => {
     expect(parseSize("abc")).toBeNull()
     expect(parseDuration("2w")).toBe(14 * 86_400_000)
     expect(parseDuration("3mo")).toBe(90 * 86_400_000)
-  })
-
-  test("auto mode heuristics", () => {
-    expect(looksLikeRegex("foo.*bar")).toBe(true)
-    expect(looksLikeRegex("\\d{3}-\\d{4}")).toBe(true)
-    expect(looksLikeRegex("^import")).toBe(true)
-    expect(looksLikeRegex("(cat|dog)")).toBe(true)
-    expect(looksLikeRegex("main.rs")).toBe(false)
-    expect(looksLikeRegex("c++")).toBe(false)
-    expect(looksLikeRegex("budget 2024")).toBe(false)
-    expect(isNaturalLanguage(parseQuery("how do plants make energy"))).toBe(true)
-    expect(isNaturalLanguage(parseQuery("notes about the trip to lisbon"))).toBe(true)
-    expect(isNaturalLanguage(parseQuery("budget"))).toBe(false)
-    expect(isNaturalLanguage(parseQuery("server.ts config"))).toBe(false)
   })
 })
 
@@ -281,10 +270,11 @@ describe("configuration", () => {
   test("configs from versions with semantic search still load", async () => {
     const { defaultConfig, mergeConfig } = await import("../src/config.ts")
     const c = mergeConfig(defaultConfig(), { defaultMode: "semantic", semantic: { enabled: true, model: "x" }, includeHidden: true })
-    expect(c.defaultMode).toBe("auto")
+    expect(c.defaultMode).toBe("find")
     expect(c.includeHidden).toBe(true)
     expect("semantic" in c).toBe(false)
-    expect(mergeConfig(defaultConfig(), { defaultMode: "regex" }).defaultMode).toBe("regex")
+    for (const old of ["auto", "exact", "regex"]) expect(mergeConfig(defaultConfig(), { defaultMode: old }).defaultMode).toBe("find")
+    expect(mergeConfig(defaultConfig(), { defaultMode: "fuzzy" }).defaultMode).toBe("fuzzy")
   })
 })
 

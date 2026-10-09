@@ -36,75 +36,57 @@ afterAll(() => {
   else process.env.ZSEARCH_HOME = env.ZSEARCH_HOME
 })
 
-const search = (q: string, mode: Mode = "auto", limit = 50) => engine.search(q, mode, { limit })
+const search = (q: string, mode: Mode = "find", limit = 50) => engine.search(q, mode, { limit })
 const names = (r: SearchResponse) => r.hits.map((h) => h.display)
 
-describe("auto mode", () => {
-  test("file name and content matches are combined; the named file ranks first", async () => {
+describe("find mode", () => {
+  test("finds the exact text in file names and contents", async () => {
     const r = await search("budget")
     expect(r.error).toBeUndefined()
-    expect(names(r)[0]).toBe("Documents/budget.xlsx")
-    expect(names(r)).toContain("Documents/report.docx")
-    expect(names(r)).toContain("Documents/deck.pptx")
-    expect(r.strategy).toContain("names + text")
+    expect(r.resolved).toBe("find")
+    expect(names(r)).toEqual(expect.arrayContaining(["Documents/budget.xlsx", "Documents/report.docx", "Documents/deck.pptx"]))
+    expect(r.strategy).toContain("exact text")
+    const xlsx = r.hits.find((h) => h.display === "Documents/budget.xlsx")!
+    expect(xlsx.sources).toEqual(expect.arrayContaining(["name", "content"]))
     const docx = r.hits.find((h) => h.display === "Documents/report.docx")!
-    expect(docx.sources).toContain("content")
     expect(docx.lines[0]!.text).toContain("marketing budget")
     const [a, b] = docx.lines[0]!.ranges[0]!
     expect(docx.lines[0]!.text.slice(a, b).toLowerCase()).toBe("budget")
   })
 
-  test("search as you type matches word prefixes", async () => {
-    const r = await search("photosynth")
-    expect(names(r)).toContain("Documents/paper.pdf")
+  test("matches part of a word while you type", async () => {
+    expect(names(await search("photosynth"))).toContain("Documents/paper.pdf")
   })
 
-  test("accents and case are ignored", async () => {
-    const r = await search("CAFE")
-    expect(names(r)).toEqual(expect.arrayContaining(["Documents/letter.rtf", "Documents/report.docx", "Documents/mail.eml"]))
+  test("several words are one piece of text, in that order", async () => {
+    expect(names(await search("marketing budget"))).toEqual(["Documents/report.docx"])
+    expect(names(await search("budget marketing"))).toEqual([])
   })
 
-  test("all words must match, in any order and across name and text", async () => {
-    const r = await search("lisbon passport ")
-    expect(names(r)[0]).toBe("notes/todo.md")
-    const r2 = await search("calvin paper ")
-    expect(names(r2)[0]).toBe("Documents/paper.pdf")
-  })
-
-  test("falls back to any word when no file has all of them", async () => {
-    const r = await search("glacier xylophone ")
-    expect(names(r)).toContain("notes/journal-2024.md")
-  })
-
-  test("typos are forgiven when nothing matches exactly", async () => {
-    const r = await search("photosynthesus ")
-    expect(names(r)).toContain("Documents/paper.pdf")
-    expect(r.strategy).toContain("typo")
-  })
-
-  test("page numbers for PDF hits", async () => {
-    const r = await search("calvin ")
-    const pdf = r.hits.find((h) => h.display === "Documents/paper.pdf")!
-    expect(pdf.lines[0]!.page).toBe(2)
-  })
-
-  test("regex-looking queries run as regex", async () => {
-    const r = await search("\\d{3}-\\d{4}")
-    expect(r.resolved).toBe("regex")
-    expect(names(r)).toContain("notes/meeting-2024-05.md")
-  })
-
-  test("quoted phrase is exact", async () => {
+  test("a quoted query searches for the text inside the quotes", async () => {
     const r = await search('"twelve percent"')
-    expect(r.resolved).toBe("exact")
     expect(names(r)).toEqual(["Documents/report.docx"])
     expect(r.hits[0]!.lines[0]!.line).toBe(2)
   })
 
-  test("negation excludes files", async () => {
-    const r = await search("budget !marketing ")
-    expect(names(r)).not.toContain("Documents/report.docx")
-    expect(names(r)).toContain("Documents/deck.pptx")
+  test("nothing is guessed: regex-looking text is searched literally", async () => {
+    const r = await search("\\d{3}-\\d{4}")
+    expect(r.resolved).toBe("find")
+    expect(r.strategy).toContain("exact text")
+    expect(names(r)).toEqual([])
+  })
+
+  test("page numbers for PDF hits", async () => {
+    const r = await search("calvin")
+    const pdf = r.hits.find((h) => h.display === "Documents/paper.pdf")!
+    expect(pdf.lines[0]!.page).toBe(2)
+  })
+
+  test("a regex in slashes runs in fuzzy mode too", async () => {
+    const r = await search("/\\d{3}-\\d{4}/", "fuzzy")
+    expect(r.resolved).toBe("find")
+    expect(r.strategy).toContain("regex")
+    expect(names(r)).toContain("notes/meeting-2024-05.md")
   })
 
   test("empty query lists recent files", async () => {
@@ -163,52 +145,52 @@ describe("fuzzy mode", () => {
   })
 })
 
-describe("exact and regex modes", () => {
-  test("exact is a literal, smart-case substring search", async () => {
-    const r = await search("UserName", "exact")
+describe("exact text and regular expressions", () => {
+  test("find is a literal, smart-case substring search", async () => {
+    const r = await search("UserName")
     expect(names(r)).toContain("code/app/src/server.ts")
     const hit = r.hits.find((h) => h.display === "code/app/src/server.ts")!
     expect(hit.lines[0]!.line).toBe(3)
-    expect((await search("USERNAME", "exact")).hits.filter((h) => h.sources.includes("content"))).toHaveLength(0)
-    expect(names(await search("username", "exact"))).toContain("code/app/src/server.ts")
+    expect((await search("USERNAME")).hits.filter((h) => h.sources.includes("content"))).toHaveLength(0)
+    expect(names(await search("username"))).toContain("code/app/src/server.ts")
   })
 
-  test("exact matches special characters literally", async () => {
-    const r = await search("user_${id}", "exact")
+  test("special characters are literal", async () => {
+    const r = await search("user_${id}")
     expect(names(r)).toContain("code/app/src/server.ts")
   })
 
   test("regex over contents with line numbers", async () => {
-    const r = await search("MAX_\\w+ = \\d+", "regex")
+    const r = await search("re:MAX_\\w+ = \\d+")
     expect(names(r)).toEqual(["code/app/src/util/parse_config.py"])
     expect(r.hits[0]!.lines[0]).toMatchObject({ line: 7, text: "MAX_RETRIES = 42" })
     expect(r.strategy).toContain("indexed")
   })
 
   test("regex with alternation and no literal prefix", async () => {
-    const r = await search("(flour|glacier)", "regex")
+    const r = await search("/(flour|glacier)/")
     expect(names(r).sort()).toEqual(["notes/journal-2024.md", "notes/recipes/pancakes.txt"])
-    const r2 = await search("^\\s+return", "regex")
+    const r2 = await search("re:^\\s+return")
     expect(names(r2)).toEqual(expect.arrayContaining(["code/app/src/server.ts", "code/app/src/receive.py"]))
   })
 
   test("regex also matches file names", async () => {
-    const r = await search("journal-\\d+", "regex")
+    const r = await search("/journal-\\d+/")
     expect(names(r)).toContain("notes/journal-2024.md")
     expect(r.hits[0]!.sources).toContain("name")
   })
 
   test("invalid regex reports an error", async () => {
-    const r = await search("foo(", "regex")
+    const r = await search("re:foo(")
     expect(r.error).toMatch(/invalid regex/)
   })
 })
 
 describe("preview", () => {
   test("text with highlights around the first match", async () => {
-    const r = await search("calvin ")
+    const r = await search("calvin")
     const pdf = r.hits.find((h) => h.display === "Documents/paper.pdf")!
-    const p = engine.preview(pdf.id, "calvin ", "auto")
+    const p = engine.preview(pdf.id, "calvin", "find")
     expect(p.focusLine).toBe(pdf.lines[0]!.line)
     expect(p.pageStarts.length).toBe(2)
     const line = p.lines.find((l) => l.n === p.focusLine)!
@@ -217,14 +199,14 @@ describe("preview", () => {
 
   test("folders list their contents", async () => {
     const r = await search("type:folder recipes")
-    const p = engine.preview(r.hits[0]!.id, "", "auto")
+    const p = engine.preview(r.hits[0]!.id, "", "find")
     expect(p.isDir).toBe(true)
     expect(p.lines.map((l) => l.text)).toContain("pancakes.txt")
   })
 
   test("binary files explain why there is no preview", async () => {
     const r = await search("holiday-beach")
-    const p = engine.preview(r.hits[0]!.id, "", "auto")
+    const p = engine.preview(r.hits[0]!.id, "", "find")
     expect(p.message).toBe("no text preview for this kind of file")
   })
 })
@@ -232,9 +214,14 @@ describe("preview", () => {
 describe("live updates and frecency", () => {
   test("new files are found after the indexer commits", async () => {
     corpus.write("notes/fresh.txt", "a freshly written zeppelin note")
-    expect((await search("zeppelin ")).hits).toHaveLength(0)
-    await new Indexer(db, config, { inProcess: true }).run()
-    expect(names(await search("zeppelin "))).toEqual(["notes/fresh.txt"])
+    expect((await search("zeppelin")).hits).toHaveLength(0)
+    expect((await search("zeppelin", "fuzzy")).hits).toHaveLength(0)
+    // The indexer has its own connection (in the app it runs in a worker).
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    await new Indexer(writer, config, { inProcess: true }).run()
+    writer.close()
+    expect(names(await search("zeppelin"))).toEqual(["notes/fresh.txt"])
+    expect(names(await search("zeppelin", "fuzzy"))).toEqual(["notes/fresh.txt"])
   })
 
   test("opened files rank higher next time", async () => {

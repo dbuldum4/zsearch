@@ -34,7 +34,7 @@ export interface SearchHit {
 export interface SearchResponse {
   query: string
   mode: Mode
-  /** What auto mode decided, in words ("names + text", "regex", ...). */
+  /** How the query was run, in words ("exact text (indexed) · …", "regex …", "fuzzy names …"). */
   strategy: string
   resolved: Mode
   hits: SearchHit[]
@@ -81,32 +81,6 @@ export interface SearchOptions {
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
 
-const QUESTION = /^(how|what|why|where|when|who|which|whose|whom|is|are|does|do|can|could|should|would|find|show|list|documents?|files?|notes?|anything|something|papers?)\b/i
-const QUESTION_WORDS = new Set("how what why where when who which whose whom find show list did does do can could should would write wrote written".split(" "))
-const STOP = new Set("a an the of to in on for and or with about from by at as is are was were be this that these those my your our their it its me i".split(" "))
-
-/** Does the text look like a regular expression rather than words? */
-export function looksLikeRegex(text: string): boolean {
-  if (!text) return false
-  const signals = /\\[dwsbDWSB]|\.\*|\.\+|\.\?|\[\^|\[[^\]\s]-[^\]\s]\]|\(\?[:=!<]|\{\d+(,\d*)?\}|^\^\S|\S\$$|\w\|\w|\(\w+\|\w+\)|\\\.|\\\(/
-  if (!signals.test(text)) return false
-  try {
-    new RegExp(text)
-    return true
-  } catch {
-    return false
-  }
-}
-
-export function isNaturalLanguage(q: ParsedQuery): boolean {
-  const words = q.words.filter((w) => /^[\p{L}\p{N}'’-]+$/u.test(w))
-  if (q.text.trim().endsWith("?")) return true
-  if (words.length !== q.words.length) return false
-  const content = words.filter((w) => !STOP.has(w.toLowerCase()))
-  if (QUESTION.test(q.text) && words.length >= 3) return true
-  return words.length >= 4 && content.length >= 2
-}
-
 export class SearchEngine {
   readonly catalog = new Catalog()
   readonly vocab = new Vocab()
@@ -138,7 +112,7 @@ export class SearchEngine {
 
   /* ------------------------------------------------------------ public -- */
 
-  async search(rawQuery: string, mode: Mode = "auto", opts: SearchOptions = {}): Promise<SearchResponse> {
+  async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
     const q = parseQuery(rawQuery)
@@ -162,19 +136,8 @@ export class SearchEngine {
         }
         return this.done(res, t0)
       }
-      switch (effective) {
-        case "fuzzy":
-          await this.runFuzzy(q, limit, res)
-          break
-        case "exact":
-          await this.runGrep(q, limit, res, false, opts)
-          break
-        case "regex":
-          await this.runGrep(q, limit, res, true, opts)
-          break
-        default:
-          await this.runAuto(q, limit, res, opts)
-      }
+      if (effective === "fuzzy") await this.runFuzzy(q, limit, res)
+      else await this.runGrep(q, limit, res, q.regex, opts)
     } catch (err) {
       res.error = (err as Error).message
     }
@@ -187,38 +150,6 @@ export class SearchEngine {
   }
 
   /* ---------------------------------------------------------- strategy -- */
-
-  private async runAuto(q: ParsedQuery, limit: number, res: SearchResponse, opts: SearchOptions) {
-    const text = q.text
-    if (looksLikeRegex(text)) {
-      res.resolved = "regex"
-      return this.runGrep(q, limit, res, true, opts, "auto → regex")
-    }
-    if (q.phrases.length === 1 && !q.words.length && text.startsWith('"')) {
-      res.resolved = "exact"
-      return this.runGrep({ ...q, text: q.phrases[0]! }, limit, res, false, opts, "auto → exact phrase")
-    }
-    const natural = isNaturalLanguage(q)
-    const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = []
-    const names = this.nameMatches(q, limit, 0.55)
-    const keyword = this.keywordMatches(q, Math.max(limit, 50), q.typing, false, natural)
-    // Documents matching only some of the words are weaker evidence.
-    const keywordWeight = this.lastKeywordWasOr ? 0.5 : 1
-    lists.push({ name: "names", weight: natural ? 0.6 : 1.25, items: names, source: "name" })
-    lists.push({ name: "text", weight: keywordWeight, items: keyword, source: "content" })
-    const parts = ["names", "text"]
-    res.resolved = "auto"
-    // Nothing at all? Forgive typos.
-    if (lists.every((l) => l.items.length === 0)) {
-      const typoNames = this.catalog.typo(q.words.join(" "), q.filters, limit).map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions }))
-      const typoText = this.keywordMatches(q, limit, false, true)
-      lists.push({ name: "typo-names", weight: 1, items: typoNames, source: "name" })
-      lists.push({ name: "typo-text", weight: 0.8, items: typoText, source: "content" })
-      parts.splice(0, parts.length, "typo-tolerant names", "text")
-    }
-    res.strategy = `auto → ${parts.join(" + ")}`
-    this.fuse(lists, limit, res, q)
-  }
 
   private async runFuzzy(q: ParsedQuery, limit: number, res: SearchResponse) {
     const query = fuzzyQueryText(q)
@@ -342,14 +273,10 @@ export class SearchEngine {
   /** Vocabulary terms the last typo-tolerant query expanded to (for highlighting). */
   lastExpansions: string[] = []
 
-  keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false, dropStopwords = false): string | null {
+  keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false): string | null {
     const parts: string[] = []
     if (typos) this.lastExpansions = []
-    let words = q.words.filter((w) => /[\p{L}\p{N}]/u.test(w))
-    if (dropStopwords) {
-      const content = words.filter((w) => !STOP.has(w.toLowerCase()) && !QUESTION_WORDS.has(w.toLowerCase()))
-      if (content.length) words = content
-    }
+    const words = q.words.filter((w) => /[\p{L}\p{N}]/u.test(w))
     words.forEach((w, i) => {
       const tokens = foldTerm(w).match(/[\p{L}\p{N}]+/gu)
       if (!tokens) return
@@ -378,12 +305,9 @@ export class SearchEngine {
     return expr
   }
 
-  /** Set when the last keyword search had to fall back to matching any word. */
-  private lastKeywordWasOr = false
 
-  private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false, natural = false): Ranked[] {
-    this.lastKeywordWasOr = false
-    let expr = this.keywordExpr(q, prefixLast, typos, false, natural)
+  private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false): Ranked[] {
+    let expr = this.keywordExpr(q, prefixLast, typos, false)
     if (!expr) return []
     const { sql, params } = this.filterSql(q.filters)
     const run = (e: string) => {
@@ -408,9 +332,8 @@ export class SearchEngine {
     let rows = run(expr)
     // Several words but no document has all of them: fall back to any of them.
     if (rows.length === 0 && q.words.length > 1) {
-      expr = this.keywordExpr(q, prefixLast, typos, true, natural)
+      expr = this.keywordExpr(q, prefixLast, typos, true)
       if (expr) rows = run(expr)
-      this.lastKeywordWasOr = rows.length > 0
     }
     return rows.map((r) => ({ id: r.id, raw: -r.rank }))
   }
@@ -435,7 +358,7 @@ export class SearchEngine {
     return { re, req, ci }
   }
 
-  private async runGrep(q: ParsedQuery, limit: number, res: SearchResponse, isRegex: boolean, opts: SearchOptions, label?: string) {
+  private async runGrep(q: ParsedQuery, limit: number, res: SearchResponse, isRegex: boolean, opts: SearchOptions) {
     const { re, req } = this.buildRegex(q, isRegex)
     const budget = opts.budgetMs ?? 2500
     const deadline = Date.now() + budget
@@ -490,14 +413,16 @@ export class SearchEngine {
         }
       }
     }
-    res.strategy = `${label ?? (isRegex ? "regex" : "exact")} ${expr ? "(indexed)" : "(full scan)"} · ${scanned.toLocaleString("en-US")} of ${candidates.toLocaleString("en-US")} files read`
+    res.strategy = `${isRegex ? "regex" : "exact text"} ${expr ? "(indexed)" : "(full scan)"} · ${scanned.toLocaleString("en-US")} of ${candidates.toLocaleString("en-US")} files read`
     contentHits.sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [
       { name: "names", weight: 1, items: nameHits.map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions })), source: "name" },
       { name: "content", weight: 1, items: contentHits, source: "content" },
     ]
     this.fuse(lists, limit, res, q, true)
-    res.total = Math.max(res.total, nameHits.length + contentHits.length)
+    // A file can match by name and by content: count it once.
+    const ids = new Set([...nameHits.map((m) => this.catalog.ids[m.idx]!), ...contentHits.map((h) => h.id)])
+    res.total = Math.max(res.total, ids.size)
   }
 
   /* ------------------------------------------------------------ fusion -- */
@@ -677,9 +602,9 @@ export class SearchEngine {
     let re: RegExp | null = null
     const effective = q.forcedMode ?? mode
     try {
-      if ((effective === "regex" || (effective === "auto" && looksLikeRegex(q.text))) && q.text) re = this.buildRegex(q, true).re
-      else if (effective === "exact" && q.text) re = this.buildRegex(q, false).re
-      else {
+      if (effective === "find") {
+        if (q.text) re = this.buildRegex(q, q.regex).re
+      } else {
         const p = termsPattern(q.words, q.phrases, q.typing)
         if (p) re = new RegExp(p, "giu")
       }
@@ -688,7 +613,7 @@ export class SearchEngine {
     }
     const matchRanges = new Map<number, [number, number][]>()
     if (re) {
-      const r = /[^\x00-\x7f]/.test(text) && re.flags.includes("u") && !(effective === "regex" || effective === "exact") ? keywordLines(text, re.source, 2000) : findLines(text, re, 2000, 20_000, Date.now() + 500, false)
+      const r = /[^\x00-\x7f]/.test(text) && re.flags.includes("u") && effective === "fuzzy" ? keywordLines(text, re.source, 2000) : findLines(text, re, 2000, 20_000, Date.now() + 500, false)
       for (const l of r.lines) {
         base.matchLines.push(l.line)
         if (!matchRanges.has(l.line)) matchRanges.set(l.line, l.ranges)

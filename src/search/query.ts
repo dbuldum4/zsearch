@@ -1,8 +1,9 @@
 import { home, resolvePath } from "../config.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 
-export type Mode = "auto" | "fuzzy" | "exact" | "regex"
-export const MODES: Mode[] = ["auto", "fuzzy", "exact", "regex"]
+/** `find`: exact text, or a regex written as `/pattern/` or `re:pattern`. `fuzzy`: fzf-style. */
+export type Mode = "find" | "fuzzy"
+export const MODES: Mode[] = ["find", "fuzzy"]
 
 export interface Filters {
   exts: Set<string> | null
@@ -24,8 +25,10 @@ export interface ParsedQuery {
   /** Query text with filters and mode prefixes removed. */
   text: string
   filters: Filters
-  /** Mode forced by syntax (`re:`, `/.../`, `?`, quotes...), else null. */
+  /** Mode forced by syntax (`re:`, `/.../`, `f:`...), else null. */
   forcedMode: Mode | null
+  /** `text` is a regular expression (`/.../`, `re:`). */
+  regex: boolean
   /** Free-text words (unquoted, not negated). */
   words: string[]
   /** Quoted phrases. */
@@ -89,13 +92,14 @@ function parseWhen(v: string, now: number): [number, number] | null {
 }
 
 const FILTER_KEYS = new Set(["ext", "type", "kind", "in", "dir", "path", "size", "mtime", "modified", "changed", "after", "before", "since", "limit", "is"])
-const MODE_PREFIXES: Record<string, Mode> = {
-  "re:": "regex",
-  "regex:": "regex",
-  "grep:": "exact",
-  "exact:": "exact",
-  "fuzzy:": "fuzzy",
-  "f:": "fuzzy",
+const MODE_PREFIXES: Record<string, { mode: Mode; regex: boolean }> = {
+  "re:": { mode: "find", regex: true },
+  "regex:": { mode: "find", regex: true },
+  "find:": { mode: "find", regex: false },
+  "exact:": { mode: "find", regex: false },
+  "grep:": { mode: "find", regex: false },
+  "fuzzy:": { mode: "fuzzy", regex: false },
+  "f:": { mode: "fuzzy", regex: false },
 }
 
 interface Token {
@@ -119,11 +123,13 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   const filters = emptyFilters()
   const warnings: string[] = []
   let forcedMode: Mode | null = null
+  let regex = false
   let s = raw
   const lead = s.trimStart()
-  for (const [prefix, mode] of Object.entries(MODE_PREFIXES)) {
+  for (const [prefix, m] of Object.entries(MODE_PREFIXES)) {
     if (lead.toLowerCase().startsWith(prefix)) {
-      forcedMode = mode
+      forcedMode = m.mode
+      regex = m.regex
       s = lead.slice(prefix.length)
       break
     }
@@ -149,19 +155,19 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   }
   text += s.slice(pos)
   const typing = !/\s$/.test(raw)
-  text = text.replace(/\s{2,}/g, (w) => (forcedMode === "regex" ? w : " ")).trim()
+  text = text.replace(/\s{2,}/g, (w) => (regex ? w : " ")).trim()
 
   // `/pattern/` is a regex.
   if (!forcedMode && /^\/.+\/[imsux]*$/.test(text) && text.length > 2) {
-    forcedMode = "regex"
+    forcedMode = "find"
+    regex = true
     text = text.replace(/^\/(.*)\/[imsux]*$/, "$1")
   }
   const words: string[] = []
   const phrases: string[] = []
   const negated: string[] = []
-  if (forcedMode !== "regex") {
+  if (!regex) {
     const all = tokenize(text)
-    if (!forcedMode && all.length === 1 && all[0]!.quoted && text.startsWith('"')) forcedMode = "exact"
     for (const t of all) {
       if (t.quoted) {
         if (t.text.trim()) phrases.push(t.text)
@@ -170,7 +176,7 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
       } else words.push(t.text)
     }
   }
-  return { raw, text, filters, forcedMode, words, phrases, negated, typing, warnings }
+  return { raw, text, filters, forcedMode, regex, words, phrases, negated, typing, warnings }
 }
 
 function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: number, warnings: string[]): boolean {
