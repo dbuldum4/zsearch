@@ -3,6 +3,8 @@ import { compressText } from "./db.ts"
 import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
 
+const encoder = new TextEncoder()
+
 /** Jobs a worker extracts at once: one can wait (on pdftotext, say) while another computes. */
 export const JOBS_AT_ONCE = 2
 
@@ -22,8 +24,11 @@ export type ExtractReply =
       status: "ok"
       /** Length of the extracted text. */
       chars: number
-      /** Its distinct words, for the full-text index (see `ftsBody`). */
-      body: string
+      /**
+       * Its distinct words, for the full-text index (see `ftsBody`), in UTF-8: bytes go from
+       * thread to thread without a copy, and SQLite reads them as the same text.
+       */
+      body: Uint8Array
       compressed: Uint8Array
       terms: string[]
       truncated: boolean
@@ -66,7 +71,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       id: job.id,
       status: "ok",
       chars: r.text.length,
-      body,
+      body: encoder.encode(body),
       compressed: compressText(r.text),
       terms: newTerms(terms, job.run),
       truncated: r.truncated,

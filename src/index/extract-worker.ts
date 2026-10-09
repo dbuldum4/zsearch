@@ -21,7 +21,7 @@ function pump() {
     running++
     processJob(job, opts).then((reply) => {
       running--
-      if (reply.status === "ok") postMessage(reply, [reply.compressed.buffer as ArrayBuffer])
+      if (reply.status === "ok") postMessage(reply, [reply.body.buffer as ArrayBuffer, reply.compressed.buffer as ArrayBuffer])
       else postMessage(reply)
       pump()
     })

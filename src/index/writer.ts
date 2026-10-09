@@ -18,12 +18,20 @@ export interface ContentItem {
 }
 
 /**
+ * FTS5 writes out what it gathers whenever that passes `hashsize` (1 MB by default), and merges
+ * the small segments as it goes: with 8 MB, building the index costs about a third less. A
+ * transaction rarely gathers more, as the indexer commits about once a second.
+ */
+const FTS_HASH_SIZE = 8 << 20
+
+/**
  * Stores extracted contents: the file's FTS row, its compressed text and its state, plus the
  * new vocabulary terms. Writes go into a transaction that `commit` ends.
  */
 export class ContentWriter {
   private manualDelete: boolean
   private inTx = false
+  private tuned = false
   private fresh: string[] = []
   private st: Record<"setState" | "ftsInsert" | "ftsDeleteRow" | "ftsDeleteManual" | "contentGet" | "contentPut" | "contentDel" | "vocabPut", Statement>
 
@@ -47,6 +55,12 @@ export class ContentWriter {
     if (!this.inTx) {
       this.db.exec("BEGIN")
       this.inTx = true
+      if (!this.tuned) {
+        // A setting of the table, kept in the database: set once, in the first transaction.
+        const row = this.db.query("SELECT v FROM fts_config WHERE k = 'hashsize'").get() as { v: number } | null
+        if (row?.v !== FTS_HASH_SIZE) this.db.query("INSERT INTO fts(fts, rank) VALUES ('hashsize', ?)").run(FTS_HASH_SIZE)
+        this.tuned = true
+      }
     }
     for (const t of fresh) this.fresh.push(t)
     for (const item of items) this.store(item)
@@ -142,8 +156,19 @@ export class InlineSink implements ContentSink {
   }
 }
 
-export type WriteWorkerIn = { type: "open"; path: string } | { type: "write"; items: ContentItem[]; fresh: string[]; bytes: number } | { type: "commit" }
+export type WriteWorkerIn =
+  | { type: "open"; path: string; role: "writer" | "checkpointer" }
+  | { type: "write"; items: ContentItem[]; fresh: string[]; bytes: number }
+  | { type: "commit" }
+  | { type: "checkpoint" }
 export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "committed" } | { type: "error"; error: string }
+
+/**
+ * The writer leaves copying the log into the database (and the syncs that go with it) to a
+ * thread of its own, which does it after each commit. SQLite still does it on the writer's
+ * connection once the log passes this many pages, so the log cannot grow without bound.
+ */
+export const WRITER_AUTOCHECKPOINT = 8192
 
 /**
  * Writes on a thread of its own, with its own connection, so that the indexer thread can take
@@ -152,6 +177,7 @@ export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "commi
  */
 export class ThreadSink implements ContentSink {
   private worker: Worker
+  private checkpointer: Worker
   private sent = 0
   private written = 0
   private commits = 0
@@ -170,6 +196,7 @@ export class ThreadSink implements ContentSink {
       if (m.type === "written") this.written += m.bytes
       else if (m.type === "committed") {
         this.commits--
+        this.checkpointer.postMessage({ type: "checkpoint" } satisfies WriteWorkerIn)
         this.onCommit?.()
       } else this.error ??= m.error
       this.onProgress?.()
@@ -182,7 +209,12 @@ export class ThreadSink implements ContentSink {
       this.onProgress?.()
       for (const w of this.waiters.splice(0)) w()
     }
-    this.post({ type: "open", path })
+    this.post({ type: "open", path, role: "writer" })
+    // Its failures do not matter: the writer's connection and the indexer's last checkpoint
+    // do the copying anyway.
+    this.checkpointer = new Worker(workerUrl("index/write-worker.ts"))
+    this.checkpointer.onerror = (ev) => ev.preventDefault?.()
+    this.checkpointer.postMessage({ type: "open", path, role: "checkpointer" } satisfies WriteWorkerIn)
   }
 
   private post(msg: WriteWorkerIn, transfer: ArrayBuffer[] = []) {
@@ -202,7 +234,7 @@ export class ThreadSink implements ContentSink {
     const bytes = itemBytes(items)
     this.sent += bytes
     const transfer: ArrayBuffer[] = []
-    for (const { reply: r } of items) if (r.status === "ok") transfer.push(r.compressed.buffer as ArrayBuffer)
+    for (const { reply: r } of items) if (r.status === "ok") transfer.push(r.body.buffer as ArrayBuffer, r.compressed.buffer as ArrayBuffer)
     this.post({ type: "write", items, fresh, bytes }, transfer)
   }
 
@@ -215,16 +247,20 @@ export class ThreadSink implements ContentSink {
     this.commit()
     while (this.commits > 0 && !this.error) await new Promise<void>((r) => this.waiters.push(r))
     this.worker.terminate()
+    this.checkpointer.terminate()
     if (this.error) throw new Error(this.error)
   }
 
   abandon() {
     // Terminating the thread closes its connection, which rolls back what it has not committed.
     this.worker.terminate()
+    this.checkpointer.terminate()
   }
 }
 
 /** Opens the writer's own connection to the database at `path`. */
 export function openWriter(path: string): ContentWriter {
-  return new ContentWriter(openDb(path))
+  const db = openDb(path)
+  db.exec(`PRAGMA wal_autocheckpoint = ${WRITER_AUTOCHECKPOINT}`)
+  return new ContentWriter(db)
 }

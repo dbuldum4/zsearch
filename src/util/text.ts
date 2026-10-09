@@ -37,14 +37,86 @@ const ASCII_SEPARATORS = /[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/
 export function indexTerms(text: string): { body: string; terms: Iterable<string> } {
   if (!NON_ASCII.test(text)) {
     // ASCII: the tokens are exactly the runs of letters and digits, lower-cased.
-    const words = new Set(text.toLowerCase().match(ASCII_WORD))
-    const body = [...words].join(" ")
-    for (const w of words) if (w.length > 64) words.delete(w)
-    return { body, terms: words }
+    const words = asciiWords(text.toLowerCase())
+    const body = words.join(" ")
+    return { body, terms: words.some((w) => w.length > 64) ? words.filter((w) => w.length <= 64) : words }
   }
   // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer.
   const body = [...new Set(text.split(ASCII_SEPARATORS))].join(" ")
   return { body, terms: uniqueTerms(body) }
+}
+
+/**
+ * The distinct runs of [a-z0-9] in a lower-cased ASCII text, in order. A hash table of where
+ * each was first seen: only new words become strings, which takes about half the time of
+ * collecting every word and putting them in a Set.
+ */
+const words = { hash: new Int32Array(4096), start: new Int32Array(4096), len: new Int32Array(4096), gen: new Int32Array(4096), now: 0 }
+
+function asciiWords(s: string): string[] {
+  const t = words
+  if (++t.now === 0x7fffffff) {
+    t.gen.fill(0)
+    t.now = 1
+  }
+  const out: string[] = []
+  const n = s.length
+  let i = 0
+  while (i < n) {
+    let c = s.charCodeAt(i)
+    if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57))) {
+      i++
+      continue
+    }
+    const start = i
+    // FNV-1a
+    let h = 0x811c9dc5 | 0
+    do {
+      h = Math.imul(h ^ c, 0x01000193)
+      c = ++i < n ? s.charCodeAt(i) : 0
+    } while ((c >= 97 && c <= 122) || (c >= 48 && c <= 57))
+    const len = i - start
+    const mask = t.gen.length - 1
+    let j = h & mask
+    let seen = false
+    while (t.gen[j] === t.now) {
+      if (t.hash[j] === h && t.len[j] === len) {
+        const o = t.start[j]!
+        let k = 0
+        while (k < len && s.charCodeAt(o + k) === s.charCodeAt(start + k)) k++
+        if (k === len) {
+          seen = true
+          break
+        }
+      }
+      j = (j + 1) & mask
+    }
+    if (seen) continue
+    t.gen[j] = t.now
+    t.hash[j] = h
+    t.start[j] = start
+    t.len[j] = len
+    out.push(s.slice(start, i))
+    if (out.length * 2 > t.gen.length) growWords()
+  }
+  return out
+}
+
+/** Double the table, keeping the current text's words. */
+function growWords() {
+  const old = words
+  const size = old.gen.length * 2
+  const t = { hash: new Int32Array(size), start: new Int32Array(size), len: new Int32Array(size), gen: new Int32Array(size), now: old.now }
+  for (let i = 0; i < old.gen.length; i++) {
+    if (old.gen[i] !== old.now) continue
+    let j = old.hash[i]! & (size - 1)
+    while (t.gen[j] === t.now) j = (j + 1) & (size - 1)
+    t.gen[j] = t.now
+    t.hash[j] = old.hash[i]!
+    t.start[j] = old.start[i]!
+    t.len[j] = old.len[i]!
+  }
+  Object.assign(words, t)
 }
 
 /** The FTS `body` of a text (see `indexTerms`). */

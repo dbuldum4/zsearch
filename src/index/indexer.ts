@@ -59,6 +59,8 @@ const WRITE_RUN = 4096
 const SKIP_AFTER = 256
 /** Results held back behind slow files, at most: beyond this they are written anyway. */
 const MAX_HELD_BYTES = 64 * 1024 * 1024
+/** Extraction jobs started while the scan is still going, at most. */
+const EARLY_JOBS = 2048
 
 interface Existing {
   id: number
@@ -67,6 +69,7 @@ interface Existing {
   state: number
   isDir: boolean
   kind: string
+  inFts: number
 }
 
 function under(path: string, prefix: string): boolean {
@@ -107,6 +110,11 @@ export class Indexer {
   private manualDelete: boolean
   private h = home()
   private runId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  /** Extraction workers, started by the scan once it finds contents to extract. */
+  private pool: ExtractPool | null = null
+  /** Extractions started during the scan, by file id. */
+  private early = new Map<number, Promise<ExtractReply>>()
+  private earlyBytes = 0
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -201,6 +209,16 @@ export class Indexer {
 
   async run(): Promise<IndexProgress> {
     try {
+      return await this.runPhases()
+    } finally {
+      this.pool?.close()
+      this.pool = null
+      this.early.clear()
+    }
+  }
+
+  private async runPhases(): Promise<IndexProgress> {
+    try {
       setMeta(this.db, "indexing_started_at", String(this.progress.startedAt))
       const removed = this.scan()
       if (this.aborted) return this.finish("cancelled")
@@ -238,7 +256,7 @@ export class Indexer {
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
-    for (const r of this.db.query("SELECT id, path, size, mtime, content_state AS state, is_dir, kind FROM files").iterate() as IterableIterator<{
+    for (const r of this.db.query("SELECT id, path, size, mtime, content_state AS state, is_dir, kind, in_fts FROM files").iterate() as IterableIterator<{
       id: number
       path: string
       size: number
@@ -246,14 +264,17 @@ export class Indexer {
       state: number
       is_dir: number
       kind: string
+      in_fts: number
     }>) {
-      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, state: r.state, isDir: r.is_dir === 1, kind: r.kind })
+      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
     }
     const visited = new Set<number>()
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }
     const crawlOpts = crawlOptionsFor(this.config)
     let batch: (() => void)[] = []
+    /** Files the batch makes wait for their contents. */
+    let waiting: Pending[] = []
     let lastCommit = Date.now()
     const commit = () => {
       if (!batch.length) return
@@ -264,6 +285,8 @@ export class Indexer {
       })()
       lastCommit = Date.now()
       this.opts.onCommit?.()
+      this.startEarly(waiting)
+      waiting = []
     }
     for (const e of crawl(crawlOpts, stats)) {
       if (this.aborted) break
@@ -281,7 +304,11 @@ export class Indexer {
         const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
-          if (wants && prev.state === ContentState.None) batch.push(() => this.st.setState.run(ContentState.Pending, 0, null, prev.id))
+          if (wants && prev.state === ContentState.None)
+            batch.push(() => {
+              this.st.setState.run(ContentState.Pending, 0, null, prev.id)
+              waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
+            })
           else if (!wants && prev.state !== ContentState.None) batch.push(() => this.dropContent(prev.id, e.path, ContentState.None, null))
           continue
         }
@@ -289,6 +316,7 @@ export class Indexer {
         batch.push(() => {
           if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, ContentState.None, null)
           this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, wants ? ContentState.Pending : ContentState.None, prev.id)
+          if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
         })
       } else {
         this.progress.added++
@@ -299,7 +327,7 @@ export class Indexer {
           if (!wants) {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
-          }
+          } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0 })
         })
       }
       if (batch.length >= 2000 || Date.now() - lastCommit > 250) commit()
@@ -330,30 +358,61 @@ export class Indexer {
 
   /* ---------------------------------------------------------- content -- */
 
+  private startPool(files: number): ExtractPool {
+    const c = this.config.content
+    const workers = this.config.workers > 0 ? this.config.workers : ExtractPool.defaultSize()
+    this.pool = new ExtractPool(
+      Math.min(workers, Math.max(1, Math.ceil(files / 4))),
+      { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
+      JOBS_PER_WORKER,
+      this.opts.inProcess,
+    )
+    return this.pool
+  }
+
+  /** Extraction cost of a file, roughly: documents count by the text they can yield at most. */
+  private cost(p: Pending): number {
+    return Math.min(p.size, this.config.content.maxTextMB * 1024 * 1024)
+  }
+
+  private extract(pool: ExtractPool, p: Pending): Promise<ExtractReply> {
+    return pool.run({ id: p.id, path: p.path, ext: p.ext, kind: p.kind, size: p.size, run: this.runId })
+  }
+
+  /**
+   * Start extracting files the scan just committed, while it goes on: the workers would wait
+   * for it otherwise. Their results wait here until the content phase writes them first.
+   */
+  private startEarly(files: Pending[]) {
+    if (this.opts.inProcess) return
+    for (const p of files) {
+      if (this.early.size >= EARLY_JOBS || this.earlyBytes + this.cost(p) > MAX_INFLIGHT_BYTES) break
+      this.earlyBytes += this.cost(p)
+      this.early.set(p.id, this.extract(this.pool ?? this.startPool(files.length), p))
+    }
+    // The scan keeps this thread busy: the jobs go out now rather than at its end.
+    this.pool?.flush()
+  }
+
   private async content() {
-    const pending = this.db
+    const all = this.db
       .query("SELECT id, path, ext, kind, size, in_fts AS inFts FROM files WHERE content_state = ? ORDER BY mtime DESC")
       .all(ContentState.Pending) as Pending[]
     this.progress.phase = "content"
-    this.progress.contentTotal = pending.length
+    this.progress.contentTotal = all.length
     this.emit(true)
-    if (pending.length === 0) return
-    // Newest files first, in runs of files taken in rowid order: FTS5 writes out what it has
-    // gathered whenever a rowid is lower than the last one, and many small segments cost more to
-    // write and then to merge.
+    if (all.length === 0) return
+    // The files started during the scan come first. Then the newest files, in runs of files
+    // taken in rowid order: FTS5 writes out what it has gathered whenever a rowid is lower than
+    // the last one, and many small segments cost more to write and then to merge.
+    const started = all.filter((p) => this.early.has(p.id)).sort((a, b) => a.id - b.id)
+    const pending = all.filter((p) => !this.early.has(p.id))
     for (let i = 0; i < pending.length; i += WRITE_RUN) {
       const run = pending.slice(i, i + WRITE_RUN).sort((a, b) => a.id - b.id)
       for (let k = 0; k < run.length; k++) pending[i + k] = run[k]!
     }
-    const c = this.config.content
-    const workers = this.config.workers > 0 ? this.config.workers : ExtractPool.defaultSize()
-    const maxTextBytes = c.maxTextMB * 1024 * 1024
-    const pool = new ExtractPool(
-      Math.min(workers, Math.max(1, Math.ceil(pending.length / 4))),
-      { maxTextBytes, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
-      JOBS_PER_WORKER,
-      this.opts.inProcess,
-    )
+    pending.unshift(...started)
+    const pool = this.pool ?? this.startPool(pending.length)
 
     // Resolved by the next finished job, or when the writer catches up. Promise.race over every
     // job in flight would cost a pass over all of them per job, and leave a reaction behind on each.
@@ -417,12 +476,36 @@ export class Indexer {
       sink.write(items, fresh)
     }
 
-    // Jobs in flight are bounded by their size as well as their number. Documents count by the
-    // text they can yield at most, roughly.
-    const cost = (p: Pending) => Math.min(p.size, maxTextBytes)
+    // Jobs in flight are bounded by their size as well as their number.
+    const cost = (p: Pending) => this.cost(p)
     let inflightBytes = 0
     let next = 0
     let active = 0
+    const launch = (reply: Promise<ExtractReply>) => {
+      const i = next++
+      const job = pending[i]!
+      active++
+      inflightBytes += cost(job)
+      reply.then((r) => {
+        active--
+        inflightBytes -= cost(job)
+        done[i] = r
+        if (late.delete(i)) lateDone.push(i)
+        else ahead++
+        this.progress.contentDone++
+        if (r.status === "ok") {
+          this.progress.contentBytes += r.chars
+          heldBytes += r.body.length + r.compressed.length
+        }
+        if (r.status === "error") this.progress.contentErrors++
+        this.progress.current = job.path
+        this.emit()
+        wake?.()
+      })
+    }
+    for (const p of started) launch(this.early.get(p.id)!)
+    this.early.clear()
+    this.earlyBytes = 0
     // The workers are topped up once half their queue is done, so jobs go out in batches.
     const refill = Math.max(1, pool.slots >> 1)
     let ok = false
@@ -434,25 +517,7 @@ export class Indexer {
           while (next < pending.length && pool.capacity > 0 && !this.aborted) {
             const job = pending[next]!
             if (active && inflightBytes + cost(job) > MAX_INFLIGHT_BYTES) break
-            const i = next++
-            active++
-            inflightBytes += cost(job)
-            pool.run({ id: job.id, path: job.path, ext: job.ext, kind: job.kind, size: job.size, run: this.runId }).then((r) => {
-              active--
-              inflightBytes -= cost(job)
-              done[i] = r
-              if (late.delete(i)) lateDone.push(i)
-              else ahead++
-              this.progress.contentDone++
-              if (r.status === "ok") {
-                this.progress.contentBytes += r.chars
-                heldBytes += r.body.length + r.compressed.length
-              }
-              if (r.status === "error") this.progress.contentErrors++
-              this.progress.current = job.path
-              this.emit()
-              wake?.()
-            })
+            launch(this.extract(pool, job))
           }
         }
         if (this.aborted) break
@@ -468,6 +533,7 @@ export class Indexer {
       ok = true
     } finally {
       pool.close()
+      this.pool = null
       if (!ok) sink.abandon()
     }
     await sink.close()

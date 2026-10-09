@@ -119,7 +119,8 @@ export class ExtractPool {
     }
   }
 
-  private flush() {
+  /** Send what is queued now, rather than at the end of the current task. */
+  flush() {
     this.flushQueued = false
     for (const [w, jobs] of this.outbox) {
       const msg: ExtractWorkerIn = { jobs }
