@@ -144,6 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey(choice) { [weak self] in
             MainActor.assumeIsolated { self?.toggleMainWindow() }
         }
+        // macOS refuses a shortcut another app (Alfred, Raycast, …) already registered: say so in Settings.
+        let taken = choice != .off && hotKey == nil
+        if UserDefaults.standard.bool(forKey: AppSettings.hotKeyTaken) != taken {
+            UserDefaults.standard.set(taken, forKey: AppSettings.hotKeyTaken)
+        }
     }
 
     /// The hotkey shows zsearch, or hides it when it is already in front.

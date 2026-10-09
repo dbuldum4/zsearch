@@ -21,12 +21,15 @@ struct SettingsView: View {
 enum AppSettings {
     static let showMenuBarItem = "showMenuBarItem"
     static let hotKey = "hotKey"
+    /// Set when the chosen shortcut could not be registered (another app has it).
+    static let hotKeyTaken = "hotKeyTaken"
 }
 
 private struct GeneralSettings: View {
     @Environment(SearchModel.self) private var model
     @AppStorage(AppSettings.showMenuBarItem) private var showMenuBarItem = true
     @AppStorage(AppSettings.hotKey) private var hotKey = HotKeyChoice.optionSpace.rawValue
+    @AppStorage(AppSettings.hotKeyTaken) private var hotKeyTaken = false
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
@@ -38,6 +41,11 @@ private struct GeneralSettings: View {
             }
             Picker("Shortcut to show zsearch", selection: $hotKey) {
                 ForEach(HotKeyChoice.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+            if hotKeyTaken {
+                Text("Another app already uses this shortcut. Pick a different one, or change it in that app.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
             Toggle("Show zsearch in the menu bar", isOn: $showMenuBarItem)
             Text(showMenuBarItem ? "zsearch keeps running in the menu bar when its window is closed." : "Closing the window quits zsearch.")
@@ -62,6 +70,8 @@ private struct GeneralSettings: View {
     }
 
     private func setOpenAtLogin(_ on: Bool) {
+        // Also called when a failure below puts the toggle back: nothing to do then.
+        guard on != (SMAppService.mainApp.status == .enabled) else { return }
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             loginError = nil
