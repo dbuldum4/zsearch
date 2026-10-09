@@ -12,8 +12,25 @@ let latestSearch = 0
 let latestPreview = 0
 const send = (m: SearchOut) => postMessage(m)
 
+// Idle work: decode stored texts into the engine's cache in small slices, only after a quiet
+// second, so it never competes with a search.
+let lastRequest = 0
+let warmTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleWarm(delay: number) {
+  if (warmTimer) clearTimeout(warmTimer)
+  warmTimer = setTimeout(warmStep, delay)
+}
+function warmStep() {
+  warmTimer = null
+  if (!engine) return
+  const quiet = Date.now() - lastRequest
+  if (quiet < 1000) return scheduleWarm(1000 - quiet)
+  if (engine.warmTexts(8)) scheduleWarm(2)
+}
+
 self.onmessage = async (ev: MessageEvent<SearchIn>) => {
   const msg = ev.data
+  lastRequest = Date.now()
   try {
     switch (msg.type) {
       case "init": {
@@ -63,4 +80,6 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
   } catch (err) {
     send({ type: "error", qid: "qid" in msg ? (msg as { qid?: number }).qid : undefined, error: (err as Error).message })
   }
+  // Any request may have picked up index changes (which empty the cache): warm it again once idle.
+  scheduleWarm(1000)
 }

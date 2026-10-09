@@ -109,7 +109,7 @@ describe("indexer", () => {
     expect(s.errors).toBe(0)
     expect(s.pending).toBe(0)
     expect(ftsCount(db, "photosynthesis")).toBe(1)
-    expect(ftsCount(db, '"twelve percent"')).toBe(1)
+    expect(ftsCount(db, "twelve AND percent")).toBe(1) // no positions are stored, so no phrase queries
     expect(ftsCount(db, "name : holiday")).toBe(1) // media files are searchable by name
   })
 

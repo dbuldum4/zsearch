@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { readVocabChunks } from "../index/db.ts"
 import { editDistance, foldTerm, ftsQuote } from "../util/text.ts"
 import type { Req } from "./regex-plan.ts"
 
@@ -25,21 +26,23 @@ export class Vocab {
       this.maxId = 0
       this.byLen.clear()
     }
-    const rows = db.query("SELECT id, term FROM vocab WHERE id > ? ORDER BY id").all(this.maxId) as { id: number; term: string }[]
-    if (!rows.length) return
+    const chunks = readVocabChunks(db, this.maxId)
+    if (!chunks.length) return
     const parts: string[] = []
     let off = this.joined.length
-    for (const r of rows) {
-      this.offsets.push(off)
-      parts.push(r.term)
-      off += r.term.length + 1
-      let bucket = this.byLen.get(r.term.length)
-      if (!bucket) this.byLen.set(r.term.length, (bucket = []))
-      bucket.push(r.term)
-      if (r.id > this.maxId) this.maxId = r.id
+    for (const c of chunks) {
+      for (const term of c.terms) {
+        this.offsets.push(off)
+        parts.push(term)
+        off += term.length + 1
+        let bucket = this.byLen.get(term.length)
+        if (!bucket) this.byLen.set(term.length, (bucket = []))
+        bucket.push(term)
+      }
+      this.maxId = c.id
     }
     this.joined += parts.join("\n") + "\n"
-    this.count += rows.length
+    this.count += parts.length
   }
 
   private termAt(offset: number): string {

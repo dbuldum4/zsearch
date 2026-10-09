@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -57,8 +57,8 @@ function migrate(db: Database, opts: OpenOptions) {
   const version = Number(getMeta(db, "schema_version") ?? 0)
   if (version === SCHEMA_VERSION) return
   db.transaction(() => {
-    // "chunks" held semantic search vectors before version 6.
-    for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
+    // "chunks" held semantic search vectors before version 6; "vocab" was one row per term before version 7.
+    for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab", "vocab_chunks"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
     db.exec(`CREATE TABLE files (
       id INTEGER PRIMARY KEY,
       path TEXT NOT NULL UNIQUE,
@@ -77,10 +77,15 @@ function migrate(db: Database, opts: OpenOptions) {
     db.exec("CREATE TABLE content (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
     const contentlessDelete = !opts.manualFtsDelete && versionAtLeast(sqliteVersion, 3, 43)
+    // detail=column keeps which columns hold a term but not its positions: about a third of the
+    // size of detail=full. Phrases are matched as AND of their words; exact text and regex
+    // searches check every candidate against the stored text anyway. No prefix index: prefix
+    // queries scan the sorted term list, which is fast enough and saves another third.
     db.exec(
-      `CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', ${contentlessDelete ? "contentless_delete=1, " : ""}tokenize='unicode61 remove_diacritics 2', prefix='3')`,
+      `CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', ${contentlessDelete ? "contentless_delete=1, " : ""}tokenize='unicode61 remove_diacritics 2', detail=column)`,
     )
-    db.exec("CREATE TABLE vocab (id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE)")
+    // The content vocabulary, append-only: each row is a compressed, newline-separated batch of new terms.
+    db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
     db.exec("CREATE TABLE IF NOT EXISTS frecency (path TEXT PRIMARY KEY, count INTEGER NOT NULL, last INTEGER NOT NULL)")
     db.exec("DELETE FROM meta WHERE key <> 'created_at'")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
@@ -101,27 +106,49 @@ export function setMeta(db: Database, key: string, value: string): void {
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-/** Texts below this size are stored uncompressed: per-call codec overhead would dominate. */
-const COMPRESS_MIN = 8192
+/**
+ * Stored text: one header byte (0 = raw UTF-8, 1 = zstd, 2 = deflate) followed by the payload.
+ * Searches decompress every candidate, and both codecs cost tens of microseconds per call, so
+ * small texts stay raw, mid-sized ones use deflate (cheapest per call) and large ones zstd
+ * (fastest per byte). On a mixed corpus this stores about half the bytes of raw text.
+ */
+const RAW_BELOW = 1024
+const ZSTD_FROM = 16 * 1024
 
-/** Stored text: one header byte (0 = raw UTF-8, 1 = zstd) followed by the payload. */
-export function compressText(text: string): Uint8Array {
-  const raw = encoder.encode(text)
-  if (raw.length < COMPRESS_MIN) {
-    const out = new Uint8Array(raw.length + 1)
-    out.set(raw, 1)
-    return out
-  }
-  const z = Bun.zstdCompressSync(raw, { level: 3 })
-  const out = new Uint8Array(z.length + 1)
-  out[0] = 1
-  out.set(z, 1)
+function withHeader(kind: number, payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(payload.length + 1)
+  out[0] = kind
+  out.set(payload, 1)
   return out
 }
 
+export function compressText(text: string): Uint8Array {
+  const raw = encoder.encode(text)
+  if (raw.length >= RAW_BELOW) {
+    const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 3 }) : Bun.deflateSync(raw, { level: 6 })
+    if (z.length < raw.length) return withHeader(raw.length >= ZSTD_FROM ? 1 : 2, z)
+  }
+  return withHeader(0, raw)
+}
+
 export function decompressText(data: Uint8Array): string {
-  if (data[0] === 1) return decoder.decode(Bun.zstdDecompressSync(data.subarray(1)))
-  return decoder.decode(data.subarray(1))
+  const body = data.subarray(1)
+  if (data[0] === 1) return decoder.decode(Bun.zstdDecompressSync(body))
+  if (data[0] === 2) return decoder.decode(Bun.inflateSync(body as Uint8Array<ArrayBuffer>))
+  return decoder.decode(body)
+}
+
+/** Vocabulary chunks with an id above `afterId`, oldest first: each is a list of new terms. */
+export function readVocabChunks(db: Database, afterId = 0): { id: number; terms: string[] }[] {
+  const rows = db.query("SELECT id, terms FROM vocab_chunks WHERE id > ? ORDER BY id").all(afterId) as { id: number; terms: Uint8Array }[]
+  return rows.map((r) => ({ id: r.id, terms: decompressText(r.terms).split("\n") }))
+}
+
+/** Every term in the vocabulary. */
+export function loadVocabTerms(db: Database): Set<string> {
+  const out = new Set<string>()
+  for (const c of readVocabChunks(db)) for (const t of c.terms) out.add(t)
+  return out
 }
 
 /** Read the stored (extracted) text of a file, or null. */

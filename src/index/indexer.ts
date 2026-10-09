@@ -5,7 +5,7 @@ import { extOf, kindOf, type Kind } from "../kinds.ts"
 import { cloudFolders, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
 import { dirTokens, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
-import { ContentState, decompressText, getMeta, setMeta } from "./db.ts"
+import { compressText, ContentState, decompressText, getMeta, loadVocabTerms, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import type { ExtractReply } from "./extract-job.ts"
 import { ExtractPool } from "./pool.ts"
@@ -133,7 +133,7 @@ export class Indexer {
       contentPut: q("INSERT INTO content(id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data"),
       contentDel: q("DELETE FROM content WHERE id = ?"),
       fileDel: q("DELETE FROM files WHERE id = ?"),
-      vocabPut: q("INSERT OR IGNORE INTO vocab(term) VALUES (?)"),
+      vocabPut: q("INSERT INTO vocab_chunks(terms) VALUES (?)"),
     }
   }
 
@@ -326,7 +326,9 @@ export class Indexer {
       const work = results
       results = []
       this.db.transaction(() => {
-        for (const r of work) this.storeResult(r, paths.get(r.id)!)
+        const fresh: string[] = []
+        for (const r of work) this.storeResult(r, paths.get(r.id)!, fresh)
+        if (fresh.length) this.st.vocabPut.run(compressText(fresh.join("\n")))
       })()
       lastCommit = Date.now()
       this.opts.onCommit?.()
@@ -358,7 +360,10 @@ export class Indexer {
     }
   }
 
-  private storeResult(r: ExtractReply, path: string) {
+  /** Content terms already in the vocabulary, loaded the first time contents are stored. */
+  private known: Set<string> | null = null
+
+  private storeResult(r: ExtractReply, path: string, fresh: string[]) {
     const hadBody = this.manualDelete ? this.storedBody(r.id) : null
     this.ftsDelete(r.id, path, hadBody)
     const f = this.ftsFields(path)
@@ -366,7 +371,12 @@ export class Indexer {
       this.st.ftsInsert.run(r.id, f.name, f.dirs, r.text)
       this.st.contentPut.run(r.id, r.compressed)
       this.st.setState.run(ContentState.Indexed, r.text.length, r.truncated ? "truncated" : null, r.id)
-      for (const t of r.terms) this.st.vocabPut.run(t)
+      this.known ??= loadVocabTerms(this.db)
+      for (const t of r.terms) {
+        if (this.known.has(t)) continue
+        this.known.add(t)
+        fresh.push(t)
+      }
     } else {
       this.st.ftsInsert.run(r.id, f.name, f.dirs, "")
       this.st.contentDel.run(r.id)

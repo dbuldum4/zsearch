@@ -79,6 +79,54 @@ export interface SearchOptions {
   budgetMs?: number
 }
 
+const FETCH_BATCH = 64
+
+/**
+ * Decoded texts by file id, least recently used first. Searching while typing reads the same
+ * candidates keystroke after keystroke; this skips their decompression. Cleared whenever the
+ * index changes, so it never serves stale text.
+ */
+class TextCache {
+  private map = new Map<number, string>()
+  private chars = 0
+
+  constructor(private maxChars: number) {}
+
+  get(id: number): string | undefined {
+    const t = this.map.get(id)
+    if (t !== undefined) {
+      this.map.delete(id)
+      this.map.set(id, t)
+    }
+    return t
+  }
+
+  set(id: number, text: string) {
+    if (text.length > this.maxChars / 8) return
+    const old = this.map.get(id)
+    if (old !== undefined) {
+      this.chars -= old.length
+      this.map.delete(id)
+    }
+    this.map.set(id, text)
+    this.chars += text.length
+    for (const [k, v] of this.map) {
+      if (this.chars <= this.maxChars) break
+      this.map.delete(k)
+      this.chars -= v.length
+    }
+  }
+
+  clear() {
+    this.map.clear()
+    this.chars = 0
+  }
+
+  get full(): boolean {
+    return this.chars >= this.maxChars * 0.9
+  }
+}
+
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
 
 export class SearchEngine {
@@ -100,6 +148,8 @@ export class SearchEngine {
     const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
     if (!force && dv === this.dataVersion) return false
     this.dataVersion = dv
+    this.texts.clear()
+    this.warmOrder = null
     const gen = `${getMeta(this.db, "generation") ?? 0}:${getMeta(this.db, "schema_version")}`
     const full = force || gen !== this.generation
     this.generation = gen
@@ -281,9 +331,8 @@ export class SearchEngine {
       const tokens = foldTerm(w).match(/[\p{L}\p{N}]+/gu)
       if (!tokens) return
       const isLast = i === words.length - 1
-      const phrase = ftsQuote(tokens.join(" "))
       const prefix = prefixLast && isLast && tokens[tokens.length - 1]!.length >= 3
-      let expr = prefix ? `${phrase}*` : phrase
+      let expr = ftsWords(tokens, prefix)
       if (typos && tokens.length === 1) {
         const t = tokens[0]!
         const alts = new Set<string>([...this.vocab.similar(t)])
@@ -296,7 +345,7 @@ export class SearchEngine {
     })
     for (const p of q.phrases) {
       const tokens = foldTerm(p).match(/[\p{L}\p{N}]+/gu)
-      if (tokens) parts.push(ftsQuote(tokens.join(" ")))
+      if (tokens) parts.push(ftsWords(tokens, false))
     }
     if (!parts.length) return null
     let expr = parts.join(any ? " OR " : " AND ")
@@ -338,6 +387,57 @@ export class SearchEngine {
     return rows.map((r) => ({ id: r.id, raw: -r.rank }))
   }
 
+  private fetchStmt: ReturnType<Database["query"]> | null = null
+  /** About 48 MB of decoded text (UTF-16). */
+  private texts = new TextCache(24_000_000)
+
+  /** Catalog positions newest first, and how far `warmTexts` got through them. */
+  private warmOrder: number[] | null = null
+  private warmPos = 0
+
+  /**
+   * Decode the newest files' texts into the cache, for at most `budgetMs`. Called while the
+   * engine is idle so that the first searches after start-up or an index change are warm.
+   * Returns false when there is nothing left to do.
+   */
+  warmTexts(budgetMs: number): boolean {
+    const cat = this.catalog
+    if (!this.warmOrder) {
+      this.warmOrder = Array.from({ length: cat.size }, (_, i) => i).filter((i) => !cat.isDir[i])
+      this.warmOrder.sort((a, b) => cat.mtimes[b]! - cat.mtimes[a]!)
+      this.warmPos = 0
+    }
+    const end = performance.now() + budgetMs
+    while (this.warmPos < this.warmOrder.length && !this.texts.full) {
+      if (performance.now() > end) return true
+      const ids = this.warmOrder.slice(this.warmPos, this.warmPos + FETCH_BATCH).map((i) => cat.ids[i]!)
+      this.warmPos += FETCH_BATCH
+      for (const row of this.fetchContent(ids)) this.storedText(row.id, row.data)
+    }
+    return false
+  }
+
+  /** A file's stored text, decoded (cached), or null if it has none. */
+  private storedText(id: number, data?: Uint8Array): string | null {
+    const cached = this.texts.get(id)
+    if (cached !== undefined) return cached
+    if (!data) {
+      const row = this.db.query("SELECT data FROM content WHERE id = ?").get(id) as { data: Uint8Array } | null
+      if (!row) return null
+      data = row.data
+    }
+    const text = decompressText(data)
+    this.texts.set(id, text)
+    return text
+  }
+
+  /** Stored texts for up to FETCH_BATCH ids, in no particular order. */
+  private fetchContent(ids: number[]): { id: number; data: Uint8Array }[] {
+    this.fetchStmt ??= this.db.query(`SELECT id, data FROM content WHERE id IN (${Array(FETCH_BATCH).fill("?").join(",")})`)
+    const args = ids.length === FETCH_BATCH ? ids : [...ids, ...Array(FETCH_BATCH - ids.length).fill(-1)]
+    return this.fetchStmt.all(...args) as { id: number; data: Uint8Array }[]
+  }
+
   /* ---------------------------------------------------- regex / exact -- */
 
   private buildRegex(q: ParsedQuery, isRegex: boolean): { re: RegExp; req: Req; ci: boolean } {
@@ -367,48 +467,57 @@ export class SearchEngine {
     const nameHits = this.catalog.regex(nameRe, q.filters, limit)
     const contentHits: Ranked[] = []
     const expr = reqToFts(req, this.vocab)
-    const { sql, params } = this.filterSql(q.filters)
     let scanned = 0
     let candidates = 0
-    const check = (id: number, data: Uint8Array): boolean => {
+    const check = (id: number, text: string): boolean => {
       scanned++
-      const text = decompressText(data)
       const { lines, count } = findLines(text, re, 20, 10_000, deadline)
       if (count > 0) contentHits.push({ id, lines, count })
       return contentHits.length >= limit
     }
     if (expr !== "__no_match__") {
-      // Candidate ids first (cheap to sort), then each file's text by id.
-      const idSql = expr
-        ? `SELECT f.id FROM fts JOIN files f ON f.id = fts.rowid WHERE fts MATCH ? AND f.content_state = 1${sql} ORDER BY f.mtime DESC`
-        : `SELECT f.id FROM files f WHERE f.content_state = 1${sql} ORDER BY f.mtime DESC`
-      const args = expr ? [`body : (${expr})`, ...params] : params
-      let ids: number[] = []
+      // Candidate ids from FTS alone (no join), then filtered and ordered newest first with the
+      // in-memory catalog: several times faster than letting SQLite join and sort.
+      let ids: number[]
       try {
-        ids = (this.db.query(idSql).values(...args) as number[][]).map((r) => r[0]!)
+        ids = expr ? (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : (${expr})`) as number[][]).map((r) => r[0]!) : this.catalog.ids
       } catch (err) {
         throw new Error(`search failed: ${(err as Error).message}`)
       }
-      candidates = ids.length
-      const getData = this.db.query("SELECT data FROM content WHERE id = ?")
+      const cat = this.catalog
+      const idx: number[] = []
+      for (const id of ids) {
+        const i = cat.indexOf(id)
+        // No content-state check: the catalog only reloads changed rows after an index run, and a
+        // file without stored text simply has no row in the batch fetch below.
+        if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters)) idx.push(i)
+      }
+      idx.sort((a, b) => cat.mtimes[b]! - cat.mtimes[a]!)
+      candidates = idx.length
       let lastYield = Date.now()
-      for (let n = 0; n < ids.length; n++) {
-        const row = getData.get(ids[n]!) as { data: Uint8Array } | null
-        if (row && check(ids[n]!, row.data)) break
-        if ((n & 15) === 15) {
-          const now = Date.now()
-          if (now > deadline) {
+      // Texts are read in batches: one query per 64 files instead of one per file.
+      scan: for (let start = 0; start < idx.length; start += FETCH_BATCH) {
+        const batch = idx.slice(start, start + FETCH_BATCH).map((i) => cat.ids[i]!)
+        const missing = batch.filter((id) => this.texts.get(id) === undefined)
+        const data = new Map<number, Uint8Array>()
+        if (missing.length) for (const row of this.fetchContent(missing)) data.set(row.id, row.data)
+        for (const id of batch) {
+          const d = data.get(id)
+          const text = d ? this.storedText(id, d) : this.texts.get(id)
+          if (text !== undefined && text !== null && check(id, text)) break scan
+        }
+        const now = Date.now()
+        if (now > deadline) {
+          res.partial = true
+          break
+        }
+        if (now - lastYield > 40) {
+          // Let newer requests in; abandon this scan if one superseded it.
+          await new Promise((r) => setImmediate(r))
+          lastYield = Date.now()
+          if (opts.cancelled?.()) {
             res.partial = true
             break
-          }
-          if (now - lastYield > 40) {
-            // Let newer requests in; abandon this scan if one superseded it.
-            await new Promise((r) => setImmediate(r))
-            lastYield = Date.now()
-            if (opts.cancelled?.()) {
-              res.partial = true
-              break
-            }
           }
         }
       }
@@ -507,10 +616,10 @@ export class SearchEngine {
 
   /** Matching lines for a keyword query. */
   snippets(id: number, pattern: string, maxLines = 8): { lines: LineMatch[]; count: number } {
-    const row = this.db.query("SELECT data FROM content WHERE id = ?").get(id) as { data: Uint8Array } | null
-    if (!row) return { lines: [], count: 0 }
+    const text = this.storedText(id)
+    if (text === null) return { lines: [], count: 0 }
     try {
-      return keywordLines(decompressText(row.data), pattern, maxLines)
+      return keywordLines(text, pattern, maxLines)
     } catch {
       return { lines: [], count: 0 }
     }
@@ -548,9 +657,9 @@ export class SearchEngine {
     if (!row) return { ...base, message: "file is no longer in the index" }
     if (row.is_dir) return this.folderPreview(base)
     let text: string | null = null
-    const content = this.db.query("SELECT data FROM content WHERE id = ?").get(id) as { data: Uint8Array } | null
-    if (content) {
-      text = decompressText(content.data)
+    const stored = this.storedText(id)
+    if (stored !== null) {
+      text = stored
       base.source = "index"
     } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
       try {
@@ -664,4 +773,10 @@ function fuzzyQueryText(q: ParsedQuery): string {
   const parts = [...q.words, ...q.phrases.map((p) => `'${p.replace(/\s+/g, " ")}`)]
   for (const n of q.negated) parts.push(`!${n}`)
   return parts.join(" ")
+}
+
+/** All of `tokens` (the index keeps no word positions, so a phrase is matched as its words), the last one optionally as a prefix. */
+function ftsWords(tokens: string[], prefixLast: boolean): string {
+  const quoted = tokens.map((t, i) => (prefixLast && i === tokens.length - 1 ? `${ftsQuote(t)}*` : ftsQuote(t)))
+  return quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`
 }
