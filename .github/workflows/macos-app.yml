@@ -1,0 +1,81 @@
+name: macOS app
+
+# Builds the Mac app (macos/) with the zsearch engine inside, on every push and pull request.
+# Pull requests and main also publish the DMG as a pre-release: preview-pr-<n> and preview-main.
+# Install one with: macos/scripts/install-preview.sh <n|main>
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create and delete preview releases
+  pull-requests: write # the comment that links to the preview
+
+concurrency:
+  group: macos-app-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kit-linux:
+    name: ZSearchKit tests (Linux)
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift test --package-path macos
+
+  app:
+    name: Build app and DMG
+    if: github.event.action != 'closed'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Build the pull request's own commit, so the preview matches what was pushed.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Build the zsearch engine
+        run: bun run build
+      - run: swift --version
+      - name: Swift tests (with the real engine)
+        run: swift test --package-path macos
+        env:
+          ZSEARCH_ENGINE: ${{ github.workspace }}/dist/zsearch
+      - name: Build zsearch.app and zsearch.dmg
+        run: macos/scripts/build-app.sh
+        env:
+          BUILD: ${{ github.run_number }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/zsearch.dmg
+          retention-days: 14
+      - name: Publish the preview release
+        # Other branches, and pull requests from forks (read-only token), only upload the artifact.
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        run: macos/scripts/publish-preview.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+  cleanup:
+    name: Delete the preview release
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release delete "preview-pr-$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}

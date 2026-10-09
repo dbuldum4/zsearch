@@ -35,6 +35,7 @@ Usage
   zsearch config [get|set|path|reset] [key] [value]
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
+  zsearch serve                   JSON lines on stdin/stdout (for the macOS app)
 
 Interactive options
   -m, --mode <mode>   start in find (default) | fuzzy
@@ -157,6 +158,10 @@ export async function main(argv: string[]): Promise<number> {
         return cmdReset()
       case "doctor":
         return cmdDoctor()
+      case "serve": {
+        const { serve } = await import("./serve.ts")
+        return await serve(VERSION)
+      }
       case "help":
         process.stdout.write(HELP)
         return 0

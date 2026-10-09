@@ -1,0 +1,12 @@
+{"type":"ready","version":"0.1.0","files":0,"firstRun":true,"config":{"roots":["~/Documents","~/Downloads"],"exclude":[],"namesOnly":[],"includeHidden":false,"respectGitignore":true,"followSymlinks":false,"oneFileSystem":false,"cloudContent":false,"content":{"enabled":true,"maxDocumentMB":64,"maxTextMB":8,"maxChars":2000000},"autoRefreshMinutes":60,"workers":0,"editor":"","defaultMode":"find","preview":true}}
+{"id":1,"type":"ok"}
+{"type":"indexProgress","progress":{"phase":"scan","scanned":0,"added":0,"updated":0,"removed":0,"contentTotal":0,"contentDone":0,"contentBytes":0,"contentErrors":0,"current":"","startedAt":1791553059664,"elapsedMs":1}}
+{"type":"refreshed","files":1,"changed":true}
+{"type":"indexProgress","progress":{"phase":"done","scanned":1,"added":1,"updated":0,"removed":0,"contentTotal":1,"contentDone":1,"contentBytes":38,"contentErrors":0,"current":"","startedAt":1791553059664,"elapsedMs":89}}
+{"type":"indexDone","status":"done","progress":{"phase":"done","scanned":1,"added":1,"updated":0,"removed":0,"contentTotal":1,"contentDone":1,"contentBytes":38,"contentErrors":0,"current":"","startedAt":1791553059664,"elapsedMs":89}}
+{"type":"refreshed","files":1,"changed":true}
+{"type":"refreshed","files":1,"changed":true}
+{"id":2,"type":"results","response":{"query":"marmalade","mode":"find","resolved":"find","strategy":"exact text (indexed) · 1 of 1 files read","hits":[{"id":1,"path":"/Users/me/Documents/menu.txt","display":"Documents/menu.txt","kind":"text","isDir":false,"size":39,"mtime":1791553059348,"score":0.048095238095238094,"sources":["content"],"namePositions":[],"lines":[{"line":2,"page":1,"text":" The marmalade is homemade.","ranges":[[5,14]],"offset":10}],"matchCount":1}],"total":1,"elapsedMs":5.560653000000002,"partial":false}}
+{"id":3,"type":"preview","preview":{"id":1,"path":"/Users/me/Documents/menu.txt","display":"Documents/menu.txt","kind":"text","isDir":false,"size":39,"mtime":1791553059348,"lines":[{"n":1,"text":"Café menu","ranges":[]},{"n":2,"text":"\tThe marmalade is homemade.","ranges":[[5,14]]},{"n":3,"text":"","ranges":[]}],"totalLines":3,"focusLine":2,"pageStarts":[],"matchLines":[2],"note":null,"source":"index"}}
+{"id":5,"type":"error","error":"unknown request type \"nope\""}
+{"id":4,"type":"stats","stats":{"files":1,"folders":0,"withContent":1,"errors":0,"skipped":0,"pending":0,"contentBytes":38,"dbBytes":65536,"lastIndexedAt":1791553059749,"lastDurationMs":85,"roots":["/Users/me/Documents","/Users/me/Downloads"],"generation":1}}
