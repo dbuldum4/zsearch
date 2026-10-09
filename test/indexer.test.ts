@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite"
 import { mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
-import { ContentState, decompressText, indexStats, openDb, readContent, compressText } from "../src/index/db.ts"
+import { clearIndex, ContentState, decompressText, indexStats, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
@@ -109,7 +109,7 @@ describe("indexer", () => {
     expect(s.errors).toBe(0)
     expect(s.pending).toBe(0)
     expect(ftsCount(db, "photosynthesis")).toBe(1)
-    expect(ftsCount(db, '"twelve percent"')).toBe(1)
+    expect(ftsCount(db, "twelve AND percent")).toBe(1) // no positions are stored, so no phrase queries
     expect(ftsCount(db, "name : holiday")).toBe(1) // media files are searchable by name
   })
 
@@ -238,6 +238,29 @@ describe("storage helpers", () => {
   test("text compression round trip for small and large texts", () => {
     for (const t of ["", "short", "x".repeat(100_000) + "é"]) expect(decompressText(compressText(t))).toBe(t)
     expect(compressText("x".repeat(100_000)).length).toBeLessThan(1000)
+  })
+
+  test("emptying the index (rebuild or schema change) shrinks the file", () => {
+    const path = join(corpus.home, ".zsearch-data", "shrink.db")
+    const fill = (db: Database) => {
+      const put = db.query("INSERT INTO content(id, data) VALUES (?, ?)")
+      db.transaction(() => {
+        for (let i = 0; i < 500; i++) put.run(i, crypto.getRandomValues(new Uint8Array(8192)))
+      })()
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+    const size = () => Bun.file(path).size
+    let db = openDb(path)
+    fill(db)
+    expect(size()).toBeGreaterThan(4_000_000)
+    clearIndex(db)
+    expect(size()).toBeLessThan(500_000)
+    fill(db)
+    setMeta(db, "schema_version", "1")
+    db.close()
+    db = openDb(path)
+    expect(size()).toBeLessThan(500_000)
+    db.close()
   })
 
   test("index lock", () => {

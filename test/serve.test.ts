@@ -64,6 +64,11 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(cfg.type).toBe("config")
   expect((cfg.config as { roots: string[] }).roots).toEqual(["~"])
   expect(cfg.config).not.toHaveProperty("bogus")
+  // A patch changes only what it names: the folders set above stay.
+  s.send({ id: 10, type: "setConfig", config: { exclude: ["*.nothing"] } })
+  const patched = (await s.reply(10)).config as { roots: string[]; exclude: string[] }
+  expect(patched.roots).toEqual(["~"])
+  expect(patched.exclude).toEqual(["*.nothing"])
 
   s.send({ id: 2, type: "index" })
   expect((await s.reply(2)).type).toBe("ok")
@@ -81,6 +86,28 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   const pv = await s.reply(4)
   expect(pv.type).toBe("preview")
   expect((pv.preview as { lines: { text: string }[] }).lines.map((l) => l.text).join("\n")).toContain("Mix flour")
+
+  s.send({ id: 40, type: "previews", files: [hit!.id, 999_999], query: "pancakes" })
+  const batch = await s.reply(40)
+  expect(batch.type).toBe("previews")
+  const previews = batch.previews as { id: number; message?: string }[]
+  expect(previews.map((p) => p.id)).toEqual([hit!.id, 999_999])
+  expect(previews[1]!.message).toBeDefined()
+  // Each file's preview centres on its hit's line when one is given, as a single preview's does.
+  expect((previews[0] as { focusLine?: number }).focusLine).toBe(1)
+  s.send({ id: 42, type: "previews", files: [hit!.id, 999_999], focusLines: [3, null], query: "pancakes" })
+  const focused = (await s.reply(42)).previews as { id: number; focusLine: number }[]
+  expect(focused.map((p) => [p.id, p.focusLine])).toEqual([
+    [hit!.id, 3],
+    [999_999, 1],
+  ])
+
+  // Rebuilding empties the index in place and indexes again.
+  s.send({ id: 41, type: "index", rebuild: true })
+  expect(await s.reply(41)).toEqual({ id: 41, type: "ok" })
+  expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+  s.send({ id: 42, type: "search", query: "pancakes", mode: "find" })
+  expect(((await s.reply(42)).response as { hits: { path: string }[] }).hits.some((h) => h.path.endsWith("pancakes.txt"))).toBe(true)
 
   s.send({ id: 5, type: "stats" })
   const st = await s.reply(5)

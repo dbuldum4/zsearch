@@ -69,6 +69,24 @@ final class EngineConnectionTests: XCTestCase {
         }
         XCTAssertEqual(p.matchLines, [2])
 
+        guard case let .previews(batch) = try await engine.request(.previews(files: [hit.id, 999_999], query: "marmalade", mode: .find)) else {
+            return XCTFail("expected previews")
+        }
+        XCTAssertEqual(batch.map(\.id), [hit.id, 999_999])
+        XCTAssertNotNil(batch[1].message)
+
+        // Rebuild: empties the index in place, indexes again, and search still finds the file.
+        let doneBefore = events.all.filter { if case .indexDone = $0 { return true }; return false }.count
+        let rebuilding = try await engine.request(.rebuildIndex)
+        XCTAssertEqual(rebuilding, .ok)
+        try await waitFor("second indexDone") { _ in
+            events.all.filter { if case .indexDone = $0 { return true }; return false }.count > doneBefore
+        }
+        guard case let .results(again) = try await engine.request(.search(query: "marmalade", mode: .find)) else {
+            return XCTFail("expected results after rebuild")
+        }
+        XCTAssertEqual(again.hits.first?.name, "list.txt")
+
         do {
             _ = try await engine.request(.preview(file: 999_999, query: "", mode: .find))
         } catch {

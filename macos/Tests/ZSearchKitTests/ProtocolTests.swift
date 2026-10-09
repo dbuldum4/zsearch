@@ -51,6 +51,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try json(.preview(file: 3, query: "x", mode: .find)), #"{"file":3,"id":7,"mode":"find","query":"x","type":"preview"}"#)
         XCTAssertEqual(try json(.setConfig(ConfigPatch(roots: ["~"]))), #"{"config":{"roots":["~"]},"id":7,"type":"setConfig"}"#)
         XCTAssertEqual(try json(.index), #"{"id":7,"type":"index"}"#)
+        XCTAssertEqual(try json(.rebuildIndex), #"{"id":7,"rebuild":true,"type":"index"}"#)
+        XCTAssertEqual(try json(.previews(files: [1, 2], query: "q", mode: .find)), #"{"files":[1,2],"id":7,"mode":"find","query":"q","type":"previews"}"#)
+        XCTAssertEqual(
+            try json(.previews(files: [1, 2], query: "q", mode: .find, focusLines: [551, nil])),
+            #"{"files":[1,2],"focusLines":[551,null],"id":7,"mode":"find","query":"q","type":"previews"}"#
+        )
+        let patch = try XCTUnwrap(try transcript().compactMap { m -> Config? in
+            if case let .ready(r) = m.message { return r.config }
+            return nil
+        }.first)
+        XCTAssertTrue(patch.respectGitignore)
+        XCTAssertEqual(patch.exclude, [])
     }
 
     func testUnknownMessageTypesAreKept() throws {
@@ -75,5 +87,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(highlightRuns("", ranges: [[0, 1]]), [])
         XCTAssertEqual(kindBadge("sheet"), "XLS")
         XCTAssertEqual(kindBadge("whatever"), "FILE")
+    }
+
+    func testAutoUpdateIsDueOncePerPeriod() {
+        let hour = 3_600_000.0
+        let now = 100 * hour
+        // Never indexed, or older than the period.
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: nil, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, now: now))
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - hour / 2, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 15, lastIndexedAt: now - hour / 2, now: now))
+        // "Only when I ask".
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 0, lastIndexedAt: nil, now: now))
+        // A failed attempt is not retried at every check.
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, lastAttempt: now - 60_000, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, lastAttempt: now - hour, now: now))
     }
 }

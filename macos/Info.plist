@@ -8,6 +8,8 @@
 	<string>zsearch</string>
 	<key>CFBundleExecutable</key>
 	<string>ZSearch</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.github.dbuldum4.zsearch</string>
 	<key>CFBundleInfoDictionaryVersion</key>

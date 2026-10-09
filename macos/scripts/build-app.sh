@@ -26,6 +26,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$BIN/ZSearch" "$APP/Contents/MacOS/ZSearch"
 cp "$ENGINE" "$APP/Contents/Helpers/zsearch"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" -e "s/@COMMIT@/$COMMIT/" "$ROOT/macos/Info.plist" > "$APP/Contents/Info.plist"
+
+# App icon, drawn by a script (no binary assets in the repository).
+ICONSET="$DIST/AppIcon.iconset"
+rm -rf "$ICONSET"
+if swift "$ROOT/macos/scripts/make-icon.swift" "$ICONSET" && iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"; then
+  rm -rf "$ICONSET"
+else
+  echo "warning: could not make the app icon; continuing without it" >&2
+fi
 plutil -lint "$APP/Contents/Info.plist"
 
 # Sign inside-out: the engine first, then the bundle.

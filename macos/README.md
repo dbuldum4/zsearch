@@ -9,6 +9,15 @@ zsearch.app/Contents/
   Info.plist           from macos/Info.plist
 ```
 
+## What it does
+
+- **Search** as you type, in names and contents (Find, ⌘1) or forgiving names (Fuzzy, ⌘2). ↑/↓ or ⌘J/⌘K move through results, Return opens, ⇧⌘R shows in Finder, ⇧⌘C copies the path, ⌘L returns to the search field.
+- **Preview** of the selected file with matches highlighted and the first match centered. Previews of the results around the selection are prefetched, so moving through the list doesn't wait on the engine.
+- **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
+- **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
+- **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It uses `RegisterEventHotKey`, which needs no accessibility permission.
+- **Dock menu** to update or stop indexing, and **open at login**.
+
 ## Building without Xcode
 
 The app is built and tested on GitHub Actions ([`.github/workflows/macos-app.yml`](../.github/workflows/macos-app.yml)). You do not need Xcode, or a Mac, to work on it:
@@ -67,9 +76,10 @@ Each line is one JSON object. Requests may carry a numeric `id`, and the reply c
 | --- | --- |
 | `{"id":1,"type":"search","query":"budget","mode":"find","limit":200}` | `results` with `response` (hits, strategy, timing) |
 | `{"id":2,"type":"preview","file":17,"query":"budget","mode":"find","focusLine":3}` | `preview` with numbered lines and match ranges |
+| `{"id":6,"type":"previews","files":[17,18,19],"query":"budget","mode":"find"}` | `previews`: several at once, for prefetching |
 | `{"id":3,"type":"stats"}` | `stats` |
-| `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (merged with defaults, saved) |
-| `{"id":5,"type":"index"}` / `{"type":"cancelIndex"}` | `ok`, then `indexProgress` events and one `indexDone` |
+| `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (the fields sent are changed, the rest kept; saved) |
+| `{"id":5,"type":"index"}` (`"rebuild":true` to start from empty) / `{"type":"cancelIndex"}` | `ok`, then `indexProgress` events and one `indexDone` |
 | `{"type":"opened","path":"/…"}` | `ok` (records the open for ranking) |
 
 Events without an `id`: `ready` (first line: version, `firstRun`, config), `indexProgress`, `indexDone`, `refreshed`, and `error` for unreadable input. Match ranges are `[start, end)` offsets in UTF-16 code units (JavaScript string indices). `highlightRuns` in ZSearchKit converts them. The engine exits when stdin closes.

@@ -7,7 +7,7 @@
  * The server exits when stdin closes.
  */
 import { createInterface } from "node:readline"
-import { type Config, configExists, defaultConfig, ensureDirs, loadConfig, mergeConfig, saveConfig } from "./config.ts"
+import { type Config, configExists, ensureDirs, loadConfig, mergeConfig, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import type { IndexProgress } from "./index/indexer.ts"
@@ -19,10 +19,11 @@ import { MODES, type Mode } from "./search/query.ts"
 export type ServeIn =
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
+  | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
   | { id?: number; type: "stats" }
   | { id?: number; type: "config" }
   | { id?: number; type: "setConfig"; config: Partial<Config> }
-  | { id?: number; type: "index" }
+  | { id?: number; type: "index"; rebuild?: boolean }
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
 
@@ -30,6 +31,7 @@ export type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
   | { id?: number; type: "results"; response: SearchResponse }
   | { id?: number; type: "preview"; preview: Preview }
+  | { id?: number; type: "previews"; previews: Preview[] }
   | { id?: number; type: "stats"; stats: IndexStats }
   | { id?: number; type: "config"; config: Config }
   | { id?: number; type: "cancelled" }
@@ -55,7 +57,7 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  const startIndex = (id?: number) => {
+  const startIndex = (id?: number, rebuild = false) => {
     if (index) return send({ id, type: "error", error: "indexing is already running" })
     const other = lockHolder(p.lock)
     if (other !== null) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
@@ -71,7 +73,7 @@ export async function serve(version: string): Promise<number> {
         send({ type: "indexProgress", progress })
       },
       onCommit: () => client.refresh(),
-    })
+    }, rebuild)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
@@ -95,6 +97,18 @@ export async function serve(version: string): Promise<number> {
         const preview = await client.preview(msg.file, String(msg.query ?? ""), mode(msg.mode), msg.focusLine)
         return send(preview ? { id, type: "preview", preview } : { id, type: "cancelled" })
       }
+      case "previews": {
+        const pairs = Array.isArray(msg.files) ? msg.files.map((f, i) => [f, Array.isArray(msg.focusLines) ? msg.focusLines[i] : null] as const) : []
+        const valid = pairs.filter(([f]) => typeof f === "number").slice(0, 32)
+        const lines = valid.map(([, l]) => (typeof l === "number" ? l : null))
+        const previews = await client.previews(
+          valid.map(([f]) => f),
+          String(msg.query ?? ""),
+          mode(msg.mode),
+          lines,
+        )
+        return send(previews ? { id, type: "previews", previews } : { id, type: "cancelled" })
+      }
       case "stats": {
         const reply = await client.stats()
         return send(reply ? { id, type: "stats", stats: reply.stats } : { id, type: "cancelled" })
@@ -102,13 +116,14 @@ export async function serve(version: string): Promise<number> {
       case "config":
         return send({ id, type: "config", config })
       case "setConfig": {
-        config = mergeConfig(defaultConfig(), msg.config)
+        // A patch: settings it leaves out keep their current values.
+        config = mergeConfig(config, msg.config)
         saveConfig(config)
         client.setConfig(config)
         return send({ id, type: "config", config })
       }
       case "index":
-        return startIndex(id)
+        return startIndex(id, msg.rebuild === true)
       case "cancelIndex":
         index?.cancel()
         return send({ id, type: "ok" })

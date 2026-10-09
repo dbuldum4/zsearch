@@ -7,6 +7,7 @@ import { termsPattern, findLines, keywordLines, clipLine } from "../src/search/s
 import { literalToFts, reqToFts, Vocab } from "../src/search/vocab.ts"
 import { editDistance, foldTerm, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
 import { Database } from "bun:sqlite"
+import { compressText } from "../src/index/db.ts"
 
 describe("query parsing", () => {
   const now = new Date("2024-06-15T12:00:00").getTime()
@@ -164,8 +165,10 @@ describe("regex requirements", () => {
 
 describe("vocabulary and FTS mapping", () => {
   const db = new Database(":memory:")
-  db.exec("CREATE TABLE vocab (id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE)")
-  for (const t of ["getusername", "username", "user", "setuser", "rename", "names", "foo", "bar", "café"]) db.query("INSERT INTO vocab(term) VALUES (?)").run(t)
+  db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
+  const addChunk = (terms: string[]) => db.query("INSERT INTO vocab_chunks(terms) VALUES (?)").run(compressText(terms.join("\n")))
+  addChunk(["getusername", "username", "user", "setuser"])
+  addChunk(["rename", "names", "foo", "bar", "café"])
   const v = new Vocab()
   v.load(db, false)
 
@@ -177,7 +180,7 @@ describe("vocabulary and FTS mapping", () => {
   })
 
   test("incremental load", () => {
-    db.query("INSERT INTO vocab(term) VALUES (?)").run("username2")
+    addChunk(["username2"])
     v.load(db, true)
     expect(v.containing("username")!.sort()).toEqual(["getusername", "username", "username2"])
   })

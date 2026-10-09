@@ -49,8 +49,17 @@ export function findLines(
   let count = 0
   let lineNo = 1
   let page = 1
-  let scanPos = 0
   let lineStart = 0
+  // Next line break (\n) and page break (\f) at or after the scan position, found with native indexOf.
+  let nextNl = -2
+  let nextFf = -2
+  const breakAfter = (pos: number): number => {
+    if (nextNl !== -1 && nextNl < pos) nextNl = text.indexOf("\n", pos)
+    if (nextFf !== -1 && nextFf < pos) nextFf = text.indexOf("\f", pos)
+    if (nextNl === -1) return nextFf
+    if (nextFf === -1) return nextNl
+    return Math.min(nextNl, nextFf)
+  }
   let current: LineMatch | null = null
   let currentStart = -1
   re.lastIndex = 0
@@ -63,22 +72,27 @@ export function findLines(
     }
     count++
     // Advance line counters to the match position.
-    for (let i = scanPos; i < m.index; i++) {
-      const c = text.charCodeAt(i)
-      if (c === 10 || c === 12) {
-        lineNo++
-        lineStart = i + 1
-        if (c === 12) page++
-      }
+    for (let b = breakAfter(lineStart); b !== -1 && b < m.index; b = breakAfter(lineStart)) {
+      lineNo++
+      if (text.charCodeAt(b) === 12) page++
+      lineStart = b + 1
     }
-    scanPos = m.index
     if (currentStart !== lineStart) {
       if (lines.length >= maxLines) {
-        if (count >= maxMatches || Date.now() > deadline) break
-        continue
+        // Every snippet line is taken: from here on only the number of matches is needed.
+        while (count < maxMatches && (m = re.exec(text))) {
+          if (m[0].length === 0) {
+            re.lastIndex++
+            if (re.lastIndex > text.length) break
+            continue
+          }
+          count++
+          if ((count & 1023) === 0 && Date.now() > deadline) break
+        }
+        break
       }
-      let end = lineStart
-      while (end < text.length && text.charCodeAt(end) !== 10 && text.charCodeAt(end) !== 12) end++
+      const b = breakAfter(lineStart)
+      const end = b === -1 ? text.length : b
       current = { line: lineNo, page, text: text.slice(lineStart, end), ranges: [], offset: lineStart }
       currentStart = lineStart
       lines.push(current)

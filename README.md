@@ -28,7 +28,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Setup is guided.** On first launch, zsearch asks what to index (Documents and Downloads, home folder, whole disk or chosen folders) and whether to read file contents or include hidden files. Indexing runs in the background with a progress bar, and results appear while it runs.
 - **Updates are incremental.** Only new or changed files are read again. The index refreshes itself when it is older than an hour; press <kbd>Ctrl-R</kbd> to refresh it now.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
-- **It is fast.** In a test with 129k files and 215 MB of text, fuzzy name search takes 25–90 ms, find about 125 ms, and a regex that has to read every file about 1.3 s. Search runs in a worker thread, so typing never stutters.
+- **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
 - **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
 
 ## Install
@@ -53,7 +53,7 @@ Optional: install `pdftotext` (`brew install poppler` / `apt install poppler-uti
 
 ### Mac app (preview)
 
-There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
+There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. It has a settings pane (folders, what to read, automatic updates, index size and rebuild), a menu bar item, and a shortcut (⌥ Space by default) that brings it forward from any app. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
 
 ```sh
 macos/scripts/install-preview.sh main       # latest main
@@ -221,10 +221,10 @@ src/
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
-- **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, diacritics removed), and extracted text is stored once (small texts raw, large ones zstd-compressed). A `vocab` table lists every indexed term.
+- **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, diacritics removed). It records which column holds each word but not word positions, which keeps it small; exact text is always checked against the stored text. Extracted text is stored once: raw below 1 KB, deflate below 16 KB, zstd above. The vocabulary of every indexed term is kept as compressed, append-only chunks.
 - **Names.** All paths are kept in memory in the search worker and matched with an fzf v1-style algorithm. Each path has a precomputed character bitmask for quick rejection, a bounded top-k keeps only the best results, and the next keystroke searches only the previous matches (as fzf and fff do).
 - **Find.** Plain text is searched as a literal. A regex is parsed into a boolean condition over the literal strings every match must contain (in the spirit of Russ Cox's trigram index). Each literal is mapped onto index terms (whole token, prefix, suffix or substring), using an in-memory copy of the vocabulary for substring lookups. Only the candidate files are read and scanned with the real regex. Patterns with no usable literal fall back to a time-boxed scan of all stored text.
-- **Ranking.** Name matches and content matches are fused with reciprocal-rank fusion (fuzzy mode ranks content with BM25). Frecency and recency then adjust the result.
+- **Ranking.** Name matches and content matches are fused with reciprocal-rank fusion (fuzzy mode ranks content BM25-style: words in the file name, then the folders, then how often they occur in the text). Frecency and recency then adjust the result.
 - **Responsiveness.** Indexing runs in a worker thread with its own pool of extraction workers. Searching runs in another worker, which cancels superseded queries and is restarted by a watchdog if a pathological regex runs too long. The UI thread only draws.
 
 ## Development
@@ -234,6 +234,7 @@ bun install
 bun test --timeout 60000        # unit, TUI and end-to-end tests (~30 s)
 bun run typecheck
 bun run build                   # dist/zsearch
+bun run bench                   # index and search benchmark on a generated corpus (--files=N, --compare=old.json)
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt)
 ```
 
