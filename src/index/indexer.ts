@@ -123,7 +123,9 @@ export class Indexer {
     const q = (sql: string) => db.prepare(sql)
     this.st = {
       insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"),
-      updateFile: q("UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, content_state = ? WHERE id = ?"),
+      updateFile: q(
+        "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, content_state = ?, seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM files) WHERE id = ?",
+      ),
       setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1 WHERE id = ?"),
       inFts: q("SELECT in_fts FROM files WHERE id = ?"),
       ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),

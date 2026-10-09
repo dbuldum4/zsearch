@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -71,9 +71,12 @@ function migrate(db: Database, opts: OpenOptions) {
       content_state INTEGER NOT NULL DEFAULT 0,
       content_len INTEGER NOT NULL DEFAULT 0,
       in_fts INTEGER NOT NULL DEFAULT 0,
-      note TEXT
+      note TEXT,
+      -- Bumped each time an existing row's metadata changes, so readers can reload just those rows.
+      seq INTEGER NOT NULL DEFAULT 0
     )`)
     db.exec("CREATE INDEX files_state ON files(content_state)")
+    db.exec("CREATE INDEX files_seq ON files(seq)")
     db.exec("CREATE TABLE content (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
     const contentlessDelete = !opts.manualFtsDelete && versionAtLeast(sqliteVersion, 3, 43)

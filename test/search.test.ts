@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
+import { utimesSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
@@ -233,5 +234,54 @@ describe("live updates and frecency", () => {
     const after = names(await search("notes", "fuzzy"))
     expect(after.indexOf(target)).toBeLessThan(before.indexOf(target))
     expect(names(await search(""))[0]).toBe(target)
+  })
+})
+
+describe("text cache and index changes", () => {
+  test("cached texts evicted while a batch is decoded are still searched", async () => {
+    const old = Date.now() / 1000 - 86_400
+    const paths: string[] = []
+    for (let i = 0; i < 64; i++) {
+      const p = corpus.write(`bulk/file-${String(i).padStart(2, "0")}.txt`, `quokkaflux ${i}\n${"filler text ".repeat(1_700)}\n`)
+      // Older files first, so a search reads the newest ones before them.
+      utimesSync(p, old + i, old + i)
+      paths.push(p)
+    }
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    await new Indexer(writer, config, { inProcess: true }).run()
+    writer.close()
+    // Room for about eight of these texts.
+    const small = new SearchEngine(db, config, 170_000)
+    // Preview (and so cache) the oldest ones; decoding the newer ones evicts them during the scan.
+    for (const p of paths.slice(0, 8)) {
+      const { id } = db.query("SELECT id FROM files WHERE path = ?").get(p) as { id: number }
+      expect(small.preview(id, "", "find").source).toBe("index")
+    }
+    const r = await small.search("quokkaflux", "find", { limit: 100 })
+    expect(r.partial).toBe(false)
+    expect(r.hits).toHaveLength(64)
+  })
+
+  test("filters see changed sizes and dates while the index is being updated", async () => {
+    const p = corpus.write("notes/grow.txt", "a small walrusfang note\n")
+    const old = Date.now() / 1000 - 10 * 86_400
+    utimesSync(p, old, old)
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    await new Indexer(writer, config, { inProcess: true }).run()
+    expect(names(await search("walrusfang size:>1kb"))).toEqual([])
+    expect(names(await search("walrusfang mtime:<1d"))).toEqual([])
+    corpus.write("notes/grow.txt", `a bigger walrusfang note\n${"more words ".repeat(200)}\n`)
+    // Stop after the scan has recorded the new size and date, before the run completes.
+    const stop = new AbortController()
+    const run = await new Indexer(writer, config, {
+      inProcess: true,
+      signal: stop.signal,
+      onProgress: (pr) => pr.phase === "content" && stop.abort(),
+    }).run()
+    writer.close()
+    expect(run.phase).toBe("cancelled")
+    expect(names(await search("walrusfang size:>1kb"))).toEqual(["notes/grow.txt"])
+    expect(names(await search("walrusfang mtime:<1d"))).toEqual(["notes/grow.txt"])
+    expect(names(await search("walrusfang size:<1kb"))).toEqual([])
   })
 })

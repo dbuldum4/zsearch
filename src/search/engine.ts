@@ -139,7 +139,10 @@ export class SearchEngine {
   constructor(
     readonly db: Database,
     public config: Config,
+    /** How many decoded characters to keep (UTF-16, so about twice that in bytes). */
+    textCacheChars = 24_000_000,
   ) {
+    this.texts = new TextCache(textCacheChars)
     this.refresh(true)
   }
 
@@ -388,8 +391,8 @@ export class SearchEngine {
   }
 
   private fetchStmt: ReturnType<Database["query"]> | null = null
-  /** About 48 MB of decoded text (UTF-16). */
-  private texts = new TextCache(24_000_000)
+  /** About 48 MB of decoded text (UTF-16) by default. */
+  private texts: TextCache
 
   /** Catalog positions newest first, and how far `warmTexts` got through them. */
   private warmOrder: number[] | null = null
@@ -488,8 +491,8 @@ export class SearchEngine {
       const idx: number[] = []
       for (const id of ids) {
         const i = cat.indexOf(id)
-        // No content-state check: the catalog only reloads changed rows after an index run, and a
-        // file without stored text simply has no row in the batch fetch below.
+        // No content-state check: the catalog does not follow content-state changes during an
+        // index run, and a file without stored text simply has no row in the batch fetch below.
         if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters)) idx.push(i)
       }
       idx.sort((a, b) => cat.mtimes[b]! - cat.mtimes[a]!)
@@ -498,12 +501,19 @@ export class SearchEngine {
       // Texts are read in batches: one query per 64 files instead of one per file.
       scan: for (let start = 0; start < idx.length; start += FETCH_BATCH) {
         const batch = idx.slice(start, start + FETCH_BATCH).map((i) => cat.ids[i]!)
-        const missing = batch.filter((id) => this.texts.get(id) === undefined)
+        // Hold on to the cached texts first: decoding the missing ones can evict them.
+        const cached = new Map<number, string>()
+        const missing: number[] = []
+        for (const id of batch) {
+          const t = this.texts.get(id)
+          if (t !== undefined) cached.set(id, t)
+          else missing.push(id)
+        }
         const data = new Map<number, Uint8Array>()
         if (missing.length) for (const row of this.fetchContent(missing)) data.set(row.id, row.data)
         for (const id of batch) {
           const d = data.get(id)
-          const text = d ? this.storedText(id, d) : this.texts.get(id)
+          const text = d ? this.storedText(id, d) : cached.get(id)
           if (text !== undefined && text !== null && check(id, text)) break scan
         }
         const now = Date.now()

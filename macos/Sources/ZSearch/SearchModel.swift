@@ -57,6 +57,12 @@ final class SearchModel {
     /// list shows them without a round trip to the engine.
     @ObservationIgnored private var previewCache: [PreviewKey: FilePreview] = [:]
     @ObservationIgnored private var previewCacheOrder: [PreviewKey] = []
+    /// Bumped whenever the index changes: preview replies requested before that are dropped.
+    @ObservationIgnored private var previewEpoch = 0
+    /// Checks every minute whether the "Update the index" setting calls for an update.
+    @ObservationIgnored private var autoUpdateTask: Task<Void, Never>?
+    /// When the last automatic update was started (ms since 1970).
+    @ObservationIgnored private var lastAutoUpdate: Double?
     /// Opens the main window; set by a view that has the `openWindow` action.
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
@@ -123,6 +129,8 @@ final class SearchModel {
 
     func stop() {
         generation += 1
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
         engine?.stop()
         engine = nil
     }
@@ -153,6 +161,7 @@ final class SearchModel {
                     startIndex()
                 }
                 scheduleSearch(delay: 0)
+                startAutoUpdates()
             }
         case let .indexProgress(p):
             if !indexing { indexing = true }
@@ -232,6 +241,7 @@ final class SearchModel {
     private func loadPreview() {
         guard let hit = selectedHit, let engine else {
             previewTask?.cancel()
+            previewTask = nil
             previewKey = nil
             preview = nil
             return
@@ -239,6 +249,7 @@ final class SearchModel {
         let key = PreviewKey(file: hit.id, query: query, mode: mode)
         guard key != previewKey else { return }
         previewTask?.cancel()
+        previewTask = nil
         previewKey = key
         if let cached = previewCache[key] {
             preview = cached
@@ -247,9 +258,12 @@ final class SearchModel {
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
         let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: hit.lines.first?.line)
+        let epoch = previewEpoch
         previewTask = Task { [weak self] in
-            guard case let .preview(p)? = try? await engine.request(request), !Task.isCancelled else { return }
-            guard let self, self.previewKey == key else { return }
+            let reply = try? await engine.request(request)
+            guard !Task.isCancelled, let self, self.previewKey == key, self.previewEpoch == epoch else { return }
+            self.previewTask = nil
+            guard case let .preview(p)? = reply else { return }
             self.remember(p, for: key)
             self.preview = p
             self.prefetchAround()
@@ -264,10 +278,11 @@ final class SearchModel {
             .map(\.id)
             .filter { previewCache[PreviewKey(file: $0, query: query, mode: mode)] == nil }
         guard !ids.isEmpty else { return }
+        let epoch = previewEpoch
         prefetchTask?.cancel()
         prefetchTask = Task { [weak self] in
             guard case let .previews(list)? = try? await engine.request(.previews(files: ids, query: query, mode: mode)), !Task.isCancelled else { return }
-            guard let self, query == self.query, mode == self.mode else { return }
+            guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
             for p in list where p.message == nil || p.isDir {
                 self.remember(p, for: PreviewKey(file: p.id, query: query, mode: mode))
             }
@@ -281,9 +296,18 @@ final class SearchModel {
         }
     }
 
+    /// Forget previews after the index changed, including those still on their way.
     private func clearPreviewCache() {
         previewCache.removeAll()
         previewCacheOrder.removeAll()
+        previewEpoch += 1
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        // The selection's preview was requested before the change: ask again.
+        if previewTask != nil {
+            previewKey = nil
+            loadPreview()
+        }
     }
 
     func moveSelection(by delta: Int) {
@@ -301,8 +325,28 @@ final class SearchModel {
 
     var indexIsStale: Bool {
         guard let last = stats?.lastIndexedAt else { return true }
-        let maxAge = (config?.autoRefreshMinutes ?? 60) * 60_000
-        return maxAge > 0 && Date().timeIntervalSince1970 * 1000 - last > maxAge
+        return AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: last, now: Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// Update the index whenever it gets older than the "Update the index" setting, for as long
+    /// as the engine runs (the app may stay open for days in the menu bar).
+    private func startAutoUpdates() {
+        autoUpdateTask?.cancel()
+        autoUpdateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(AutoUpdate.checkInterval * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                self.updateIfDue()
+            }
+        }
+    }
+
+    private func updateIfDue() {
+        guard engine != nil, !indexing, !firstRun, !showSetup, let stats else { return }
+        let now = Date().timeIntervalSince1970 * 1000
+        guard AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: stats.lastIndexedAt, lastAttempt: lastAutoUpdate, now: now) else { return }
+        lastAutoUpdate = now
+        startIndex()
     }
 
     func refreshStats() async {

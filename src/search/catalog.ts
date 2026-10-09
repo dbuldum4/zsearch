@@ -23,6 +23,8 @@ export class Catalog {
   private byId = new Map<number, number>()
   private h = home()
   maxId = 0
+  /** Highest `files.seq` seen: rows changed in place since then are reloaded. */
+  maxSeq = 0
   private cache: { key: string; matches: Int32Array } | null = null
 
   get size() {
@@ -38,7 +40,11 @@ export class Catalog {
     return path.startsWith(this.h + "/") ? path.slice(this.h.length + 1) : path
   }
 
-  /** Load everything (fresh), or only rows newer than what we have (incremental). */
+  /**
+   * Load everything (fresh), or only what changed since the last load (incremental): rows added
+   * since, and rows the indexer updated in place (new size, mtime...). Rows removed stay until
+   * the next fresh load.
+   */
   load(db: Database, incremental = false) {
     if (!incremental) {
       this.ids = []
@@ -52,10 +58,27 @@ export class Catalog {
       this.mtimes = []
       this.byId.clear()
       this.maxId = 0
+      this.maxSeq = 0
+    } else {
+      const changed = db
+        .query("SELECT id, kind, ext, is_dir, size, mtime, content_state, seq FROM files WHERE seq > ? AND id <= ?")
+        .all(this.maxSeq, this.maxId) as { id: number; kind: Kind; ext: string; is_dir: number; size: number; mtime: number; content_state: number; seq: number }[]
+      for (const r of changed) {
+        const i = this.byId.get(r.id)
+        if (i !== undefined) {
+          this.kinds[i] = r.kind
+          this.exts[i] = r.ext
+          this.sizes[i] = r.size
+          this.mtimes[i] = r.mtime
+          this.isDir[i] = r.is_dir
+          this.contentState[i] = r.content_state
+        }
+        if (r.seq > this.maxSeq) this.maxSeq = r.seq
+      }
     }
     const rows = db
-      .query("SELECT id, path, kind, ext, is_dir, size, mtime, content_state FROM files WHERE id > ? ORDER BY id")
-      .all(this.maxId) as { id: number; path: string; kind: Kind; ext: string; is_dir: number; size: number; mtime: number; content_state: number }[]
+      .query("SELECT id, path, kind, ext, is_dir, size, mtime, content_state, seq FROM files WHERE id > ? ORDER BY id")
+      .all(this.maxId) as { id: number; path: string; kind: Kind; ext: string; is_dir: number; size: number; mtime: number; content_state: number; seq: number }[]
     const base = this.ids.length
     const n = base + rows.length
     const isDir = new Uint8Array(n)
@@ -83,6 +106,8 @@ export class Catalog {
       masks[idx] = charMask(lower)
       this.byId.set(r.id, idx)
       if (r.id > this.maxId) this.maxId = r.id
+      // Incremental: the query above may have run on an older snapshot, so leave maxSeq to it.
+      if (!incremental && r.seq > this.maxSeq) this.maxSeq = r.seq
     }
     this.isDir = isDir
     this.contentState = cs
