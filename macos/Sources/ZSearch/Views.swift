@@ -13,11 +13,10 @@ struct ContentView: View {
             if let failure = model.engineFailure {
                 EngineFailureView(message: failure)
             } else {
-                HSplitView {
+                SplitPanes {
                     ResultsList()
-                        .frame(minWidth: 280, idealWidth: 420, maxHeight: .infinity)
+                } right: {
                     PreviewPane()
-                        .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             Divider()
@@ -152,7 +151,9 @@ struct PreviewPane: View {
     @EnvironmentObject private var model: SearchModel
 
     var body: some View {
-        if let p = model.preview, p.id == model.selection {
+        // The last preview stays up while the next one loads (a few milliseconds), so switching
+        // files swaps the content in place instead of flashing an empty pane.
+        if let p = model.preview, !model.hits.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.display)
@@ -162,15 +163,17 @@ struct PreviewPane: View {
                     Text(details(of: p))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Divider()
                 if let message = p.message {
                     Text(message)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    PreviewLines(preview: p)
+                    PreviewTextView(preview: p)
                 }
             }
         } else {
@@ -188,49 +191,13 @@ struct PreviewPane: View {
     }
 }
 
-struct PreviewLines: View {
-    let preview: FilePreview
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(preview.lines, id: \.n) { line in
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text("\(line.n)")
-                                .foregroundStyle(.tertiary)
-                                .frame(minWidth: 40, alignment: .trailing)
-                            Text(attributed(highlightRuns(line.text, ranges: line.ranges), trimLeading: false))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .font(.system(.callout, design: .monospaced))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 1)
-                        .background(preview.matchLines.contains(line.n) ? Color.accentColor.opacity(0.08) : Color.clear)
-                        .id(line.n)
-                    }
-                }
-                .padding(.vertical, 6)
-            }
-            .onAppear { proxy.scrollTo(preview.focusLine, anchor: .center) }
-            .onChange(of: preview) { _, p in proxy.scrollTo(p.focusLine, anchor: .center) }
-        }
-    }
-}
-
 struct StatusBar: View {
     @EnvironmentObject private var model: SearchModel
 
     var body: some View {
         HStack(spacing: 10) {
             if model.indexing {
-                ProgressView(value: model.progress?.fraction)
-                    .progressViewStyle(.linear)
-                    .frame(width: 120)
-                Text(progressText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                IndexProgressView(activity: model.activity)
                 Button("Stop") { model.cancelIndex() }
                     .buttonStyle(.link)
             } else if let s = model.stats {
@@ -254,22 +221,37 @@ struct StatusBar: View {
         .padding(.vertical, 5)
     }
 
-    private var progressText: String {
-        guard let p = model.progress else { return "Starting…" }
-        switch p.phase {
-        case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
-        case "content": return "Reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
-        case "cleanup": return "Cleaning up…"
-        default: return "Indexing…"
-        }
-    }
-
     private func indexText(_ s: IndexStats) -> String {
         var text = "\(s.files.formatted()) files · \(s.folders.formatted()) folders · \(s.withContent.formatted()) with text"
         if let last = s.lastIndexedAt {
             text += " · updated " + Date(timeIntervalSince1970: last / 1000).formatted(.relative(presentation: .named))
         }
         return text
+    }
+}
+
+/// The only view that observes indexing progress, so progress ticks redraw just this.
+struct IndexProgressView: View {
+    @ObservedObject var activity: IndexActivity
+
+    var body: some View {
+        ProgressView(value: activity.progress?.fraction)
+            .progressViewStyle(.linear)
+            .frame(width: 120)
+        Text(text)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .monospacedDigit()
+    }
+
+    private var text: String {
+        guard let p = activity.progress else { return "Starting…" }
+        switch p.phase {
+        case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
+        case "content": return "Reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
+        case "cleanup": return "Cleaning up…"
+        default: return "Indexing…"
+        }
     }
 }
 
