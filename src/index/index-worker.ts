@@ -6,7 +6,7 @@ import { acquireLock } from "./lock.ts"
 
 declare const self: Worker
 
-export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; skipSemantic?: boolean } | { type: "cancel" }
+export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string } | { type: "cancel" }
 
 export type IndexWorkerOut =
   | { type: "progress"; progress: IndexProgress }
@@ -34,7 +34,6 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     let lastCommit = 0
     const indexer = new Indexer(db, msg.config, {
       signal: controller.signal,
-      skipSemantic: msg.skipSemantic,
       onProgress: (progress) => send({ type: "progress", progress }),
       onCommit: () => {
         const now = Date.now()

@@ -1,11 +1,8 @@
 import type { Database, Statement } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
-import { extOf, kindOf, SEMANTIC_KINDS, type Kind } from "../kinds.ts"
+import { extOf, kindOf, type Kind } from "../kinds.ts"
 import { cloudFolders, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
-import { chunkText } from "../semantic/chunk.ts"
-import { createEmbedder, type DownloadProgress, type Embedder, embedderId } from "../semantic/embedder.ts"
-import { encodeVector } from "../semantic/vectors.ts"
 import { dirTokens, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, setMeta } from "./db.ts"
@@ -13,7 +10,7 @@ import { wantsContent } from "./extract/index.ts"
 import type { ExtractReply } from "./extract-job.ts"
 import { ExtractPool } from "./pool.ts"
 
-export type IndexPhase = "starting" | "scan" | "content" | "semantic" | "cleanup" | "done" | "cancelled" | "error"
+export type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "done" | "cancelled" | "error"
 
 export interface IndexProgress {
   phase: IndexPhase
@@ -25,16 +22,10 @@ export interface IndexProgress {
   contentDone: number
   contentBytes: number
   contentErrors: number
-  semanticTotal: number
-  semanticDone: number
-  chunks: number
   current: string
   startedAt: number
   elapsedMs: number
-  message?: string
   error?: string
-  /** Non-fatal problem, e.g. the semantic model could not be loaded. */
-  warning?: string
 }
 
 export interface IndexOptions {
@@ -42,11 +33,6 @@ export interface IndexOptions {
   signal?: AbortSignal
   /** Run extraction in-process instead of worker threads (tests, tiny indexes). */
   inProcess?: boolean
-  /** Skip the semantic phase even if enabled. */
-  skipSemantic?: boolean
-  onModelDownload?: DownloadProgress
-  /** Inject an embedder (tests). */
-  embedder?: Embedder
   /** Called after each committed batch so readers can refresh. */
   onCommit?: () => void
 }
@@ -109,7 +95,6 @@ export class Indexer {
     contentGet: Statement
     contentPut: Statement
     contentDel: Statement
-    chunksDel: Statement
     fileDel: Statement
     vocabPut: Statement
   }
@@ -131,9 +116,6 @@ export class Indexer {
       contentDone: 0,
       contentBytes: 0,
       contentErrors: 0,
-      semanticTotal: 0,
-      semanticDone: 0,
-      chunks: 0,
       current: "",
       startedAt: now,
       elapsedMs: 0,
@@ -142,7 +124,7 @@ export class Indexer {
     this.st = {
       insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"),
       updateFile: q("UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, content_state = ? WHERE id = ?"),
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, embed_mtime = 0, note = ?, in_fts = 1 WHERE id = ?"),
+      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1 WHERE id = ?"),
       inFts: q("SELECT in_fts FROM files WHERE id = ?"),
       ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
@@ -150,7 +132,6 @@ export class Indexer {
       contentGet: q("SELECT data FROM content WHERE id = ?"),
       contentPut: q("INSERT INTO content(id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data"),
       contentDel: q("DELETE FROM content WHERE id = ?"),
-      chunksDel: q("DELETE FROM chunks WHERE file_id = ?"),
       fileDel: q("DELETE FROM files WHERE id = ?"),
       vocabPut: q("INSERT OR IGNORE INTO vocab(term) VALUES (?)"),
     }
@@ -198,16 +179,6 @@ export class Indexer {
       if (this.aborted) return this.finish("cancelled")
       await this.content()
       if (this.aborted) return this.finish("cancelled")
-      if (this.config.semantic.enabled && !this.opts.skipSemantic) {
-        try {
-          await this.semantic()
-        } catch (err) {
-          // Names and contents are indexed; semantic search just isn't available yet.
-          this.progress.warning = `semantic index not built: ${(err as Error).message}`
-          this.progress.message = undefined
-        }
-        if (this.aborted) return this.finish("cancelled")
-      }
       this.cleanup(removed)
       return this.finish("done")
     } catch (err) {
@@ -326,7 +297,6 @@ export class Indexer {
     const f = this.ftsFields(path)
     this.st.ftsInsert.run(id, f.name, f.dirs, "")
     this.st.contentDel.run(id)
-    this.st.chunksDel.run(id)
     this.st.setState.run(newState, 0, note, id)
   }
 
@@ -392,7 +362,6 @@ export class Indexer {
     const hadBody = this.manualDelete ? this.storedBody(r.id) : null
     this.ftsDelete(r.id, path, hadBody)
     const f = this.ftsFields(path)
-    this.st.chunksDel.run(r.id)
     if (r.status === "ok") {
       this.st.ftsInsert.run(r.id, f.name, f.dirs, r.text)
       this.st.contentPut.run(r.id, r.compressed)
@@ -403,72 +372,6 @@ export class Indexer {
       this.st.contentDel.run(r.id)
       if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, r.id)
       else this.st.setState.run(ContentState.Error, 0, r.error, r.id)
-    }
-  }
-
-  /* --------------------------------------------------------- semantic -- */
-
-  private async semantic() {
-    const cfg = this.config.semantic
-    const id = embedderId(cfg)
-    if (getMeta(this.db, "semantic_model") !== id) {
-      this.db.transaction(() => {
-        this.db.exec("DELETE FROM chunks")
-        this.db.exec("UPDATE files SET embed_mtime = 0")
-        setMeta(this.db, "semantic_model", id)
-      })()
-    }
-    const kinds = [...SEMANTIC_KINDS].map((k) => `'${k}'`).join(",")
-    const todo = this.db
-      .query(`SELECT id, path, name, mtime FROM files WHERE content_state = 1 AND embed_mtime <> mtime AND kind IN (${kinds}) ORDER BY mtime DESC`)
-      .all() as { id: number; path: string; name: string; mtime: number }[]
-    this.progress.phase = "semantic"
-    this.progress.semanticTotal = todo.length
-    this.progress.message = undefined
-    this.emit(true)
-    if (todo.length === 0) return
-    let embedder = this.opts.embedder
-    if (!embedder) {
-      this.progress.message = "loading semantic model"
-      this.emit(true)
-      embedder = await createEmbedder(cfg, {
-        signal: this.opts.signal,
-        onDownload: (file, received, total) => {
-          this.progress.message = `downloading model ${file} ${total ? Math.round((received / total) * 100) + "%" : `${Math.round(received / 1e6)} MB`}`
-          this.opts.onModelDownload?.(file, received, total)
-          this.emit()
-        },
-      })
-      this.progress.message = undefined
-    }
-    const insert = this.db.prepare("INSERT INTO chunks(file_id, start, end, vec) VALUES (?, ?, ?, ?)")
-    const mark = this.db.prepare("UPDATE files SET embed_mtime = ? WHERE id = ?")
-    const getContent = this.db.prepare("SELECT data FROM content WHERE id = ?")
-    for (let i = 0; i < todo.length; i += 16) {
-      if (this.aborted) return
-      const group = todo.slice(i, i + 16)
-      const items: { fileId: number; start: number; end: number; text: string }[] = []
-      for (const f of group) {
-        const row = getContent.get(f.id) as { data: Uint8Array } | null
-        if (!row) continue
-        const text = decompressText(row.data)
-        const title = f.name.replace(/\.[^.]+$/, "").replace(/[_\-.]+/g, " ")
-        for (const c of chunkText(text, { maxChunks: cfg.maxChunksPerFile })) {
-          items.push({ fileId: f.id, start: c.start, end: c.end, text: `${title}\n${text.slice(c.start, c.end)}` })
-        }
-      }
-      const vectors: Float32Array[] = []
-      for (let j = 0; j < items.length; j += 64) vectors.push(...(await embedder.embedDocuments(items.slice(j, j + 64).map((x) => x.text))))
-      this.db.transaction(() => {
-        for (const f of group) this.st.chunksDel.run(f.id)
-        items.forEach((it, k) => insert.run(it.fileId, it.start, it.end, encodeVector(vectors[k]!)))
-        for (const f of group) mark.run(f.mtime || 1, f.id)
-      })()
-      this.progress.semanticDone += group.length
-      this.progress.chunks += items.length
-      this.progress.current = group[group.length - 1]!.path
-      this.opts.onCommit?.()
-      this.emit()
     }
   }
 
@@ -487,7 +390,6 @@ export class Indexer {
           const body = this.manualDelete ? this.storedBody(id) : null
           this.ftsDelete(id, row.path, body)
           this.st.contentDel.run(id)
-          this.st.chunksDel.run(id)
           this.st.fileDel.run(id)
         }
       })()

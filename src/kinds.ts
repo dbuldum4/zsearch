@@ -152,9 +152,6 @@ export const DOCUMENT_EXTS = new Set([
   "ipynb",
 ])
 
-/** Kinds whose text is worth embedding for semantic search. */
-export const SEMANTIC_KINDS = new Set<Kind>(["text", "markdown", "pdf", "doc", "slides", "ebook", "email", "web", "code", "sheet"])
-
 /** Short badges for the UI. */
 export const KIND_BADGE: Record<Kind, string> = {
   folder: "DIR",

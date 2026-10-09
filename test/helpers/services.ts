@@ -20,7 +20,7 @@ export function testServices(config: Config, opts: { firstRun?: boolean; dbPath?
       return engine.preview(id, query, mode, focusLine)
     },
     async stats(): Promise<StatsReply> {
-      return { stats: indexStats(db, dbPath), semanticReady: engine.semanticAvailable(), semanticError: engine.embedderError }
+      return { stats: indexStats(db, dbPath) }
     },
     refresh(force) {
       const changed = engine.refresh(force)

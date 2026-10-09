@@ -2,23 +2,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
-export type SemanticProvider = "model2vec" | "ollama" | "openai"
-
-export interface SemanticConfig {
-  /** Build and use the semantic (embedding) index. */
-  enabled: boolean
-  /** Embedding backend. `model2vec` runs locally with no extra software. */
-  provider: SemanticProvider
-  /** Model id. For model2vec a Hugging Face repo, for ollama/openai the model name. */
-  model: string
-  /** Base URL for ollama (http://localhost:11434) or an OpenAI-compatible API. */
-  url: string
-  /** Name of the environment variable that holds the API key (openai provider). */
-  apiKeyEnv: string
-  /** Upper bound of chunks embedded per file, keeps huge files from dominating. */
-  maxChunksPerFile: number
-}
-
 export interface ContentConfig {
   /** Extract and index text inside files. */
   enabled: boolean
@@ -48,7 +31,6 @@ export interface Config {
   /** Read contents inside cloud-synced folders (iCloud Drive, CloudStorage); may download files. */
   cloudContent: boolean
   content: ContentConfig
-  semantic: SemanticConfig
   /** Refresh the index in the background when it is older than this (0 = never). */
   autoRefreshMinutes: number
   /** Extraction worker threads (0 = automatic). */
@@ -56,23 +38,17 @@ export interface Config {
   /** Command used to open files in an editor (defaults to $VISUAL / $EDITOR). */
   editor: string
   /** Default search mode in the TUI. */
-  defaultMode: "auto" | "fuzzy" | "exact" | "regex" | "semantic"
+  defaultMode: "auto" | "fuzzy" | "exact" | "regex"
   /** Show the preview pane by default. */
   preview: boolean
 }
 
-export const DEFAULT_SEMANTIC: SemanticConfig = {
-  enabled: false,
-  provider: "model2vec",
-  model: "minishlab/potion-base-8M",
-  url: "",
-  apiKeyEnv: "OPENAI_API_KEY",
-  maxChunksPerFile: 48,
-}
+/** Indexed unless the user picks something else: where people keep and receive documents. */
+export const DEFAULT_ROOTS = ["~/Documents", "~/Downloads"]
 
 export function defaultConfig(): Config {
   return {
-    roots: ["~"],
+    roots: [...DEFAULT_ROOTS],
     exclude: [],
     namesOnly: [],
     includeHidden: false,
@@ -81,7 +57,6 @@ export function defaultConfig(): Config {
     oneFileSystem: false,
     cloudContent: false,
     content: { enabled: true, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000 },
-    semantic: { ...DEFAULT_SEMANTIC },
     autoRefreshMinutes: 60,
     workers: 0,
     editor: "",
@@ -117,26 +92,21 @@ export interface Paths {
   configFile: string
   data: string
   db: string
-  cache: string
-  models: string
   lock: string
 }
 
 export function paths(): Paths {
   const override = process.env.ZSEARCH_HOME
   const h = home()
-  let config: string, data: string, cache: string
+  let config: string, data: string
   if (override) {
     config = data = resolve(override)
-    cache = join(data, "cache")
   } else {
     config = join(process.env.XDG_CONFIG_HOME || join(h, ".config"), "zsearch")
     if (process.platform === "darwin" && !process.env.XDG_DATA_HOME) {
       data = join(h, "Library", "Application Support", "zsearch")
-      cache = join(h, "Library", "Caches", "zsearch")
     } else {
       data = join(process.env.XDG_DATA_HOME || join(h, ".local", "share"), "zsearch")
-      cache = join(process.env.XDG_CACHE_HOME || join(h, ".cache"), "zsearch")
     }
   }
   return {
@@ -144,8 +114,6 @@ export function paths(): Paths {
     configFile: join(config, "config.json"),
     data,
     db: process.env.ZSEARCH_DB ? resolve(process.env.ZSEARCH_DB) : join(data, "index.db"),
-    cache,
-    models: join(cache, "models"),
     lock: join(data, "index.lock"),
   }
 }
@@ -168,6 +136,8 @@ export function mergeConfig(base: Config, patch: unknown): Config {
     }
   }
   walk(out, patch)
+  // Older versions had a semantic mode.
+  if (!["auto", "fuzzy", "exact", "regex"].includes(out.defaultMode as string)) out.defaultMode = "auto"
   return out as unknown as Config
 }
 
@@ -194,7 +164,7 @@ export function saveConfig(config: Config): void {
   renameSync(tmp, file)
 }
 
-/** Set a dotted key (e.g. "semantic.enabled") from a CLI string value. */
+/** Set a dotted key (e.g. "content.enabled") from a CLI string value. */
 export function setConfigValue(config: Config, key: string, raw: string): Config {
   const parts = key.split(".")
   let obj = config as unknown as Record<string, unknown>

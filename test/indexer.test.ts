@@ -2,12 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { type Config, defaultConfig } from "../src/config.ts"
+import type { Config } from "../src/config.ts"
 import { ContentState, decompressText, indexStats, openDb, readContent, compressText } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
-import { makeCorpus } from "./helpers/corpus.ts"
+import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
@@ -29,7 +29,7 @@ function paths(db: Database): string[] {
   return (db.query("SELECT path FROM files ORDER BY path").all() as { path: string }[]).map((r) => r.path.slice(corpus.home.length + 1))
 }
 
-async function index(db: Database, config: Config = defaultConfig(), onProgress?: (p: IndexProgress) => void) {
+async function index(db: Database, config: Config = homeConfig(), onProgress?: (p: IndexProgress) => void) {
   return new Indexer(db, config, { inProcess: true, onProgress }).run()
 }
 
@@ -39,7 +39,7 @@ function ftsCount(db: Database, q: string): number {
 
 describe("crawler", () => {
   test("respects hidden files, skip lists and .gitignore", () => {
-    const opts = crawlOptionsFor(defaultConfig())
+    const opts = crawlOptionsFor(homeConfig())
     const found = [...crawl(opts)].map((e) => e.path.slice(corpus.home.length + 1))
     expect(found).toContain("notes/todo.md")
     expect(found).toContain("code/app/src/server.ts")
@@ -51,7 +51,7 @@ describe("crawler", () => {
   })
 
   test("hidden files and gitignored files can be included", () => {
-    const c = defaultConfig()
+    const c = homeConfig()
     c.includeHidden = true
     c.respectGitignore = false
     const found = [...crawl(crawlOptionsFor(c))].map((e) => e.path.slice(corpus.home.length + 1))
@@ -61,7 +61,7 @@ describe("crawler", () => {
   })
 
   test("user exclude patterns and absolute excludes", () => {
-    const c = defaultConfig()
+    const c = homeConfig()
     c.exclude = ["*.md", "~/Downloads"]
     const found = [...crawl(crawlOptionsFor(c))].map((e) => e.path.slice(corpus.home.length + 1))
     expect(found.some((p) => p.endsWith(".md"))).toBe(false)
@@ -73,9 +73,9 @@ describe("crawler", () => {
     const loop = join(corpus.home, "notes", "loop")
     symlinkSync(join(corpus.home, "notes"), loop)
     try {
-      const plain = [...crawl(crawlOptionsFor(defaultConfig()))].map((e) => e.path)
+      const plain = [...crawl(crawlOptionsFor(homeConfig()))].map((e) => e.path)
       expect(plain.some((p) => p.includes("/loop/"))).toBe(false)
-      const c = defaultConfig()
+      const c = homeConfig()
       c.followSymlinks = true
       const followed = [...crawl(crawlOptionsFor(c))].map((e) => e.path)
       expect(followed.filter((p) => p.endsWith("/todo.md")).length).toBeLessThanOrEqual(2)
@@ -94,7 +94,7 @@ describe("indexer", () => {
 
   test("first run indexes names and contents", async () => {
     const phases: string[] = []
-    const r = await index(db, defaultConfig(), (p) => {
+    const r = await index(db, homeConfig(), (p) => {
       if (phases[phases.length - 1] !== p.phase) phases.push(p.phase)
     })
     expect(r.phase).toBe("done")
@@ -159,7 +159,7 @@ describe("indexer", () => {
   })
 
   test("turning content off keeps names but drops texts", async () => {
-    const c = defaultConfig()
+    const c = homeConfig()
     c.content.enabled = false
     await index(db, c)
     expect(ftsCount(db, "photosynthesis")).toBe(0)
@@ -170,7 +170,7 @@ describe("indexer", () => {
   })
 
   test("names-only folders", async () => {
-    const c = defaultConfig()
+    const c = homeConfig()
     c.namesOnly = ["~/Documents"]
     await index(db, c)
     expect(ftsCount(db, "photosynthesis")).toBe(0)
@@ -179,7 +179,7 @@ describe("indexer", () => {
   })
 
   test("changing roots removes files outside them", async () => {
-    const c = defaultConfig()
+    const c = homeConfig()
     c.roots = ["~/notes"]
     const r = await index(db, c)
     expect(r.removed).toBeGreaterThan(10)
@@ -199,14 +199,14 @@ describe("indexer", () => {
   test("cancellation leaves a usable index", async () => {
     const controller = new AbortController()
     controller.abort()
-    const r = await new Indexer(db, defaultConfig(), { inProcess: true, signal: controller.signal }).run()
+    const r = await new Indexer(db, homeConfig(), { inProcess: true, signal: controller.signal }).run()
     expect(r.phase).toBe("cancelled")
     expect(ftsCount(db, "kyoto")).toBe(1)
   })
 
   test("worker-thread extraction gives the same result", async () => {
     const other = openDb(join(corpus.home, ".zsearch-data", "workers.db"))
-    const r = await new Indexer(other, defaultConfig()).run()
+    const r = await new Indexer(other, homeConfig()).run()
     expect(r.phase).toBe("done")
     expect(indexStats(other).withContent).toBe(indexStats(db).withContent)
     other.close()

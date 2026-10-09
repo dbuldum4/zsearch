@@ -159,24 +159,3 @@ export function keywordLines(text: string, pattern: string, maxLines = 50): { li
 export function splitLines(text: string): string[] {
   return text.split(/\n|\f/)
 }
-
-/** Page number (1-based) of a character offset. */
-export function pageAt(text: string, offset: number): number {
-  let p = 1
-  let i = text.indexOf("\f")
-  while (i >= 0 && i < offset) {
-    p++
-    i = text.indexOf("\f", i + 1)
-  }
-  return p
-}
-
-/** Line number (1-based, \n and \f both break lines) of a character offset. */
-export function lineAt(text: string, offset: number): number {
-  let n = 1
-  for (let i = 0; i < offset && i < text.length; i++) {
-    const c = text.charCodeAt(i)
-    if (c === 10 || c === 12) n++
-  }
-  return n
-}

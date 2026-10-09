@@ -17,5 +17,5 @@ export type SearchOut =
   | { type: "results"; qid: number; response: SearchResponse }
   | { type: "preview"; qid: number; preview: Preview }
   | { type: "refreshed"; files: number; changed: boolean }
-  | { type: "stats"; qid: number; stats: IndexStats; semanticReady: boolean; semanticError: string | null }
+  | { type: "stats"; qid: number; stats: IndexStats }
   | { type: "error"; qid?: number; error: string }

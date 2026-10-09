@@ -7,8 +7,6 @@ import { workerUrl } from "../util/workers.ts"
 
 export interface StatsReply {
   stats: IndexStats
-  semanticReady: boolean
-  semanticError: string | null
 }
 
 /**
@@ -83,7 +81,7 @@ export class SearchClient {
         const p = this.pending.get(m.qid)
         if (!p) break
         this.pending.delete(m.qid)
-        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : { stats: m.stats, semanticReady: m.semanticReady, semanticError: m.semanticError })
+        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : { stats: m.stats })
         break
       }
       case "refreshed":

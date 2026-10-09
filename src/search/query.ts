@@ -1,8 +1,8 @@
 import { home, resolvePath } from "../config.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 
-export type Mode = "auto" | "fuzzy" | "exact" | "regex" | "semantic"
-export const MODES: Mode[] = ["auto", "fuzzy", "exact", "regex", "semantic"]
+export type Mode = "auto" | "fuzzy" | "exact" | "regex"
+export const MODES: Mode[] = ["auto", "fuzzy", "exact", "regex"]
 
 export interface Filters {
   exts: Set<string> | null
@@ -96,9 +96,6 @@ const MODE_PREFIXES: Record<string, Mode> = {
   "exact:": "exact",
   "fuzzy:": "fuzzy",
   "f:": "fuzzy",
-  "sem:": "semantic",
-  "semantic:": "semantic",
-  "?": "semantic",
 }
 
 interface Token {

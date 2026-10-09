@@ -87,13 +87,12 @@ export function resultRows(hits: SearchHit[], selected: number, top: number, col
     out.push({ key: `${h.id}:0`, segs: line1, bg, hit: i })
     if (h.lines.length && out.length < rows) {
       const l = h.lines[0]!
-      const semantic = h.sources.includes("semantic") && !l.ranges.length
-      const label = semantic ? "≈ " : `${locationLabel(h, l)}${h.matchCount > 1 ? ` (+${h.matchCount - 1})` : ""}  `
+      const label = `${locationLabel(h, l)}${h.matchCount > 1 ? ` (+${h.matchCount - 1})` : ""}  `
       const text = l.text.replace(/\s+/g, " ")
       const leftTrim = text.length - text.trimStart().length
       const body = highlight(
         text.trimStart(),
-        { fg: semantic ? theme.muted : theme.muted, italic: semantic },
+        { fg: theme.muted },
         { fg: theme.match, bg: theme.matchBg, bold: true },
         undefined,
         l.ranges.map(([a, b]) => [a - leftTrim, b - leftTrim]),

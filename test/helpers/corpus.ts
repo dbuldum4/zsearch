@@ -1,8 +1,14 @@
 import { cpSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { type Config, defaultConfig } from "../../src/config.ts"
 
 export const FIXTURES = join(import.meta.dir, "..", "fixtures")
+
+/** Default settings, but indexing the whole (test) home folder. */
+export function homeConfig(): Config {
+  return { ...defaultConfig(), roots: ["~"] }
+}
 
 /** Create a throwaway "home" folder with a realistic mix of files. */
 export function makeCorpus(): { home: string; cleanup: () => void; write: (rel: string, data: string | Uint8Array) => string } {

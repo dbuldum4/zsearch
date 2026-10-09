@@ -4,17 +4,15 @@ import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
 import type { Kind } from "../kinds.ts"
-import { createEmbedder, embedderId, type Embedder, model2vecInstalled } from "../semantic/embedder.ts"
-import { VectorStore } from "../semantic/vectors.ts"
 import { escapeRegExp, foldTerm, ftsQuote, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
-import { findLines, keywordLines, type LineMatch, lineAt, pageAt, splitLines, termsPattern } from "./snippet.ts"
+import { findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
 
-export type Source = "name" | "content" | "semantic"
+export type Source = "name" | "content"
 
 export interface SearchHit {
   id: number
@@ -28,7 +26,7 @@ export interface SearchHit {
   sources: Source[]
   /** Highlight positions in `display`. */
   namePositions: number[]
-  /** Best matching lines (content / regex / semantic passage). */
+  /** Best matching lines (content or regex). */
   lines: LineMatch[]
   matchCount: number
 }
@@ -81,7 +79,7 @@ export interface SearchOptions {
   budgetMs?: number
 }
 
-type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number; /** relevance factor (0..1] applied on top of rank */ w?: number }
+type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
 
 const QUESTION = /^(how|what|why|where|when|who|which|whose|whom|is|are|does|do|can|could|should|would|find|show|list|documents?|files?|notes?|anything|something|papers?)\b/i
 const QUESTION_WORDS = new Set("how what why where when who which whose whom find show list did does do can could should would write wrote written".split(" "))
@@ -112,15 +110,9 @@ export function isNaturalLanguage(q: ParsedQuery): boolean {
 export class SearchEngine {
   readonly catalog = new Catalog()
   readonly vocab = new Vocab()
-  private vectors: VectorStore | null = null
-  private vectorsMaxId = 0
-  private embedder: Embedder | null = null
-  private embedderLoading: Promise<Embedder | null> | null = null
-  embedderError: string | null = null
   private dataVersion = -1
   private generation = ""
   private frecency = new Map<string, { count: number; last: number }>()
-  private semanticModel: string | null = null
 
   constructor(
     readonly db: Database,
@@ -139,11 +131,6 @@ export class SearchEngine {
     this.generation = gen
     this.catalog.load(this.db, !full)
     this.vocab.load(this.db, !full)
-    this.semanticModel = getMeta(this.db, "semantic_model")
-    if (full) {
-      this.vectors = null
-      this.vectorsMaxId = 0
-    } else if (this.vectors) this.loadVectors(true)
     this.frecency.clear()
     for (const r of this.db.query("SELECT path, count, last FROM frecency").all() as { path: string; count: number; last: number }[]) this.frecency.set(r.path, r)
     return true
@@ -185,9 +172,6 @@ export class SearchEngine {
         case "regex":
           await this.runGrep(q, limit, res, true, opts)
           break
-        case "semantic":
-          await this.runSemantic(q, limit, res, false)
-          break
         default:
           await this.runAuto(q, limit, res, opts)
       }
@@ -214,7 +198,6 @@ export class SearchEngine {
       res.resolved = "exact"
       return this.runGrep({ ...q, text: q.phrases[0]! }, limit, res, false, opts, "auto → exact phrase")
     }
-    const semanticReady = this.semanticAvailable()
     const natural = isNaturalLanguage(q)
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = []
     const names = this.nameMatches(q, limit, 0.55)
@@ -224,14 +207,7 @@ export class SearchEngine {
     lists.push({ name: "names", weight: natural ? 0.6 : 1.25, items: names, source: "name" })
     lists.push({ name: "text", weight: keywordWeight, items: keyword, source: "content" })
     const parts = ["names", "text"]
-    if (semanticReady && (natural || q.words.length >= 3)) {
-      const sem = await this.semanticMatches(q, Math.max(limit, 50))
-      if (sem.length) {
-        lists.push({ name: "semantic", weight: natural ? 1.3 : 0.7, items: sem, source: "semantic" })
-        parts.push("meaning")
-      }
-    }
-    res.resolved = natural && parts.includes("meaning") ? "semantic" : "auto"
+    res.resolved = "auto"
     // Nothing at all? Forgive typos.
     if (lists.every((l) => l.items.length === 0)) {
       const typoNames = this.catalog.typo(q.words.join(" "), q.filters, limit).map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions }))
@@ -242,7 +218,6 @@ export class SearchEngine {
     }
     res.strategy = `auto → ${parts.join(" + ")}`
     this.fuse(lists, limit, res, q)
-    if (!semanticReady && natural && this.config.semantic.enabled === false) res.notice ??= "tip: enable semantic search for natural-language queries (zsearch config set semantic.enabled true)"
   }
 
   private async runFuzzy(q: ParsedQuery, limit: number, res: SearchResponse) {
@@ -259,26 +234,6 @@ export class SearchEngine {
     res.strategy = operators ? "fuzzy names" : "fuzzy names + typo-tolerant text"
     this.fuse(lists, limit, res, q)
     res.total = Math.max(res.total, this.catalog.lastMatchCount)
-  }
-
-  private async runSemantic(q: ParsedQuery, limit: number, res: SearchResponse, fromAuto: boolean) {
-    if (!this.config.semantic.enabled) {
-      res.notice = "semantic search is off — enable it in settings (Ctrl-S) or `zsearch config set semantic.enabled true`, then re-index"
-    }
-    const sem = await this.semanticMatches(q, Math.max(limit, 50))
-    const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [
-      { name: "semantic", weight: 1, items: sem, source: "semantic" },
-      { name: "text", weight: sem.length ? 0.35 : 1, items: this.keywordMatches(q, limit, q.typing, false, true), source: "content" },
-    ]
-    if (!sem.length && this.config.semantic.enabled) {
-      res.notice ??= this.embedderError
-        ? `semantic search unavailable: ${this.embedderError}`
-        : this.vectorCount() === 0
-          ? "semantic index is empty — it is built during indexing (Ctrl-R)"
-          : undefined
-    }
-    res.strategy = sem.length ? (fromAuto ? "auto → meaning + text" : "meaning + text") : "text (no semantic matches)"
-    this.fuse(lists, limit, res, q)
   }
 
   /* ------------------------------------------------------------- names -- */
@@ -545,108 +500,6 @@ export class SearchEngine {
     res.total = Math.max(res.total, nameHits.length + contentHits.length)
   }
 
-  /* ---------------------------------------------------------- semantic -- */
-
-  semanticAvailable(): boolean {
-    if (!this.config.semantic.enabled) return false
-    if (this.semanticModel !== embedderId(this.config.semantic)) return false
-    if (this.config.semantic.provider === "model2vec" && !model2vecInstalled(this.config.semantic.model)) return false
-    return this.vectorCount() > 0
-  }
-
-  vectorCount(): number {
-    return (this.db.query("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n
-  }
-
-  private loadVectors(incremental: boolean) {
-    if (!incremental || !this.vectors) {
-      this.vectors = new VectorStore()
-      this.vectorsMaxId = 0
-    }
-    const rows = this.db.query("SELECT id, file_id, start, end, vec FROM chunks WHERE id > ? ORDER BY id").all(this.vectorsMaxId) as {
-      id: number
-      file_id: number
-      start: number
-      end: number
-      vec: Uint8Array
-    }[]
-    for (const r of rows) {
-      this.vectors.add(r.file_id, r.start, r.end, r.vec)
-      if (r.id > this.vectorsMaxId) this.vectorsMaxId = r.id
-    }
-  }
-
-  async getEmbedder(): Promise<Embedder | null> {
-    if (this.embedder) return this.embedder
-    if (!this.embedderLoading) {
-      this.embedderLoading = createEmbedder(this.config.semantic, { download: false })
-        .then((e) => {
-          this.embedder = e
-          this.embedderError = null
-          return e
-        })
-        .catch((err) => {
-          this.embedderError = (err as Error).message
-          this.embedderLoading = null
-          return null
-        })
-    }
-    return this.embedderLoading
-  }
-
-  /** Forget the loaded model (after config changes). */
-  resetEmbedder() {
-    this.embedder = null
-    this.embedderLoading = null
-    this.embedderError = null
-    this.vectors = null
-  }
-
-  private async semanticMatches(q: ParsedQuery, limit: number): Promise<Ranked[]> {
-    if (!this.config.semantic.enabled) return []
-    if (this.semanticModel !== embedderId(this.config.semantic)) return []
-    if (!this.vectors) this.loadVectors(false)
-    if (!this.vectors || this.vectors.count === 0) return []
-    const embedder = await this.getEmbedder()
-    if (!embedder) return []
-    const text = [...q.words, ...q.phrases].join(" ")
-    if (!text.trim()) return []
-    const qv = await embedder.embedQuery(text)
-    const allow = hasFilters(q.filters)
-      ? (fileId: number) => {
-          const i = this.catalog.indexOf(fileId)
-          return i !== undefined && this.catalog.passes(i, q.filters)
-        }
-      : undefined
-    const top = this.vectors.search(qv, limit * 4, allow)
-    const best = new Map<number, Ranked & { start: number; end: number }>()
-    for (const t of top) {
-      const fileId = this.vectors.fileIds[t.idx]!
-      if (best.has(fileId)) continue
-      best.set(fileId, { id: fileId, raw: t.score, start: this.vectors.starts[t.idx]!, end: this.vectors.ends[t.idx]! })
-      if (best.size >= limit) break
-    }
-    // Similarities are only comparable within one query: keep passages reasonably close to
-    // the best one, and let the similarity (not just the rank) count when fusing lists.
-    const out: Ranked[] = []
-    const bestScore = best.values().next().value?.raw ?? 0
-    if (bestScore <= 0) return []
-    for (const b of best.values()) {
-      const raw = b.raw ?? 0
-      if (out.length > 0 && raw < bestScore * 0.6) break
-      out.push({ id: b.id, raw, w: (raw / bestScore) ** 2, lines: this.passageLines(b.id, b.start, b.end) })
-    }
-    return out
-  }
-
-  private passageLines(id: number, start: number, end: number): LineMatch[] {
-    const row = this.db.query("SELECT data FROM content WHERE id = ?").get(id) as { data: Uint8Array } | null
-    if (!row) return []
-    const text = decompressText(row.data)
-    const passage = text.slice(start, end).replace(/\s+/g, " ").trim()
-    return [{ line: lineAt(text, start), page: pageAt(text, start), text: passage.slice(0, 240) + (passage.length > 240 ? "…" : ""), ranges: [] }]
-  }
-
   /* ------------------------------------------------------------ fusion -- */
 
   private hit(id: number, score: number, sources: Source[]): SearchHit {
@@ -693,7 +546,7 @@ export class SearchEngine {
       list.items.forEach((item, rank) => {
         let e = acc.get(item.id)
         if (!e) acc.set(item.id, (e = { score: 0, sources: new Set(), count: 0 }))
-        e.score += (list.weight * (item.w ?? 1)) / (K + rank + 1)
+        e.score += list.weight / (K + rank + 1)
         e.sources.add(list.source)
         if (item.positions && !e.positions) e.positions = item.positions
         if (item.lines && (!e.lines || list.source === "content")) e.lines = item.lines

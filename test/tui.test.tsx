@@ -3,7 +3,7 @@ import { testRender } from "@opentui/solid"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
 import { App } from "../src/tui/app.tsx"
-import { makeCorpus } from "./helpers/corpus.ts"
+import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
 import { testServices } from "./helpers/services.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -58,11 +58,11 @@ describe("first run", () => {
     const s = await testRender(() => <App services={t.services} onExit={(sel) => (exited = sel)} />, { width: 120, height: 32 })
     try {
       const welcome = await until(s, (f) => f.includes("Welcome to zsearch"))
+      expect(welcome).toContain("(•) Documents and Downloads")
       expect(welcome).toContain("Home folder")
       expect(welcome).toContain("Search inside files")
       expect(welcome).toContain("Start indexing")
-      // Toggle "include hidden" (cursor starts on the button: go up 3) and start.
-      s.mockInput.pressArrow("up")
+      // Toggle "include hidden" (cursor starts on the button: go up 2) and start.
       s.mockInput.pressArrow("up")
       s.mockInput.pressArrow("up")
       await until(s, (f) => f.includes("❯ [ ] Include hidden"))
@@ -72,15 +72,21 @@ describe("first run", () => {
       await until(s, (f) => f.includes("Index ready"))
       expect(t.calls.saved).toHaveLength(1)
       expect(t.calls.saved[0]!.includeHidden).toBe(true)
+      expect(t.calls.saved[0]!.roots).toEqual(["~/Documents", "~/Downloads"])
       expect(t.calls.indexRuns).toBe(1)
       await type(s, "budget")
       const frame = await until(s, (f) => f.includes("budget.xlsx") && f.includes("report.docx") && f.includes("auto → names + text"))
       expect(frame).toMatch(/\d+ results?/)
-      // hidden files were included by the setup choice
+      // Downloads is indexed too...
       await esc(s)
       await until(s, (f) => !f.includes("❯ budget"))
-      await type(s, "secret.conf")
-      await until(s, (f) => f.includes(".config/secret.conf") || f.includes("secret.conf"))
+      await type(s, "zanzibar")
+      await until(s, (f) => f.includes("unknown-text-file"))
+      // ...but the rest of the home folder is not.
+      await esc(s)
+      await until(s, (f) => !f.includes("❯ zanzibar"))
+      await type(s, "pancakes")
+      await until(s, (f) => f.includes("No matches"))
       expect(exited).toBeUndefined()
     } finally {
       s.renderer.destroy()
@@ -95,9 +101,9 @@ describe("search screen", () => {
   let exited: string | null | undefined
 
   beforeAll(async () => {
-    t = testServices(defaultConfig())
+    t = testServices(homeConfig())
     // Build the index up front so the app opens straight into search.
-    await t.services.startIndex(defaultConfig(), {}).done
+    await t.services.startIndex(homeConfig(), {}).done
     t.resetEngine()
     s = await testRender(() => <App services={t.services} onExit={(sel) => (exited = sel)} />, { width: 120, height: 32 })
     await until(s, (f) => f.includes("Start typing") || f.includes("results"))
@@ -166,8 +172,6 @@ describe("search screen", () => {
     await until(s, (f) => f.includes(" EXACT ") && f.includes("exact (indexed)"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" REGEX ") && f.includes("regex (indexed)"))
-    s.mockInput.pressTab()
-    await until(s, (f) => f.includes(" SEMANTIC ") && f.includes("semantic search is off"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" AUTO ") && f.includes("auto → names"))
   })
@@ -244,7 +248,8 @@ describe("search screen", () => {
   test("settings overlay", async () => {
     s.mockInput.pressKey("s", { ctrl: true })
     const f = await until(s, (f) => f.includes("zsearch settings"))
-    expect(f).toContain("Semantic search")
+    expect(f).toContain("Search inside files")
+    expect(f).not.toContain("Semantic")
     await esc(s)
     await until(s, (f) => !f.includes("zsearch settings"))
   })
@@ -260,7 +265,7 @@ describe("search screen", () => {
 
 describe("print mode", () => {
   test("Enter returns the path instead of opening it", async () => {
-    const t = testServices(defaultConfig())
+    const t = testServices(homeConfig())
     let exited: string | null | undefined
     const s = await testRender(() => <App services={t.services} initialQuery="pancakes" printMode onExit={(sel) => (exited = sel)} />, { width: 100, height: 30 })
     try {

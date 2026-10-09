@@ -64,7 +64,7 @@ describe("query parsing", () => {
     expect(parseQuery("re:foo  bar").text).toBe("foo  bar")
     expect(parseQuery("/a+b/").forcedMode).toBe("regex")
     expect(parseQuery("/a+b/").text).toBe("a+b")
-    expect(parseQuery("?how do plants make energy").forcedMode).toBe("semantic")
+    expect(parseQuery("?how do plants make energy").forcedMode).toBe(null)
     expect(parseQuery('"exact words"').forcedMode).toBe("exact")
     expect(parseQuery("f:srvr").forcedMode).toBe("fuzzy")
     expect(parseQuery("grep:TODO").forcedMode).toBe("exact")
@@ -274,7 +274,17 @@ describe("configuration", () => {
     expect(c.content.enabled).toBe(false)
     expect((c as unknown as Record<string, unknown>).bogus).toBeUndefined()
     expect(setConfigValue(defaultConfig(), "exclude", "*.log, tmp/").exclude).toEqual(["*.log", "tmp/"])
-    expect(() => setConfigValue(defaultConfig(), "semantic", "x")).toThrow()
+    expect(() => setConfigValue(defaultConfig(), "content", "x")).toThrow()
+    expect(() => setConfigValue(defaultConfig(), "semantic.enabled", "true")).toThrow()
+  })
+
+  test("configs from versions with semantic search still load", async () => {
+    const { defaultConfig, mergeConfig } = await import("../src/config.ts")
+    const c = mergeConfig(defaultConfig(), { defaultMode: "semantic", semantic: { enabled: true, model: "x" }, includeHidden: true })
+    expect(c.defaultMode).toBe("auto")
+    expect(c.includeHidden).toBe(true)
+    expect("semantic" in c).toBe(false)
+    expect(mergeConfig(defaultConfig(), { defaultMode: "regex" }).defaultMode).toBe("regex")
   })
 })
 

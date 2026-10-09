@@ -9,9 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { defaultConfig } from "../src/config.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
-import { writeTestModel } from "./helpers/model.ts"
 
 const ROOT = join(import.meta.dir, "..")
 const DRIVER = join(import.meta.dir, "e2e", "pty_driver.py")
@@ -73,6 +71,7 @@ for (const [name, cmd] of variants) {
         { wait_exit: 5 },
       ])
       expect(r.snapshots.welcome).toContain("Start indexing")
+      expect(r.snapshots.welcome).toContain("(•) Documents and Downloads")
       expect(r.snapshots.results).toContain("budget.xlsx")
       expect(r.snapshots.results).toMatch(/3 results/)
       expect(r.snapshots.preview).toContain("Quarterly Planning Report")
@@ -83,6 +82,10 @@ for (const [name, cmd] of variants) {
     })
 
     test("existing index: query from the command line, regex mode, help", () => {
+      // The first run indexed Documents and Downloads; the rest of the tests search the whole home.
+      const idx = spawnSync(cmd[0]!, [...cmd.slice(1), "index", "--home", "-q"], { env: { ...process.env, ...env }, encoding: "utf8" })
+      if (idx.status !== 0) console.log(idx.stdout, idx.stderr)
+      expect(idx.status).toBe(0)
       const r = drive([...cmd, "-m", "regex", "MAX_\\w+"], env, [
         { expect: "MAX_RETRIES = 42", timeout: 20 },
         { snapshot: "regex" },
@@ -132,25 +135,6 @@ for (const [name, cmd] of variants) {
       expect(readFileSync(log, "utf8").trim()).toBe(`+7 ${join(corpus.home, "code", "app", "src", "util", "parse_config.py")}`)
       expect(r.snapshots.after).toContain("zsearch")
       expect(r.exit).toBe(0)
-    })
-
-    test("semantic search with a local model", () => {
-      const modelDir = writeTestModel(join(corpus.home, ".zsearch-data", "model"))
-      const config = defaultConfig()
-      config.semantic = { ...config.semantic, enabled: true, model: modelDir }
-      writeFileSync(join(corpus.home, ".zsearch-data", "config.json"), JSON.stringify(config))
-      const idx = spawnSync(cmd[0]!, [...cmd.slice(1), "index", "-q"], { env: { ...process.env, ...env }, encoding: "utf8" })
-      if (idx.status !== 0) console.log(idx.stdout, idx.stderr)
-      expect(idx.status).toBe(0)
-      const r = drive([...cmd, "-m", "semantic", "cooking breakfast"], env, [
-        { expect: "meaning + text", timeout: 20 },
-        { snapshot: "sem" },
-        { key: "ctrl-c" },
-        { wait_exit: 5 },
-      ])
-      const firstResult = r.snapshots.sem!.split("\n").find((l) => l.startsWith("▌"))
-      if (!firstResult?.includes("pancakes.txt")) console.log(r.snapshots.sem)
-      expect(firstResult).toContain("pancakes.txt")
     })
   })
 }

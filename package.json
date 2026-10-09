@@ -1,7 +1,7 @@
 {
   "name": "zsearch",
   "version": "0.1.0",
-  "description": "Fast file search for your terminal: names, contents (PDF, Office, code, text) with fuzzy, exact, regex and semantic modes.",
+  "description": "Fast file search for your terminal: names, contents (PDF, Office, code, text) with fuzzy, exact and regex modes.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -22,7 +22,6 @@
     "linux"
   ],
   "dependencies": {
-    "@huggingface/tokenizers": "0.2.0",
     "@opentui/core": "0.5.17",
     "@opentui/solid": "0.5.17",
     "ignore": "7.0.12",

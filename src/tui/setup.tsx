@@ -1,7 +1,7 @@
 import type { InputRenderable, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { createMemo, createSignal, For, Show } from "solid-js"
-import { type Config, home, resolvePath } from "../config.ts"
+import { type Config, DEFAULT_ROOTS, home, resolvePath } from "../config.ts"
 import { isMac } from "../platform.ts"
 import { StyledLine } from "./line.tsx"
 import { type Seg, truncate } from "./styled.ts"
@@ -18,16 +18,18 @@ export interface SetupProps {
   onCancel: () => void
 }
 
-type Scope = "home" | "disk" | "custom"
+type Scope = "docs" | "home" | "disk" | "custom"
 
 function scopeOf(roots: string[]): Scope {
   const r = roots.map(resolvePath)
+  const docs = DEFAULT_ROOTS.map(resolvePath)
+  if (r.length === docs.length && docs.every((d) => r.includes(d))) return "docs"
   if (r.length === 1 && r[0] === home()) return "home"
   if (r.length === 1 && r[0] === "/") return "disk"
   return "custom"
 }
 
-const ITEMS = ["home", "disk", "custom", "content", "hidden", "gitignore", "semantic", "start", "cancel"] as const
+const ITEMS = ["docs", "home", "disk", "custom", "content", "hidden", "gitignore", "start", "cancel"] as const
 type Item = (typeof ITEMS)[number]
 
 export function Setup(props: SetupProps) {
@@ -36,7 +38,6 @@ export function Setup(props: SetupProps) {
   const [content, setContent] = createSignal(props.config.content.enabled)
   const [hidden, setHidden] = createSignal(props.config.includeHidden)
   const [gitignore, setGitignore] = createSignal(props.config.respectGitignore)
-  const [semantic, setSemantic] = createSignal(props.config.semantic.enabled)
   const [cursor, setCursor] = createSignal<number>(ITEMS.indexOf("start"))
   const [editing, setEditing] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
@@ -47,7 +48,8 @@ export function Setup(props: SetupProps) {
 
   const build = (): Config | null => {
     const next: Config = structuredClone(props.config)
-    if (scope() === "home") next.roots = ["~"]
+    if (scope() === "docs") next.roots = [...DEFAULT_ROOTS]
+    else if (scope() === "home") next.roots = ["~"]
     else if (scope() === "disk") next.roots = ["/"]
     else {
       const roots = custom()
@@ -63,7 +65,6 @@ export function Setup(props: SetupProps) {
     next.content.enabled = content()
     next.includeHidden = hidden()
     next.respectGitignore = gitignore()
-    next.semantic.enabled = semantic()
     return next
   }
 
@@ -76,13 +77,13 @@ export function Setup(props: SetupProps) {
       JSON.stringify(before.roots.map(resolvePath)) !== JSON.stringify(next.roots.map(resolvePath)) ||
       before.content.enabled !== next.content.enabled ||
       before.includeHidden !== next.includeHidden ||
-      before.respectGitignore !== next.respectGitignore ||
-      before.semantic.enabled !== next.semantic.enabled
+      before.respectGitignore !== next.respectGitignore
     props.onDone(next, changed)
   }
 
   const activate = () => {
     switch (item()) {
+      case "docs":
       case "home":
       case "disk":
         setScope(item() as Scope)
@@ -99,9 +100,6 @@ export function Setup(props: SetupProps) {
         break
       case "gitignore":
         setGitignore((v) => !v)
-        break
-      case "semantic":
-        setSemantic((v) => !v)
         break
       case "start":
         finish()
@@ -145,7 +143,7 @@ export function Setup(props: SetupProps) {
   const radio = (it: Scope, label: string, detail: string): Seg[] =>
     line(it, [
       { text: scope() === it ? "(•) " : "( ) ", fg: scope() === it ? t().accent : t().subtle },
-      { text: label.padEnd(16), fg: t().text },
+      { text: label.padEnd(25), fg: t().text },
       { text: detail, fg: t().subtle, bold: false },
     ])
   const check = (it: Item, on: boolean, label: string, detail: string): Seg[] =>
@@ -167,10 +165,11 @@ export function Setup(props: SetupProps) {
       out.push(row)
     }
     push([{ text: "  Fast search for everything in your files: names, text inside documents,", fg: t().muted }])
-    push([{ text: "  code, PDFs, Office files — with fuzzy, exact, regex and semantic modes.", fg: t().muted }])
+    push([{ text: "  code, PDFs, Office files — with fuzzy, exact and regex modes.", fg: t().muted }])
     push([])
     const intro = out.length
     push([{ text: "  What should zsearch index?", fg: t().text, bold: true }])
+    push(radio("docs", "Documents and Downloads", DEFAULT_ROOTS.join(", ")), "docs")
     push(radio("home", "Home folder", h), "home")
     push(radio("disk", "Entire disk", isMac ? "/  (grant Full Disk Access for protected folders)" : "/  (system folders: names only)"), "disk")
     push(radio("custom", "Custom folders", scope() === "custom" && !editing() ? truncate(custom(), w() - 30) : "comma-separated, e.g. ~/Documents, ~/code"), "custom")
@@ -180,7 +179,6 @@ export function Setup(props: SetupProps) {
     push(check("content", content(), "Search inside files", "PDF, Word, Excel, PowerPoint, code, text…"), "content")
     push(check("hidden", hidden(), "Include hidden files and folders", "dotfiles like ~/.config"), "hidden")
     push(check("gitignore", gitignore(), "Skip files ignored by .gitignore", "build output, dependencies"), "gitignore")
-    push(check("semantic", semantic(), "Semantic search", "find by meaning; downloads a ~30 MB model once"), "semantic")
     push([])
     const buttons: Seg[] = [{ text: "    " }, ...button("start", props.firstRun ? "Start indexing" : "Save", true), { text: "   " }, ...button("cancel", props.firstRun ? "Quit" : "Cancel", false)]
     push(buttons, ITEMS[cursor()] === "start" ? "start" : "cancel")

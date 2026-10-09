@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { join } from "node:path"
-import { type Config, defaultConfig } from "../src/config.ts"
+import type { Config } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine, type SearchResponse } from "../src/search/engine.ts"
 import type { Mode } from "../src/search/query.ts"
-import { makeCorpus } from "./helpers/corpus.ts"
+import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 let db: Database
@@ -23,7 +23,7 @@ beforeAll(async () => {
   corpus.write("code/app/src/receive.py", "def receive(packet):\n    return packet\n")
   corpus.write("notes/meeting-2024-05.md", "Meeting notes\nPhone: 555-1234\nAction: email Anna about the budget.\n")
   db = openDb(join(corpus.home, ".zsearch-data", "index.db"))
-  config = defaultConfig()
+  config = homeConfig()
   await new Indexer(db, config, { inProcess: true }).run()
   engine = new SearchEngine(db, config)
 })
@@ -201,14 +201,6 @@ describe("exact and regex modes", () => {
   test("invalid regex reports an error", async () => {
     const r = await search("foo(", "regex")
     expect(r.error).toMatch(/invalid regex/)
-  })
-})
-
-describe("semantic mode without a model", () => {
-  test("explains how to enable it and still returns text matches", async () => {
-    const r = await search("budget", "semantic")
-    expect(r.notice).toMatch(/semantic search is off/)
-    expect(names(r)).toContain("Documents/budget.xlsx")
   })
 })
 

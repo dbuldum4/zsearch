@@ -47,9 +47,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
       }
       case "config": {
         if (!engine) break
-        const semanticChanged = JSON.stringify(engine.config.semantic) !== JSON.stringify(msg.config.semantic)
         engine.config = msg.config as Config
-        if (semanticChanged) engine.resetEmbedder()
         break
       }
       case "opened": {
@@ -58,13 +56,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
       }
       case "stats": {
         if (!engine) break
-        send({
-          type: "stats",
-          qid: msg.qid,
-          stats: indexStats(engine.db, dbPath),
-          semanticReady: engine.semanticAvailable(),
-          semanticError: engine.embedderError,
-        })
+        send({ type: "stats", qid: msg.qid, stats: indexStats(engine.db, dbPath) })
         break
       }
     }

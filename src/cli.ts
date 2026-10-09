@@ -4,6 +4,7 @@ import pkg from "../package.json" with { type: "json" }
 import {
   type Config,
   configExists,
+  DEFAULT_ROOTS,
   defaultConfig,
   ensureDirs,
   loadConfig,
@@ -20,7 +21,6 @@ import { KIND_BADGE } from "./kinds.ts"
 import { pdftotextPath } from "./platform.ts"
 import { SearchEngine, type SearchHit } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
-import { downloadModel2Vec, model2vecDir, model2vecInstalled } from "./semantic/embedder.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "./util/text.ts"
 
 export const VERSION: string = pkg.version
@@ -33,28 +33,27 @@ Usage
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
   zsearch config [get|set|path|reset] [key] [value]
-  zsearch model download          download the semantic search model
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
 
 Interactive options
-  -m, --mode <mode>   start in auto | fuzzy | exact | regex | semantic
+  -m, --mode <mode>   start in auto | fuzzy | exact | regex
   -p, --print         print the chosen path instead of opening it
                       (e.g.  vim "$(zsearch -p)")
       --no-preview    start with the preview pane hidden
 
 Search options
-  -m, --mode <mode>   auto (default) | fuzzy | exact | regex | semantic
+  -m, --mode <mode>   auto (default) | fuzzy | exact | regex
   -n, --limit <n>     maximum results (default 20)
   -l, --files         print paths only
       --json          JSON output
       --no-color      disable colors
 
 Index options
-      --home          index your home folder (default)
+      --docs          index ~/Documents and ~/Downloads (default)
+      --home          index your whole home folder
       --disk          index the entire disk
       --hidden        include hidden files    (--no-hidden to exclude)
-      --semantic      build the semantic index (--no-semantic to skip)
       --no-content    index names only
       --rebuild       start from an empty index
   -q, --quiet         no progress output
@@ -62,7 +61,7 @@ Index options
 Query syntax
   words               match file names and text inside files
   "a phrase"          exact phrase          !word / -word   exclude
-  /regex/  re:...     regular expression    ?question       semantic
+  /regex/  re:...     regular expression    f:...           fuzzy
   ext:pdf,docx  type:doc|sheet|slides|code|image|folder  in:~/Documents
   path:2024  size:>5mb  mtime:<7d  after:2024-01-01  limit:50
 
@@ -156,8 +155,6 @@ export async function main(argv: string[]): Promise<number> {
         return cmdReset()
       case "doctor":
         return cmdDoctor()
-      case "model":
-        return await cmdModel(rest)
       case "help":
         process.stdout.write(HELP)
         return 0
@@ -266,6 +263,9 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   if (flag(args, "disk")) {
     config.roots = ["/"]
     save = true
+  } else if (flag(args, "docs")) {
+    config.roots = [...DEFAULT_ROOTS]
+    save = true
   } else if (flag(args, "home")) {
     config.roots = ["~"]
     save = true
@@ -277,11 +277,6 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   const hidden = flag(args, "hidden")
   if (typeof hidden === "boolean") {
     config.includeHidden = hidden
-    save = true
-  }
-  const semantic = flag(args, "semantic")
-  if (typeof semantic === "boolean") {
-    config.semantic.enabled = semantic
     save = true
   }
   if (flag(args, "content") === false) {
@@ -315,7 +310,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         lastLine = Date.now()
       }
     }
-    if (!quiet) console.error(`Indexing ${config.roots.join(", ")}${config.semantic.enabled ? " (with semantic search)" : ""}…`)
+    if (!quiet) console.error(`Indexing ${config.roots.join(", ")}…`)
     const result = await new Indexer(db, config, { onProgress: report, signal: controller.signal }).run()
     if (tty && !quiet) process.stderr.write("\r\x1b[2K")
     const stats = indexStats(db, p.db)
@@ -333,7 +328,6 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         `Done in ${formatDuration(result.elapsedMs)}: ${formatCount(result.scanned)} items scanned, ${formatCount(result.added)} new, ${formatCount(result.updated)} changed, ${formatCount(result.removed)} removed.`,
       )
       console.error(`Index: ${formatCount(stats.files)} files, ${formatCount(stats.folders)} folders, ${formatCount(stats.withContent)} with text (${formatBytes(stats.contentBytes)}), ${formatBytes(stats.dbBytes)} on disk.`)
-      if (result.warning) console.error(`Warning: ${result.warning}`)
       if (result.contentErrors) console.error(`${formatCount(result.contentErrors)} files could not be read (see \`zsearch status --errors\`).`)
     }
     return 0
@@ -352,11 +346,6 @@ export function progressLine(p: IndexProgress): string {
     case "content": {
       const pct = p.contentTotal ? Math.floor((p.contentDone / p.contentTotal) * 100) : 100
       return `Reading contents ${pct}%  ${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} · ${formatBytes(p.contentBytes)}  ${tildify(p.current)}`
-    }
-    case "semantic": {
-      if (p.message) return `Semantic index: ${p.message}`
-      const pct = p.semanticTotal ? Math.floor((p.semanticDone / p.semanticTotal) * 100) : 100
-      return `Semantic index ${pct}%  ${formatCount(p.semanticDone)}/${formatCount(p.semanticTotal)} files · ${formatCount(p.chunks)} passages`
     }
     case "cleanup":
       return `Cleaning up ${formatCount(p.removed)} removed files…`
@@ -385,7 +374,6 @@ function cmdStatus(args: Args): number {
   console.log(`Folders      ${(s.roots.length ? s.roots : config.roots).map(tildify).join(", ")}`)
   console.log(`Files        ${formatCount(s.files)} files, ${formatCount(s.folders)} folders`)
   console.log(`Contents     ${formatCount(s.withContent)} files with text (${formatBytes(s.contentBytes)}), ${formatCount(s.skipped)} skipped, ${formatCount(s.errors)} unreadable, ${formatCount(s.pending)} pending`)
-  console.log(`Semantic     ${config.semantic.enabled ? `${formatCount(s.chunks)} passages from ${formatCount(s.embeddedFiles)} files (${s.semanticModel ?? "not built"})` : "off"}`)
   console.log(`Updated      ${s.lastIndexedAt ? `${formatAge(s.lastIndexedAt)} (took ${formatDuration(s.lastDurationMs ?? 0)})` : "never completed"}`)
   const holder = lockHolder(p.lock)
   if (holder) console.log(`Indexing     in progress (pid ${holder})`)
@@ -429,7 +417,7 @@ function cmdConfig(rest: string[]): number {
       }
       saveConfig(config)
       console.log(`${key} = ${JSON.stringify(key.split(".").reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], config))}`)
-      if (/^(roots|exclude|namesOnly|includeHidden|respectGitignore|content|semantic\.(enabled|provider|model))/.test(key)) console.log("Run `zsearch index` (or press Ctrl-R in the app) to apply this to the index.")
+      if (/^(roots|exclude|namesOnly|includeHidden|respectGitignore|content)/.test(key)) console.log("Run `zsearch index` (or press Ctrl-R in the app) to apply this to the index.")
       return 0
     }
     case "reset":
@@ -459,7 +447,6 @@ function cmdReset(): number {
 
 function cmdDoctor(): number {
   const p = paths()
-  const config = loadConfig()
   const ok = (b: boolean) => (b ? "ok " : "-- ")
   const sqlite = (new Database(":memory:").query("SELECT sqlite_version() AS v").get() as { v: string }).v
   let fts5 = false
@@ -476,31 +463,6 @@ function cmdDoctor(): number {
   console.log(`${ok(!!pdf)} pdftotext ${pdf ?? "not found — using the built-in PDF reader (slower); install poppler for speed"}`)
   console.log(`${ok(existsSync(p.db))} index ${tildify(p.db)}`)
   console.log(`${ok(configExists())} config ${tildify(p.configFile)}`)
-  if (config.semantic.enabled) {
-    if (config.semantic.provider === "model2vec") {
-      const installed = model2vecInstalled(config.semantic.model)
-      console.log(`${ok(installed)} semantic model ${config.semantic.model} ${installed ? `in ${tildify(model2vecDir(config.semantic.model))}` : "not downloaded (zsearch model download)"}`)
-    } else console.log(`ok  semantic provider ${config.semantic.provider} (${config.semantic.model})`)
-  } else console.log("--  semantic search off (zsearch config set semantic.enabled true)")
-  return 0
-}
-
-/* ------------------------------------------------------------------ model -- */
-
-async function cmdModel(rest: string[]): Promise<number> {
-  const config = loadConfig()
-  if (rest[0] !== "download") throw new UsageError("usage: zsearch model download [model]")
-  const model = rest[1] ?? config.semantic.model
-  if (model2vecInstalled(model)) {
-    console.log(`${model} is already installed in ${tildify(model2vecDir(model))}`)
-    return 0
-  }
-  const tty = process.stderr.isTTY
-  const dir = await downloadModel2Vec(model, (file, received, total) => {
-    if (tty) process.stderr.write(`\r\x1b[2K${file}: ${formatBytes(received)}${total ? ` / ${formatBytes(total)}` : ""}`)
-  })
-  if (tty) process.stderr.write("\n")
-  console.log(`Installed ${model} in ${tildify(dir)}`)
   return 0
 }
 

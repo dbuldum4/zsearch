@@ -108,7 +108,7 @@ export const PACKAGE_EXTS = new Set([
 export function systemExcludes(): string[] {
   const h = home()
   const p = paths()
-  const common = [p.data, p.cache]
+  const common = [p.data]
   if (isMac) {
     return [
       ...common,

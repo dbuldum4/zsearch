@@ -25,7 +25,7 @@ export interface AppProps {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const MODE_LABEL: Record<Mode, string> = { auto: "auto", fuzzy: "fuzzy", exact: "exact", regex: "regex", semantic: "semantic" }
+const MODE_LABEL: Record<Mode, string> = { auto: "auto", fuzzy: "fuzzy", exact: "exact", regex: "regex" }
 
 function RowText(props: { row: Row; width: number }) {
   return <StyledLine segs={props.row.segs} width={props.width} bg={props.row.bg} />
@@ -187,8 +187,7 @@ export function App(props: AppProps) {
       if (outcome.status === "done") {
         const p = outcome.progress
         const changed = p.added + p.updated + p.removed
-        if (p.warning) notify(`Index ready, but ${p.warning}`, "warn", 12_000)
-        else if (reason !== "auto" || changed > 0)
+        if (reason !== "auto" || changed > 0)
           notify(
             `Index ready · ${formatCount(p.scanned)} items scanned${changed ? ` · ${formatCount(p.added)} new, ${formatCount(p.updated)} changed, ${formatCount(p.removed)} removed` : ""} · ${formatDuration(p.elapsedMs)}`,
             "ok",
@@ -403,7 +402,7 @@ export function App(props: AppProps) {
           return handled(() => jumpMatch(-1))
       }
     }
-    if (key.meta && (k === "1" || k === "2" || k === "3" || k === "4" || k === "5")) return handled(() => setMode(MODES[Number(k) - 1]!))
+    if (key.meta && (k === "1" || k === "2" || k === "3" || k === "4")) return handled(() => setMode(MODES[Number(k) - 1]!))
   })
 
   /* ------------------------------------------------------------- view -- */
@@ -451,7 +450,7 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
-    if (mode() !== "auto") lines.push([{ text: "  Tip: press Tab to try another mode (auto, fuzzy, exact, regex, semantic).", fg: t().subtle }])
+    if (mode() !== "auto") lines.push([{ text: "  Tip: press Tab to try another mode (auto, fuzzy, exact, regex).", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines
   })
@@ -484,12 +483,6 @@ export function App(props: AppProps) {
           fg: t().muted,
         })
         if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
-      } else if (p.phase === "semantic") {
-        const pct = p.semanticTotal ? p.semanticDone / p.semanticTotal : 0
-        segs.push({ text: "Building semantic index ", fg: t().text, bold: true }, ...bar(pct, 18, t()), {
-          text: p.message ? ` ${p.message}` : ` ${formatCount(p.semanticDone)}/${formatCount(p.semanticTotal)} files · ${formatCount(p.chunks)} passages`,
-          fg: t().muted,
-        })
       } else segs.push({ text: "Finishing up…", fg: t().muted })
       return segs
     }
@@ -506,7 +499,6 @@ export function App(props: AppProps) {
       `${formatCount(st.withContent)} with text (${formatBytes(st.contentBytes)})`,
       st.lastIndexedAt ? `indexed ${formatAge(st.lastIndexedAt)}` : "not indexed yet",
     ]
-    if (config().semantic.enabled) parts.push(s.semanticReady ? `semantic: ${formatCount(st.chunks)} passages` : "semantic: not built")
     return [{ text: ` ${parts.join(" · ")}`, fg: t().subtle }]
   })
 
@@ -619,23 +611,22 @@ const HELP: [string, [string, string][]][] = [
       ["^E", "open in your editor (at the matching line)"],
       ["^O", "reveal in the file manager"],
       ["^Y", "copy the path"],
-      ["Tab / Shift-Tab, Alt-1…5", "switch mode"],
+      ["Tab / Shift-Tab, Alt-1…4", "switch mode"],
       ["^T", "toggle preview"],
       ["Shift-↑↓  ^D ^U", "scroll preview"],
       ["^F ^B", "next / previous match in preview"],
       ["^R  /  ^X", "update the index  /  stop indexing"],
-      ["^S", "settings (folders, hidden files, semantic search)"],
+      ["^S", "settings (folders, hidden files, contents)"],
       ["Esc", "clear the query, or quit"],
     ],
   ],
   [
     "Modes",
     [
-      ["auto", "names + text (+ meaning); regex if it looks like one"],
+      ["auto", "names + text; regex if it looks like one"],
       ["fuzzy", "fzf-style name matching, forgives typos"],
       ["exact", "literal text, smart case"],
       ["regex", "JavaScript regular expressions over contents"],
-      ["semantic", "finds passages by meaning (needs semantic index)"],
     ],
   ],
   [
@@ -645,7 +636,7 @@ const HELP: [string, [string, string][]][] = [
       ["in:~/Documents  path:2024", "inside a folder / path contains"],
       ["size:>5mb  mtime:<7d", "size and age (also after:2024-01-01, mtime:today)"],
       ['"exact phrase"  !word', "phrase / exclude a word"],
-      ["/regex/  re:…  ?question", "force regex / semantic"],
+      ["/regex/  re:…  f:…", "force regex / fuzzy"],
       ["'exact ^prefix suffix$", "fzf operators in fuzzy name matching"],
     ],
   ],

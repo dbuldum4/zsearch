@@ -35,7 +35,7 @@ describe("argument parsing", () => {
   })
 
   test("progress lines", () => {
-    const base = { scanned: 10, added: 0, updated: 0, removed: 0, contentTotal: 4, contentDone: 1, contentBytes: 2048, contentErrors: 0, semanticTotal: 0, semanticDone: 0, chunks: 0, current: "", startedAt: 0, elapsedMs: 1500 }
+    const base = { scanned: 10, added: 0, updated: 0, removed: 0, contentTotal: 4, contentDone: 1, contentBytes: 2048, contentErrors: 0, current: "", startedAt: 0, elapsedMs: 1500 }
     expect(progressLine({ ...base, phase: "content" })).toContain("Reading contents 25%")
     expect(progressLine({ ...base, phase: "scan" })).toContain("Scanning… 10 items")
   })
@@ -63,7 +63,15 @@ describe("zsearch command line", () => {
     expect(r.err).toContain("Done in")
     expect(r.err).toMatch(/Index: \d+ files/)
     expect(existsSync(join(corpus.home, ".zsearch-data", "index.db"))).toBe(true)
-    expect(JSON.parse(readFileSync(join(corpus.home, ".zsearch-data", "config.json"), "utf8")).roots).toEqual(["~"])
+    const roots = () => JSON.parse(readFileSync(join(corpus.home, ".zsearch-data", "config.json"), "utf8")).roots
+    // Documents and Downloads by default
+    expect(roots()).toEqual(["~/Documents", "~/Downloads"])
+    expect((await zs("search", "-l", "zanzibar")).out).toContain(join(corpus.home, "Downloads", "unknown-text-file"))
+    expect((await zs("search", "-l", "pancakes")).code).toBe(1)
+    // --home switches to the whole home folder
+    expect((await zs("index", "--home", "--quiet")).code).toBe(0)
+    expect(roots()).toEqual(["~"])
+    expect((await zs("search", "-l", "pancakes")).out).toContain(join(corpus.home, "notes", "recipes", "pancakes.txt"))
   })
 
   test("search prints matches with line numbers", async () => {
@@ -100,7 +108,6 @@ describe("zsearch command line", () => {
     const s = await zs("status")
     expect(s.code).toBe(0)
     expect(s.out).toMatch(/Files\s+\d+ files, \d+ folders/)
-    expect(s.out).toContain("Semantic     off")
     const d = await zs("doctor")
     expect(d.code).toBe(0)
     expect(d.out).toContain("FTS5")

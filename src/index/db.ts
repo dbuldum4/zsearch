@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -26,7 +26,6 @@ export interface FileRow {
   mtime: number
   content_state: number
   content_len: number
-  embed_mtime: number
   note: string | null
 }
 
@@ -58,6 +57,7 @@ function migrate(db: Database, opts: OpenOptions) {
   const version = Number(getMeta(db, "schema_version") ?? 0)
   if (version === SCHEMA_VERSION) return
   db.transaction(() => {
+    // "chunks" held semantic search vectors before version 6.
     for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
     db.exec(`CREATE TABLE files (
       id INTEGER PRIMARY KEY,
@@ -70,7 +70,6 @@ function migrate(db: Database, opts: OpenOptions) {
       mtime INTEGER NOT NULL DEFAULT 0,
       content_state INTEGER NOT NULL DEFAULT 0,
       content_len INTEGER NOT NULL DEFAULT 0,
-      embed_mtime INTEGER NOT NULL DEFAULT 0,
       in_fts INTEGER NOT NULL DEFAULT 0,
       note TEXT
     )`)
@@ -81,8 +80,6 @@ function migrate(db: Database, opts: OpenOptions) {
     db.exec(
       `CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', ${contentlessDelete ? "contentless_delete=1, " : ""}tokenize='unicode61 remove_diacritics 2', prefix='3')`,
     )
-    db.exec("CREATE TABLE chunks (id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, vec BLOB NOT NULL)")
-    db.exec("CREATE INDEX chunks_file ON chunks(file_id)")
     db.exec("CREATE TABLE vocab (id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE)")
     db.exec("CREATE TABLE IF NOT EXISTS frecency (path TEXT PRIMARY KEY, count INTEGER NOT NULL, last INTEGER NOT NULL)")
     db.exec("DELETE FROM meta WHERE key <> 'created_at'")
@@ -140,14 +137,11 @@ export interface IndexStats {
   errors: number
   skipped: number
   pending: number
-  chunks: number
-  embeddedFiles: number
   contentBytes: number
   dbBytes: number
   lastIndexedAt: number | null
   lastDurationMs: number | null
   roots: string[]
-  semanticModel: string | null
   generation: number
 }
 
@@ -158,12 +152,10 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
         SUM(is_dir = 0) AS files, SUM(is_dir = 1) AS folders,
         SUM(content_state = 1) AS withContent, SUM(content_state = 2) AS errors,
         SUM(content_state = 3) AS skipped, SUM(content_state = 4) AS pending,
-        SUM(CASE WHEN content_state = 1 THEN content_len ELSE 0 END) AS contentBytes,
-        SUM(embed_mtime <> 0) AS embeddedFiles
+        SUM(CASE WHEN content_state = 1 THEN content_len ELSE 0 END) AS contentBytes
       FROM files`,
     )
     .get() as Record<string, number | null>
-  const chunks = (db.query("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n
   let dbBytes = 0
   if (dbPath) {
     for (const suffix of ["", "-wal"]) {
@@ -183,14 +175,11 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
     errors: counts.errors ?? 0,
     skipped: counts.skipped ?? 0,
     pending: counts.pending ?? 0,
-    chunks,
-    embeddedFiles: counts.embeddedFiles ?? 0,
     contentBytes: counts.contentBytes ?? 0,
     dbBytes,
     lastIndexedAt: last ? Number(last) : null,
     lastDurationMs: dur ? Number(dur) : null,
     roots: JSON.parse(getMeta(db, "roots") ?? "[]"),
-    semanticModel: getMeta(db, "semantic_model"),
     generation: Number(getMeta(db, "generation") ?? 0),
   }
 }
