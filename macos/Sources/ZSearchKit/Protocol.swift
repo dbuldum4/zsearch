@@ -118,6 +118,12 @@ public struct Config: Codable, Hashable, Sendable {
     public var content: ContentConfig
     public var autoRefreshMinutes: Double
     public var defaultMode: String
+    /// Extra gitignore-style patterns (or absolute folders) to skip.
+    public var exclude: [String]
+    public var respectGitignore: Bool
+    public var followSymlinks: Bool
+    /// Read contents inside cloud-synced folders (may download online-only files).
+    public var cloudContent: Bool
 }
 
 public struct Ready: Decodable, Hashable, Sendable {
@@ -147,7 +153,11 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
+    /// Empty the index and index everything again.
+    case rebuildIndex
     case cancelIndex
+    /// Previews of several files at once, for prefetching.
+    case previews(files: [Int], query: String, mode: Mode)
     case opened(path: String)
 }
 
@@ -156,12 +166,47 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var includeHidden: Bool?
     public var content: ContentConfig?
     public var defaultMode: String?
+    public var exclude: [String]?
+    public var respectGitignore: Bool?
+    public var followSymlinks: Bool?
+    public var cloudContent: Bool?
+    public var autoRefreshMinutes: Double?
 
-    public init(roots: [String]? = nil, includeHidden: Bool? = nil, content: ContentConfig? = nil, defaultMode: String? = nil) {
+    public init(
+        roots: [String]? = nil,
+        includeHidden: Bool? = nil,
+        content: ContentConfig? = nil,
+        defaultMode: String? = nil,
+        exclude: [String]? = nil,
+        respectGitignore: Bool? = nil,
+        followSymlinks: Bool? = nil,
+        cloudContent: Bool? = nil,
+        autoRefreshMinutes: Double? = nil
+    ) {
         self.roots = roots
         self.includeHidden = includeHidden
         self.content = content
         self.defaultMode = defaultMode
+        self.exclude = exclude
+        self.respectGitignore = respectGitignore
+        self.followSymlinks = followSymlinks
+        self.cloudContent = cloudContent
+        self.autoRefreshMinutes = autoRefreshMinutes
+    }
+
+    /// Every setting the app manages, taken from `config`.
+    public init(_ config: Config) {
+        self.init(
+            roots: config.roots,
+            includeHidden: config.includeHidden,
+            content: config.content,
+            defaultMode: config.defaultMode,
+            exclude: config.exclude,
+            respectGitignore: config.respectGitignore,
+            followSymlinks: config.followSymlinks,
+            cloudContent: config.cloudContent,
+            autoRefreshMinutes: config.autoRefreshMinutes
+        )
     }
 }
 
@@ -176,6 +221,8 @@ extension Request {
         var focusLine: Int?
         var config: ConfigPatch?
         var path: String?
+        var files: [Int]?
+        var rebuild: Bool?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -194,6 +241,10 @@ extension Request {
             w.type = "setConfig"; w.config = patch
         case .index:
             w.type = "index"
+        case .rebuildIndex:
+            w.type = "index"; w.rebuild = true
+        case let .previews(files, query, mode):
+            w.type = "previews"; w.files = files; w.query = query; w.mode = mode
         case .cancelIndex:
             w.type = "cancelIndex"
         case let .opened(path):
@@ -210,6 +261,7 @@ public enum Message: Hashable, Sendable {
     case ready(Ready)
     case results(SearchResponse)
     case preview(FilePreview)
+    case previews([FilePreview])
     case stats(IndexStats)
     case config(Config)
     case cancelled
@@ -234,6 +286,7 @@ public struct Envelope: Hashable, Sendable {
 
     private struct ResultsBody: Decodable { var response: SearchResponse }
     private struct PreviewBody: Decodable { var preview: FilePreview }
+    private struct PreviewsBody: Decodable { var previews: [FilePreview] }
     private struct StatsBody: Decodable { var stats: IndexStats }
     private struct ConfigBody: Decodable { var config: Config }
     private struct ProgressBody: Decodable { var progress: IndexProgress }
@@ -252,6 +305,7 @@ public struct Envelope: Hashable, Sendable {
         case "ready": message = .ready(try d.decode(Ready.self, from: line))
         case "results": message = .results(try d.decode(ResultsBody.self, from: line).response)
         case "preview": message = .preview(try d.decode(PreviewBody.self, from: line).preview)
+        case "previews": message = .previews(try d.decode(PreviewsBody.self, from: line).previews)
         case "stats": message = .stats(try d.decode(StatsBody.self, from: line).stats)
         case "config": message = .config(try d.decode(ConfigBody.self, from: line).config)
         case "cancelled": message = .cancelled

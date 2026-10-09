@@ -51,6 +51,14 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try json(.preview(file: 3, query: "x", mode: .find)), #"{"file":3,"id":7,"mode":"find","query":"x","type":"preview"}"#)
         XCTAssertEqual(try json(.setConfig(ConfigPatch(roots: ["~"]))), #"{"config":{"roots":["~"]},"id":7,"type":"setConfig"}"#)
         XCTAssertEqual(try json(.index), #"{"id":7,"type":"index"}"#)
+        XCTAssertEqual(try json(.rebuildIndex), #"{"id":7,"rebuild":true,"type":"index"}"#)
+        XCTAssertEqual(try json(.previews(files: [1, 2], query: "q", mode: .find)), #"{"files":[1,2],"id":7,"mode":"find","query":"q","type":"previews"}"#)
+        let patch = try XCTUnwrap(try transcript().compactMap { m -> Config? in
+            if case let .ready(r) = m.message { return r.config }
+            return nil
+        }.first)
+        XCTAssertTrue(patch.respectGitignore)
+        XCTAssertEqual(patch.exclude, [])
     }
 
     func testUnknownMessageTypesAreKept() throws {

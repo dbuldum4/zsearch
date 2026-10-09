@@ -5,7 +5,7 @@ import ZSearchKit
 
 /// Choose what to index. Shown on first launch and from File › Choose Folders….
 struct SetupView: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
     let inSheet: Bool
 
     private enum Choice: Hashable {

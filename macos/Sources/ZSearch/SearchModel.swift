@@ -1,52 +1,73 @@
 #if os(macOS)
 import AppKit
-import SwiftUI
+import Observation
 import ZSearchKit
 
-/// Indexing progress, kept apart from `SearchModel` because it changes many times a second:
-/// only the views that show it are redrawn.
+/// Indexing progress, kept apart from `SearchModel` because it changes many times a second.
+@Observable
 @MainActor
-final class IndexActivity: ObservableObject {
-    @Published var progress: IndexProgress?
+final class IndexActivity {
+    var progress: IndexProgress?
 }
 
 /// App state. Talks to the bundled `zsearch serve` engine.
+///
+/// With Observation, a view is redrawn only when a property it read changes: typing redraws the
+/// search field and the list, not the preview or the status bar.
+@Observable
 @MainActor
-final class SearchModel: ObservableObject {
-    @Published var query = "" {
+final class SearchModel {
+    var query = "" {
         didSet { if query != oldValue { scheduleSearch() } }
     }
-    @Published var mode: Mode = .find {
+    var mode: Mode = .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
-    @Published var selection: SearchHit.ID? {
+    var selection: SearchHit.ID? {
         didSet { if selection != oldValue { loadPreview() } }
     }
-    @Published var showSetup = false
-    @Published private(set) var response: SearchResponse?
-    @Published private(set) var preview: FilePreview?
-    @Published private(set) var stats: IndexStats?
-    @Published private(set) var config: Config?
-    @Published private(set) var indexing = false
-    @Published private(set) var firstRun = false
-    @Published private(set) var notice: String?
-    @Published private(set) var engineFailure: String?
+    var showSetup = false
+    /// Bumped to ask the search field to take focus.
+    private(set) var focusRequest = 0
+    private(set) var response: SearchResponse?
+    private(set) var preview: FilePreview?
+    private(set) var stats: IndexStats?
+    private(set) var config: Config?
+    private(set) var indexing = false
+    private(set) var firstRun = false
+    private(set) var notice: String?
+    private(set) var engineFailure: String?
+    /// Settings changed that only apply after the next index update.
+    private(set) var needsReindex = false
 
     let activity = IndexActivity()
 
-    private var engine: EngineConnection?
+    @ObservationIgnored private var engine: EngineConnection?
     /// Bumped on every start, so an old engine's exit is not mistaken for the current one's.
-    private var generation = 0
-    private var searchTask: Task<Void, Never>?
-    private var previewTask: Task<Void, Never>?
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var previewTask: Task<Void, Never>?
+    @ObservationIgnored private var prefetchTask: Task<Void, Never>?
     /// Re-runs the search after the index changes; separate from `searchTask` so it never delays typing.
-    private var refreshTask: Task<Void, Never>?
-    /// What the current (or pending) preview was requested for, so unchanged results do not reload it.
-    private var previewKey: PreviewKey?
-    private var noticeTask: Task<Void, Never>?
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    /// What the current (or pending) preview is for, so unchanged results do not reload it.
+    @ObservationIgnored private var previewKey: PreviewKey?
+    /// Recent previews, including prefetched neighbours of the selection: moving through the
+    /// list shows them without a round trip to the engine.
+    @ObservationIgnored private var previewCache: [PreviewKey: FilePreview] = [:]
+    @ObservationIgnored private var previewCacheOrder: [PreviewKey] = []
+    /// Opens the main window; set by a view that has the `openWindow` action.
+    @ObservationIgnored var openMainWindow: (() -> Void)?
 
     var hits: [SearchHit] { response?.hits ?? [] }
     var selectedHit: SearchHit? { hits.first { $0.id == selection } }
+
+    private struct PreviewKey: Hashable {
+        var file: Int
+        var query: String
+        var mode: Mode
+    }
 
     // MARK: - Engine
 
@@ -57,6 +78,11 @@ final class SearchModel: ObservableObject {
         }
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/zsearch")
         return FileManager.default.isExecutableFile(atPath: bundled.path) ? bundled : nil
+    }
+
+    /// Where the engine keeps its index (its default on macOS).
+    static var indexFolder: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/zsearch")
     }
 
     func start() {
@@ -101,6 +127,11 @@ final class SearchModel: ObservableObject {
         engine = nil
     }
 
+    func restartEngine() {
+        stop()
+        start()
+    }
+
     private func engineExited(_ error: EngineError) {
         engine = nil
         indexing = false
@@ -131,6 +162,7 @@ final class SearchModel: ObservableObject {
             activity.progress = nil
             switch done.status {
             case "done":
+                needsReindex = false
                 if let p = done.progress {
                     let changed = p.added + p.updated + p.removed
                     show("Index updated · \(p.scanned.formatted()) items scanned" + (changed > 0 ? " · \(changed.formatted()) changed" : ""))
@@ -139,10 +171,14 @@ final class SearchModel: ObservableObject {
             case "locked": show("Another zsearch process is updating the index")
             default: show("Indexing failed: \(done.error ?? "unknown error")")
             }
+            clearPreviewCache()
             Task { await refreshStats() }
             scheduleSearch(delay: 0)
         case let .refreshed(_, changed):
-            if changed { scheduleRefresh() }
+            if changed {
+                clearPreviewCache()
+                scheduleRefresh()
+            }
         case let .error(text):
             show(text)
         default:
@@ -152,9 +188,10 @@ final class SearchModel: ObservableObject {
 
     // MARK: - Searching
 
-    func scheduleSearch(delay: Double = 0.06) {
+    func scheduleSearch(delay: Double = 0.016) {
         searchTask?.cancel()
         searchTask = Task { [weak self] in
+            // One frame: coalesces key repeat; the engine cancels superseded searches anyway.
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
             guard !Task.isCancelled else { return }
             await self?.runSearch()
@@ -203,19 +240,50 @@ final class SearchModel: ObservableObject {
         guard key != previewKey else { return }
         previewTask?.cancel()
         previewKey = key
+        if let cached = previewCache[key] {
+            preview = cached
+            prefetchAround()
+            return
+        }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
         let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: hit.lines.first?.line)
         previewTask = Task { [weak self] in
             guard case let .preview(p)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, self.previewKey == key else { return }
+            self.remember(p, for: key)
             self.preview = p
+            self.prefetchAround()
         }
     }
 
-    private struct PreviewKey: Equatable {
-        var file: Int
-        var query: String
-        var mode: Mode
+    /// Fetch the previews of the results around the selection, so ↑/↓ shows them instantly.
+    private func prefetchAround() {
+        guard let engine, let index = hits.firstIndex(where: { $0.id == selection }) else { return }
+        let (query, mode) = (self.query, self.mode)
+        let ids = hits[max(0, index - 2)..<min(hits.count, index + 4)]
+            .map(\.id)
+            .filter { previewCache[PreviewKey(file: $0, query: query, mode: mode)] == nil }
+        guard !ids.isEmpty else { return }
+        prefetchTask?.cancel()
+        prefetchTask = Task { [weak self] in
+            guard case let .previews(list)? = try? await engine.request(.previews(files: ids, query: query, mode: mode)), !Task.isCancelled else { return }
+            guard let self, query == self.query, mode == self.mode else { return }
+            for p in list where p.message == nil || p.isDir {
+                self.remember(p, for: PreviewKey(file: p.id, query: query, mode: mode))
+            }
+        }
+    }
+
+    private func remember(_ preview: FilePreview, for key: PreviewKey) {
+        if previewCache.updateValue(preview, forKey: key) == nil { previewCacheOrder.append(key) }
+        while previewCacheOrder.count > 128 {
+            previewCache.removeValue(forKey: previewCacheOrder.removeFirst())
+        }
+    }
+
+    private func clearPreviewCache() {
+        previewCache.removeAll()
+        previewCacheOrder.removeAll()
     }
 
     func moveSelection(by delta: Int) {
@@ -225,7 +293,11 @@ final class SearchModel: ObservableObject {
         selection = hits[next].id
     }
 
-    // MARK: - Indexing
+    func requestSearchFocus() {
+        focusRequest += 1
+    }
+
+    // MARK: - Indexing and settings
 
     var indexIsStale: Bool {
         guard let last = stats?.lastIndexedAt else { return true }
@@ -238,12 +310,12 @@ final class SearchModel: ObservableObject {
         if case let .stats(s)? = try? await engine.request(.stats) { stats = s }
     }
 
-    func startIndex() {
+    func startIndex(rebuild: Bool = false) {
         guard let engine, !indexing else { return }
         indexing = true
         Task {
             do {
-                _ = try await engine.request(.index)
+                _ = try await engine.request(rebuild ? .rebuildIndex : .index)
             } catch {
                 indexing = false
                 show(error.localizedDescription)
@@ -256,7 +328,20 @@ final class SearchModel: ObservableObject {
         Task { _ = try? await engine.request(.cancelIndex) }
     }
 
-    /// Save what to index and start indexing.
+    /// Save settings. `reindex` marks changes that only apply after the next index update.
+    func updateConfig(_ patch: ConfigPatch, reindex: Bool) {
+        guard let engine else { return }
+        Task {
+            do {
+                if case let .config(c) = try await engine.request(.setConfig(patch)) { config = c }
+                if reindex { needsReindex = true }
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Save what to index (first run or File › Choose Folders…) and start indexing.
     func applySetup(roots: [String], readContents: Bool) {
         guard let engine else { return }
         Task {
@@ -301,9 +386,15 @@ final class SearchModel: ObservableObject {
         if let hit = selectedHit { copyPath(hit) }
     }
 
-    func restartEngine() {
-        stop()
-        start()
+    /// Bring the search window forward (hotkey, menu bar, Dock), opening it if it was closed.
+    func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { ($0.identifier?.rawValue.hasPrefix("main") ?? false) && $0.canBecomeMain }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
+        requestSearchFocus()
     }
 
     private func show(_ text: String) {

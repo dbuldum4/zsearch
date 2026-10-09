@@ -3,10 +3,12 @@ import SwiftUI
 import ZSearchKit
 
 struct ContentView: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @FocusState private var searchFocused: Bool
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
             SearchBar(focused: $searchFocused)
             Divider()
@@ -24,18 +26,24 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showSetup) {
             SetupView(inSheet: true)
-                .environmentObject(model)
+                .environment(model)
                 .interactiveDismissDisabled(model.firstRun)
         }
-        .onAppear { searchFocused = true }
+        .onAppear {
+            searchFocused = true
+            let open = openWindow
+            model.openMainWindow = { open(id: "main") }
+        }
+        .onChange(of: model.focusRequest) { searchFocused = true }
     }
 }
 
 struct SearchBar: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
     var focused: FocusState<Bool>.Binding
 
     var body: some View {
+        @Bindable var model = model
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -72,9 +80,10 @@ struct SearchBar: View {
 }
 
 struct ResultsList: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
 
     var body: some View {
+        @Bindable var model = model
         ScrollViewReader { proxy in
             List(model.hits, selection: $model.selection) { hit in
                 ResultRow(hit: hit)
@@ -148,7 +157,7 @@ struct KindBadge: View {
 }
 
 struct PreviewPane: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
 
     var body: some View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
@@ -192,7 +201,7 @@ struct PreviewPane: View {
 }
 
 struct StatusBar: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
 
     var body: some View {
         HStack(spacing: 10) {
@@ -232,7 +241,7 @@ struct StatusBar: View {
 
 /// The only view that observes indexing progress, so progress ticks redraw just this.
 struct IndexProgressView: View {
-    @ObservedObject var activity: IndexActivity
+    let activity: IndexActivity
 
     var body: some View {
         ProgressView(value: activity.progress?.fraction)
@@ -256,7 +265,7 @@ struct IndexProgressView: View {
 }
 
 struct EngineFailureView: View {
-    @EnvironmentObject private var model: SearchModel
+    @Environment(SearchModel.self) private var model
     let message: String
 
     var body: some View {

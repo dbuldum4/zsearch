@@ -1,0 +1,56 @@
+name: Benchmark
+
+# Index and search benchmark (scripts/bench.ts) for the pull request and its base, on the same
+# runner, with the comparison in the job summary. Informational: shared runners are noisy, so
+# it never fails the build.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: head
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+        working-directory: head
+      - run: bun install --frozen-lockfile
+        working-directory: base
+      - name: Benchmark the base
+        # The base may predate the benchmark script: use this change's copy against the base's engine.
+        run: |
+          cp head/scripts/bench.ts base/scripts/bench.ts
+          cd base && bun scripts/bench.ts --files=10000 --reps=5 --json=../base.json > /dev/null
+      - name: Benchmark this change
+        run: |
+          cd head && bun scripts/bench.ts --files=10000 --reps=5 --json=../head.json --compare=../base.json > ../report.md
+          cat ../report.md
+          {
+            cat ../report.md
+            echo
+            echo "_Changes in parentheses are against the base branch, measured on the same runner. Shared runners are noisy: treat differences under ~20% as noise._"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            base.json
+            head.json
+          retention-days: 30

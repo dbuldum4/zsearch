@@ -28,7 +28,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Setup is guided.** On first launch, zsearch asks what to index (Documents and Downloads, home folder, whole disk or chosen folders) and whether to read file contents or include hidden files. Indexing runs in the background with a progress bar, and results appear while it runs.
 - **Updates are incremental.** Only new or changed files are read again. The index refreshes itself when it is older than an hour; press <kbd>Ctrl-R</kbd> to refresh it now.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
-- **It is fast.** In a test with 129k files and 215 MB of text, fuzzy name search takes 25–90 ms, find about 125 ms, and a regex that has to read every file about 1.3 s. Search runs in a worker thread, so typing never stutters.
+- **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
 - **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
 
 ## Install
@@ -53,7 +53,7 @@ Optional: install `pdftotext` (`brew install poppler` / `apt install poppler-uti
 
 ### Mac app (preview)
 
-There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
+There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. It has a settings pane (folders, what to read, automatic updates, index size and rebuild), a menu bar item, and a shortcut (⌥ Space by default) that brings it forward from any app. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
 
 ```sh
 macos/scripts/install-preview.sh main       # latest main
@@ -234,6 +234,7 @@ bun install
 bun test --timeout 60000        # unit, TUI and end-to-end tests (~30 s)
 bun run typecheck
 bun run build                   # dist/zsearch
+bun run bench                   # index and search benchmark on a generated corpus (--files=N, --compare=old.json)
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt)
 ```
 
