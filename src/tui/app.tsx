@@ -11,7 +11,7 @@ import { clampScroll, previewLayout, type Row, resultRows } from "./layout.ts"
 import type { IndexHandle, Services } from "./services.ts"
 import { Setup } from "./setup.tsx"
 import { StyledLine } from "./line.tsx"
-import { fitSegs, type Seg, truncate } from "./styled.ts"
+import { fitSegs, type Seg, segsWidth, truncate } from "./styled.ts"
 import { DARK, LIGHT, type Theme } from "./theme.ts"
 
 export interface AppProps {
@@ -608,7 +608,7 @@ const HELP: [string, [string, string][]][] = [
       ["↑ ↓  ^P ^N  ^K ^J", "move selection"],
       ["PgUp PgDn", "page through results"],
       ["Enter", "open with the default app"],
-      ["^E", "open in your editor (at the matching line)"],
+      ["^E", "open in your editor at the match"],
       ["^O", "reveal in the file manager"],
       ["^Y", "copy the path"],
       ["Tab / Shift-Tab, Alt-1…4", "switch mode"],
@@ -616,7 +616,7 @@ const HELP: [string, [string, string][]][] = [
       ["Shift-↑↓  ^D ^U", "scroll preview"],
       ["^F ^B", "next / previous match in preview"],
       ["^R  /  ^X", "update the index  /  stop indexing"],
-      ["^S", "settings (folders, hidden files, contents)"],
+      ["^S", "settings: folders, hidden files"],
       ["Esc", "clear the query, or quit"],
     ],
   ],
@@ -626,15 +626,15 @@ const HELP: [string, [string, string][]][] = [
       ["auto", "names + text; regex if it looks like one"],
       ["fuzzy", "fzf-style name matching, forgives typos"],
       ["exact", "literal text, smart case"],
-      ["regex", "JavaScript regular expressions over contents"],
+      ["regex", "regular expressions over contents"],
     ],
   ],
   [
     "Query syntax",
     [
-      ["ext:pdf,docx  type:doc", "file extension / kind (doc, sheet, slides, code, image…)"],
+      ["ext:pdf,docx  type:doc", "extension / kind (doc, sheet, slides, code…)"],
       ["in:~/Documents  path:2024", "inside a folder / path contains"],
-      ["size:>5mb  mtime:<7d", "size and age (also after:2024-01-01, mtime:today)"],
+      ["size:>5mb  mtime:<7d", "size / age (also after:2024-01-01)"],
       ['"exact phrase"  !word', "phrase / exclude a word"],
       ["/regex/  re:…  f:…", "force regex / fuzzy"],
       ["'exact ^prefix suffix$", "fzf operators in fuzzy name matching"],
@@ -642,7 +642,8 @@ const HELP: [string, [string, string][]][] = [
   ],
 ]
 
-function helpSection(title: string, items: [string, string][], keyWidth: number, t: Theme): Seg[][] {
+function helpSection(title: string, items: [string, string][], t: Theme): Seg[][] {
+  const keyWidth = Math.max(...items.map(([k]) => Bun.stringWidth(k))) + 2
   const out: Seg[][] = [[{ text: ` ${title}`, fg: t.accent, bold: true }]]
   for (const [k, v] of items) out.push([{ text: `   ${k.padEnd(keyWidth)}`, fg: t.text, bold: true }, { text: v, fg: t.muted }])
   return out
@@ -657,13 +658,14 @@ function Help(props: { theme: Theme; width: number; height: number }) {
     const [keys, modes, syntax] = HELP
     if (!twoCol()) {
       const out: Seg[][] = []
-      for (const [title, items] of HELP) out.push(...helpSection(title, items, 26, t), [])
+      for (const [title, items] of HELP) out.push(...helpSection(title, items, t), [])
       out.push([{ text: " Esc to close", fg: t.subtle }])
       return out
     }
-    const left = helpSection(keys![0], keys![1], 26, t)
-    const right = [...helpSection(modes![0], modes![1], 26, t), [], ...helpSection(syntax![0], syntax![1], 26, t)]
-    const colW = Math.floor((w() - 2) / 2)
+    const left = helpSection(keys![0], keys![1], t)
+    const right = [...helpSection(modes![0], modes![1], t), [], ...helpSection(syntax![0], syntax![1], t)]
+    // The left column takes what it needs; the right one gets the rest.
+    const colW = Math.min(Math.floor((w() - 2) / 2), Math.max(...left.map(segsWidth)) + 3)
     const out: Seg[][] = []
     for (let i = 0; i < Math.max(left.length, right.length); i++) {
       const l = fitSegs(left[i] ?? [], colW)
