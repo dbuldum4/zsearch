@@ -17,7 +17,7 @@ final class SearchModel: ObservableObject {
     }
     @Published var showSetup = false
     @Published private(set) var response: SearchResponse?
-    @Published private(set) var preview: Preview?
+    @Published private(set) var preview: FilePreview?
     @Published private(set) var stats: IndexStats?
     @Published private(set) var config: Config?
     @Published private(set) var progress: IndexProgress?

@@ -178,7 +178,7 @@ struct PreviewPane: View {
         }
     }
 
-    private func details(of p: Preview) -> String {
+    private func details(of p: FilePreview) -> String {
         var parts: [String] = []
         if !p.isDir { parts.append(ByteCountFormatter.string(fromByteCount: Int64(p.size), countStyle: .file)) }
         parts.append("modified " + Date(timeIntervalSince1970: p.mtime / 1000).formatted(date: .abbreviated, time: .shortened))
@@ -189,7 +189,7 @@ struct PreviewPane: View {
 }
 
 struct PreviewLines: View {
-    let preview: Preview
+    let preview: FilePreview
 
     var body: some View {
         ScrollViewReader { proxy in

@@ -49,7 +49,7 @@ public struct PreviewLine: Decodable, Hashable, Sendable {
     public var ranges: [[Int]]
 }
 
-public struct Preview: Decodable, Hashable, Sendable {
+public struct FilePreview: Decodable, Hashable, Sendable {
     public var id: Int
     public var path: String
     public var display: String
@@ -105,6 +105,10 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
 
 public struct ContentConfig: Codable, Hashable, Sendable {
     public var enabled: Bool
+
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
 }
 
 /// The settings the app reads and changes. Other settings are kept by the engine as they are.
@@ -205,7 +209,7 @@ extension Request {
 public enum Message: Hashable, Sendable {
     case ready(Ready)
     case results(SearchResponse)
-    case preview(Preview)
+    case preview(FilePreview)
     case stats(IndexStats)
     case config(Config)
     case cancelled
@@ -229,7 +233,7 @@ public struct Envelope: Hashable, Sendable {
     }
 
     private struct ResultsBody: Decodable { var response: SearchResponse }
-    private struct PreviewBody: Decodable { var preview: Preview }
+    private struct PreviewBody: Decodable { var preview: FilePreview }
     private struct StatsBody: Decodable { var stats: IndexStats }
     private struct ConfigBody: Decodable { var config: Config }
     private struct ProgressBody: Decodable { var progress: IndexProgress }

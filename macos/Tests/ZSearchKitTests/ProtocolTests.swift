@@ -31,7 +31,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(hit.folder, "Documents")
         XCTAssertEqual(hit.lines.first?.ranges, [[5, 14]])
 
-        let preview = try XCTUnwrap(messages.compactMap { m -> Preview? in
+        let preview = try XCTUnwrap(messages.compactMap { m -> FilePreview? in
             if case let .preview(p) = m.message { return p }
             return nil
         }.first)
