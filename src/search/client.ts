@@ -126,9 +126,12 @@ export class SearchClient {
     return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine }))
   }
 
-  /** Previews of several files at once (prefetching). A newer batch supersedes an older one. */
-  previews(ids: number[], query: string, mode: Mode): Promise<Preview[] | null> {
-    return this.request<Preview[]>("previews", (qid) => ({ type: "previews", qid, ids, query, mode }))
+  /**
+   * Previews of several files at once (prefetching). A newer batch supersedes an older one.
+   * `focusLines[i]`, when set, is the line to show for `ids[i]` (its search hit's first line).
+   */
+  previews(ids: number[], query: string, mode: Mode, focusLines?: (number | null)[]): Promise<Preview[] | null> {
+    return this.request<Preview[]>("previews", (qid) => ({ type: "previews", qid, ids, query, mode, focusLines }))
   }
 
   stats(): Promise<StatsReply | null> {

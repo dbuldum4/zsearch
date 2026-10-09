@@ -19,7 +19,7 @@ import { MODES, type Mode } from "./search/query.ts"
 export type ServeIn =
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
-  | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode }
+  | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
   | { id?: number; type: "stats" }
   | { id?: number; type: "config" }
   | { id?: number; type: "setConfig"; config: Partial<Config> }
@@ -98,8 +98,15 @@ export async function serve(version: string): Promise<number> {
         return send(preview ? { id, type: "preview", preview } : { id, type: "cancelled" })
       }
       case "previews": {
-        const files = Array.isArray(msg.files) ? msg.files.filter((f) => typeof f === "number").slice(0, 32) : []
-        const previews = await client.previews(files, String(msg.query ?? ""), mode(msg.mode))
+        const pairs = Array.isArray(msg.files) ? msg.files.map((f, i) => [f, Array.isArray(msg.focusLines) ? msg.focusLines[i] : null] as const) : []
+        const valid = pairs.filter(([f]) => typeof f === "number").slice(0, 32)
+        const lines = valid.map(([, l]) => (typeof l === "number" ? l : null))
+        const previews = await client.previews(
+          valid.map(([f]) => f),
+          String(msg.query ?? ""),
+          mode(msg.mode),
+          lines,
+        )
         return send(previews ? { id, type: "previews", previews } : { id, type: "cancelled" })
       }
       case "stats": {

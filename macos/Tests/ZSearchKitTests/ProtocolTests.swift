@@ -53,6 +53,10 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try json(.index), #"{"id":7,"type":"index"}"#)
         XCTAssertEqual(try json(.rebuildIndex), #"{"id":7,"rebuild":true,"type":"index"}"#)
         XCTAssertEqual(try json(.previews(files: [1, 2], query: "q", mode: .find)), #"{"files":[1,2],"id":7,"mode":"find","query":"q","type":"previews"}"#)
+        XCTAssertEqual(
+            try json(.previews(files: [1, 2], query: "q", mode: .find, focusLines: [551, nil])),
+            #"{"files":[1,2],"focusLines":[551,null],"id":7,"mode":"find","query":"q","type":"previews"}"#
+        )
         let patch = try XCTUnwrap(try transcript().compactMap { m -> Config? in
             if case let .ready(r) = m.message { return r.config }
             return nil

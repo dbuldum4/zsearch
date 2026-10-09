@@ -59,7 +59,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
       case "previews": {
         if (!engine) throw new Error("search worker not initialised")
         // Prefetch for the files next to the selection; never superseded by a single preview.
-        const previews = msg.ids.map((id) => engine!.preview(id, msg.query, msg.mode))
+        const previews = msg.ids.map((id, i) => engine!.preview(id, msg.query, msg.mode, msg.focusLines?.[i] ?? undefined))
         send({ type: "previews", qid: msg.qid, previews })
         break
       }

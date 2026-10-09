@@ -80,6 +80,8 @@ export interface SearchOptions {
 }
 
 const FETCH_BATCH = 64
+/** How many full-text candidates are ranked by their text (the rest by name, folders and date). */
+const RANK_POOL = 128
 
 /**
  * Decoded texts by file id, least recently used first. Searching while typing reads the same
@@ -126,6 +128,9 @@ class TextCache {
     return this.chars >= this.maxChars * 0.9
   }
 }
+
+/** A query word or phrase: its FTS5 expression, and the terms that count as it when ranking. */
+type TermGroup = { expr: string; terms: string[]; prefix: boolean }
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
 
@@ -277,57 +282,15 @@ export class SearchEngine {
 
   /* ----------------------------------------------------------- keyword -- */
 
-  private filterSql(f: Filters): { sql: string; params: (string | number)[] } {
-    const where: string[] = []
-    const params: (string | number)[] = []
-    if (f.kinds) {
-      where.push(`f.kind IN (${[...f.kinds].map(() => "?").join(",")})`)
-      params.push(...f.kinds)
-    }
-    if (f.notKinds) {
-      where.push(`f.kind NOT IN (${[...f.notKinds].map(() => "?").join(",")})`)
-      params.push(...f.notKinds)
-    }
-    if (f.exts) {
-      where.push(`f.ext IN (${[...f.exts].map(() => "?").join(",")})`)
-      params.push(...f.exts)
-    }
-    if (f.inPaths.length) {
-      where.push(`(${f.inPaths.map(() => "substr(f.path, 1, ?) = ?").join(" OR ")})`)
-      for (const p of f.inPaths) {
-        const pre = p === "/" ? "/" : p + "/"
-        params.push(pre.length, pre)
-      }
-    }
-    for (const p of f.pathContains) {
-      where.push("instr(lower(f.path), ?) > 0")
-      params.push(p)
-    }
-    if (f.sizeMin !== undefined) {
-      where.push("f.size >= ?")
-      params.push(f.sizeMin)
-    }
-    if (f.sizeMax !== undefined) {
-      where.push("f.size <= ?")
-      params.push(f.sizeMax)
-    }
-    if (f.mtimeMin !== undefined) {
-      where.push("f.mtime >= ?")
-      params.push(f.mtimeMin)
-    }
-    if (f.mtimeMax !== undefined) {
-      where.push("f.mtime < ?")
-      params.push(f.mtimeMax)
-    }
-    return { sql: where.length ? ` AND ${where.join(" AND ")}` : "", params }
-  }
-
-  /** FTS5 expression for the query words. `typos` expands each word to similar vocabulary terms. */
   /** Vocabulary terms the last typo-tolerant query expanded to (for highlighting). */
   lastExpansions: string[] = []
 
-  keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false): string | null {
-    const parts: string[] = []
+  /**
+   * The query words and phrases as FTS5 expressions, each with the terms that count as it when
+   * ranking. `typos` expands each word to similar vocabulary terms.
+   */
+  private keywordGroups(q: ParsedQuery, prefixLast: boolean, typos = false): TermGroup[] {
+    const groups: TermGroup[] = []
     if (typos) this.lastExpansions = []
     const words = q.words.filter((w) => /[\p{L}\p{N}]/u.test(w))
     words.forEach((w, i) => {
@@ -336,58 +299,133 @@ export class SearchEngine {
       const isLast = i === words.length - 1
       const prefix = prefixLast && isLast && tokens[tokens.length - 1]!.length >= 3
       let expr = ftsWords(tokens, prefix)
+      const terms = [...tokens]
       if (typos && tokens.length === 1) {
         const t = tokens[0]!
         const alts = new Set<string>([...this.vocab.similar(t)])
         if (t.length >= 4) for (const c of this.vocab.containing(t, 40) ?? []) alts.add(c)
         alts.delete(t)
-        this.lastExpansions.push(...[...alts].slice(0, 48))
-        if (alts.size) expr = `(${[expr, ...[...alts].slice(0, 48).map(ftsQuote)].join(" OR ")})`
+        const some = [...alts].slice(0, 48)
+        this.lastExpansions.push(...some)
+        terms.push(...some)
+        if (some.length) expr = `(${[expr, ...some.map(ftsQuote)].join(" OR ")})`
       }
-      parts.push(expr)
+      groups.push({ expr, terms, prefix })
     })
     for (const p of q.phrases) {
       const tokens = foldTerm(p).match(/[\p{L}\p{N}]+/gu)
-      if (tokens) parts.push(ftsWords(tokens, false))
+      if (tokens) groups.push({ expr: ftsWords(tokens, false), terms: tokens, prefix: false })
     }
-    if (!parts.length) return null
-    let expr = parts.join(any ? " OR " : " AND ")
+    return groups
+  }
+
+  /** One FTS5 expression for the groups: all of them (or `any`), minus the negated words. */
+  private groupsExpr(q: ParsedQuery, groups: TermGroup[], any: boolean): string | null {
+    if (!groups.length) return null
+    let expr = groups.map((g) => g.expr).join(any ? " OR " : " AND ")
     const neg = q.negated.flatMap((n) => foldTerm(n).match(/[\p{L}\p{N}]+/gu) ?? []).map(ftsQuote)
     if (neg.length) expr = `(${expr}) NOT (${neg.join(" OR ")})`
     return expr
   }
 
+  keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false): string | null {
+    return this.groupsExpr(q, this.keywordGroups(q, prefixLast, typos), any)
+  }
 
   private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false): Ranked[] {
-    let expr = this.keywordExpr(q, prefixLast, typos, false)
-    if (!expr) return []
-    const { sql, params } = this.filterSql(q.filters)
-    const run = (e: string) => {
+    const groups = this.keywordGroups(q, prefixLast, typos)
+    const ids = (expr: string | null): number[] => {
+      if (!expr) return []
       try {
-        // bm25 has to score every matching document; for words that occur almost
-        // everywhere that costs more than it tells, so rank those by recency instead.
-        const count = (this.db.query("SELECT count(*) AS n FROM fts WHERE fts MATCH ?").get(e) as { n: number }).n
-        if (count === 0) return []
-        if (count > 25_000) {
-          return this.db
-            .query(`SELECT f.id AS id, 0 AS rank FROM fts JOIN files f ON f.id = fts.rowid WHERE fts MATCH ?${sql} ORDER BY f.mtime DESC LIMIT ?`)
-            .all(e, ...params, limit) as { id: number; rank: number }[]
-        }
-        if (!sql) return this.db.query("SELECT rowid AS id, bm25(fts, 10.0, 2.5, 1.0) AS rank FROM fts WHERE fts MATCH ? ORDER BY rank LIMIT ?").all(e, limit) as { id: number; rank: number }[]
-        return this.db
-          .query(`SELECT fts.rowid AS id, bm25(fts, 10.0, 2.5, 1.0) AS rank FROM fts JOIN files f ON f.id = fts.rowid WHERE fts MATCH ?${sql} ORDER BY rank LIMIT ?`)
-          .all(e, ...params, limit) as { id: number; rank: number }[]
+        return (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(expr) as number[][]).map((r) => r[0]!)
       } catch {
         return []
       }
     }
-    let rows = run(expr)
+    let matches = ids(this.groupsExpr(q, groups, false))
     // Several words but no document has all of them: fall back to any of them.
-    if (rows.length === 0 && q.words.length > 1) {
-      expr = this.keywordExpr(q, prefixLast, typos, true)
-      if (expr) rows = run(expr)
+    if (matches.length === 0 && groups.length > 1) matches = ids(this.groupsExpr(q, groups, true))
+    return this.rankMatches(matches, groups, q.filters, limit)
+  }
+
+  /**
+   * Order full-text matches by relevance, BM25 style. The index keeps which columns hold a term
+   * but not how often (contentless, detail=column), which leaves FTS5's bm25() with nothing to
+   * score, so this scores the file name and folders from the path, and the text itself for the
+   * RANK_POOL best candidates by path score, then date.
+   */
+  private rankMatches(ids: number[], groups: TermGroup[], filters: Filters, limit: number): Ranked[] {
+    const cat = this.catalog
+    const idx: number[] = []
+    for (const id of ids) {
+      const i = cat.indexOf(id)
+      if (i !== undefined && cat.passes(i, filters)) idx.push(i)
     }
-    return rows.map((r) => ({ id: r.id, raw: -r.rank }))
+    if (!idx.length || !groups.length) return []
+    const res = groups.map((g) => {
+      const words = g.terms.map(escapeRegExp).join("|")
+      // ASCII terms (the usual case) take the faster \b form; \b is ASCII only.
+      if (g.terms.every((t) => /^[a-z0-9]+$/.test(t))) return new RegExp(`\\b(?:${words})${g.prefix ? "\\w*" : "\\b"}`, "gi")
+      return new RegExp(`(?<![\\p{L}\\p{N}])(?:${words})${g.prefix ? "[\\p{L}\\p{N}]*" : "(?![\\p{L}\\p{N}])"}`, "giu")
+    })
+    // Rarer words count for more. With one word every candidate shares the same weight.
+    const total = Math.max(cat.size, 1)
+    const idf = groups.map((g) => {
+      if (groups.length === 1) return 1
+      let df = idx.length
+      try {
+        df = (this.db.query("SELECT count(*) AS n FROM fts WHERE fts MATCH ?").get(g.expr) as { n: number }).n
+      } catch {
+        // keep the candidate count
+      }
+      return Math.log(1 + (total - df + 0.5) / (df + 0.5))
+    })
+    const count = (re: RegExp, text: string, max: number) => {
+      re.lastIndex = 0
+      let n = 0
+      while (n < max && re.exec(text)) n++
+      return n
+    }
+    const K1 = 1.2
+    const B = 0.75
+    const sat = (tf: number) => (tf * (K1 + 1)) / (tf + K1)
+    // Name and folders, weighted 10 and 2.5 against the text, as bm25(fts, 10, 2.5, 1) did.
+    // For words in most files, testing every path costs more than it tells: date order instead.
+    const score = new Map<number, number>()
+    if (idx.length <= 25_000) {
+      for (const i of idx) {
+        const disp = cat.display[i]!
+        const start = cat.nameStart[i]!
+        const name = disp.slice(start)
+        const dirs = disp.slice(0, start)
+        let s = 0
+        for (let g = 0; g < groups.length; g++) s += idf[g]! * (10 * sat(count(res[g]!, name, 20)) + 2.5 * sat(count(res[g]!, dirs, 20)))
+        if (s > 0) score.set(i, s)
+      }
+    }
+    const byPathThenDate = (a: number, b: number) => (score.get(b) ?? 0) - (score.get(a) ?? 0) || cat.mtimes[b]! - cat.mtimes[a]!
+    idx.sort(byPathThenDate)
+    const pool = idx.slice(0, Math.max(RANK_POOL, limit))
+    const texts = new Map<number, string>()
+    for (let start = 0; start < pool.length; start += FETCH_BATCH) {
+      for (const [id, t] of this.batchTexts(pool.slice(start, start + FETCH_BATCH).map((i) => cat.ids[i]!))) texts.set(id, t)
+    }
+    let avg = 0
+    for (const t of texts.values()) avg += t.length
+    avg = texts.size ? avg / texts.size : 1
+    for (const i of pool) {
+      const text = texts.get(cat.ids[i]!)
+      if (!text) continue
+      const norm = K1 * (1 - B + (B * text.length) / Math.max(avg, 1))
+      let s = 0
+      for (let g = 0; g < groups.length; g++) {
+        const tf = count(res[g]!, text, 1000)
+        s += (idf[g]! * tf * (K1 + 1)) / (tf + norm)
+      }
+      score.set(i, (score.get(i) ?? 0) + s)
+    }
+    pool.sort(byPathThenDate)
+    return [...pool, ...idx.slice(pool.length)].slice(0, limit).map((i) => ({ id: cat.ids[i]!, raw: score.get(i) ?? 0 }))
   }
 
   private fetchStmt: ReturnType<Database["query"]> | null = null
@@ -432,6 +470,22 @@ export class SearchEngine {
     const text = decompressText(data)
     this.texts.set(id, text)
     return text
+  }
+
+  /**
+   * Decoded texts of up to FETCH_BATCH files, read in one query. Cached texts are taken first:
+   * decoding the others can evict them from the cache.
+   */
+  private batchTexts(ids: number[]): Map<number, string> {
+    const texts = new Map<number, string>()
+    const missing: number[] = []
+    for (const id of ids) {
+      const t = this.texts.get(id)
+      if (t !== undefined) texts.set(id, t)
+      else missing.push(id)
+    }
+    if (missing.length) for (const row of this.fetchContent(missing)) texts.set(row.id, this.storedText(row.id, row.data)!)
+    return texts
   }
 
   /** Stored texts for up to FETCH_BATCH ids, in no particular order. */
@@ -501,20 +555,10 @@ export class SearchEngine {
       // Texts are read in batches: one query per 64 files instead of one per file.
       scan: for (let start = 0; start < idx.length; start += FETCH_BATCH) {
         const batch = idx.slice(start, start + FETCH_BATCH).map((i) => cat.ids[i]!)
-        // Hold on to the cached texts first: decoding the missing ones can evict them.
-        const cached = new Map<number, string>()
-        const missing: number[] = []
+        const texts = this.batchTexts(batch)
         for (const id of batch) {
-          const t = this.texts.get(id)
-          if (t !== undefined) cached.set(id, t)
-          else missing.push(id)
-        }
-        const data = new Map<number, Uint8Array>()
-        if (missing.length) for (const row of this.fetchContent(missing)) data.set(row.id, row.data)
-        for (const id of batch) {
-          const d = data.get(id)
-          const text = d ? this.storedText(id, d) : cached.get(id)
-          if (text !== undefined && text !== null && check(id, text)) break scan
+          const text = texts.get(id)
+          if (text !== undefined && check(id, text)) break scan
         }
         const now = Date.now()
         if (now > deadline) {
@@ -638,6 +682,8 @@ export class SearchEngine {
   /* ----------------------------------------------------------- preview -- */
 
   preview(id: number, rawQuery: string, mode: Mode, focusLineHint?: number, window = 400): Preview {
+    // The text cache must not outlive an index update made by another process.
+    this.refresh()
     const i = this.catalog.indexOf(id)
     const row = this.db.query("SELECT path, kind, is_dir, size, mtime, content_state, note FROM files WHERE id = ?").get(id) as {
       path: string

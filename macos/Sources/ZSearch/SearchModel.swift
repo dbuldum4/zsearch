@@ -39,6 +39,10 @@ final class SearchModel {
     private(set) var engineFailure: String?
     /// Settings changed that only apply after the next index update.
     private(set) var needsReindex = false
+    /// Counts the settings changes that need an index update. An index run uses the settings it
+    /// started with, so it applies the changes counted up to its start and no later ones.
+    @ObservationIgnored private var settingsRevision = 0
+    @ObservationIgnored private var indexedRevision = 0
 
     let activity = IndexActivity()
 
@@ -171,7 +175,8 @@ final class SearchModel {
             activity.progress = nil
             switch done.status {
             case "done":
-                needsReindex = false
+                // Settings changed during the run still wait for the next one.
+                if indexedRevision == settingsRevision { needsReindex = false }
                 if let p = done.progress {
                     let changed = p.added + p.updated + p.removed
                     show("Index updated · \(p.scanned.formatted()) items scanned" + (changed > 0 ? " · \(changed.formatted()) changed" : ""))
@@ -274,14 +279,18 @@ final class SearchModel {
     private func prefetchAround() {
         guard let engine, let index = hits.firstIndex(where: { $0.id == selection }) else { return }
         let (query, mode) = (self.query, self.mode)
-        let ids = hits[max(0, index - 2)..<min(hits.count, index + 4)]
-            .map(\.id)
-            .filter { previewCache[PreviewKey(file: $0, query: query, mode: mode)] == nil }
-        guard !ids.isEmpty else { return }
+        let around = hits[max(0, index - 2)..<min(hits.count, index + 4)]
+            .filter { previewCache[PreviewKey(file: $0.id, query: query, mode: mode)] == nil }
+        guard !around.isEmpty else { return }
+        // Each with its hit's first matching line, as `loadPreview` asks: the engine cannot always
+        // find the match itself (a typo-tolerant one, say) and would show the top of the file.
+        let ids = around.map(\.id)
+        let focusLines = around.map { $0.lines.first?.line }
         let epoch = previewEpoch
         prefetchTask?.cancel()
         prefetchTask = Task { [weak self] in
-            guard case let .previews(list)? = try? await engine.request(.previews(files: ids, query: query, mode: mode)), !Task.isCancelled else { return }
+            let request = Request.previews(files: ids, query: query, mode: mode, focusLines: focusLines)
+            guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
             for p in list where p.message == nil || p.isDir {
                 self.remember(p, for: PreviewKey(file: p.id, query: query, mode: mode))
@@ -357,6 +366,7 @@ final class SearchModel {
     func startIndex(rebuild: Bool = false) {
         guard let engine, !indexing else { return }
         indexing = true
+        indexedRevision = settingsRevision
         Task {
             do {
                 _ = try await engine.request(rebuild ? .rebuildIndex : .index)
@@ -375,6 +385,7 @@ final class SearchModel {
     /// Save settings. `reindex` marks changes that only apply after the next index update.
     func updateConfig(_ patch: ConfigPatch, reindex: Bool) {
         guard let engine else { return }
+        if reindex { settingsRevision += 1 }
         Task {
             do {
                 if case let .config(c) = try await engine.request(.setConfig(patch)) { config = c }

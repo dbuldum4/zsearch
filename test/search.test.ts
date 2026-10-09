@@ -140,6 +140,28 @@ describe("fuzzy mode", () => {
     expect(names(await search("'app !src", "fuzzy")).every((p) => !p.includes("src"))).toBe(true)
   })
 
+  test("text matches are ranked by how often the words occur", async () => {
+    const day = 86_400
+    const now = Date.now() / 1000
+    const once = corpus.write("notes/rank/once.txt", `zorblax appears here once\n${"other words ".repeat(300)}\n`)
+    const often = corpus.write("notes/rank/often.txt", `${"zorblax again ".repeat(100)}\n`)
+    // The one with a single mention is newer, so date order alone would put it first.
+    utimesSync(once, now - day, now - day)
+    utimesSync(often, now - 30 * day, now - 30 * day)
+    for (let i = 0; i < 4; i++) {
+      const f = corpus.write(`notes/rank/also-${i}.txt`, `zorblax ${"and more ".repeat(20 * i)}\n`)
+      utimesSync(f, now - (2 + i) * day, now - (2 + i) * day)
+    }
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    await new Indexer(writer, config, { inProcess: true }).run()
+    writer.close()
+    const r = await search("zorblax", "fuzzy")
+    const content = r.hits.filter((h) => h.sources.includes("content")).map((h) => h.display)
+    expect(content[0]).toBe("notes/rank/often.txt")
+    // One mention in a long text counts for less than one in a short text.
+    expect(content.indexOf("notes/rank/once.txt")).toBeGreaterThan(content.indexOf("notes/rank/also-0.txt"))
+  })
+
   test("typo-tolerant content matches", async () => {
     const r = await search("glaicer", "fuzzy")
     expect(names(r)).toContain("notes/journal-2024.md")
@@ -260,6 +282,20 @@ describe("text cache and index changes", () => {
     const r = await small.search("quokkaflux", "find", { limit: 100 })
     expect(r.partial).toBe(false)
     expect(r.hits).toHaveLength(64)
+  })
+
+  test("previews show the new text after another process updates the index", async () => {
+    const p = corpus.write("notes/edited.txt", "first draft of the quillwort memo\n")
+    utimesSync(p, Date.now() / 1000 - 3600, Date.now() / 1000 - 3600)
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    await new Indexer(writer, config, { inProcess: true }).run()
+    const { id } = db.query("SELECT id FROM files WHERE path = ?").get(p) as { id: number }
+    expect(engine.preview(id, "", "find").lines[0]!.text).toBe("first draft of the quillwort memo")
+    corpus.write("notes/edited.txt", "final version of the quillwort memo\n")
+    await new Indexer(writer, config, { inProcess: true }).run()
+    writer.close()
+    // No search in between: the preview alone must notice the update.
+    expect(engine.preview(id, "", "find").lines[0]!.text).toBe("final version of the quillwort memo")
   })
 
   test("filters see changed sizes and dates while the index is being updated", async () => {

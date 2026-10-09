@@ -156,8 +156,9 @@ public enum Request: Sendable {
     /// Empty the index and index everything again.
     case rebuildIndex
     case cancelIndex
-    /// Previews of several files at once, for prefetching.
-    case previews(files: [Int], query: String, mode: Mode)
+    /// Previews of several files at once, for prefetching. `focusLines[i]`, when given, is the
+    /// line to show for `files[i]`, as `preview`'s `focusLine`.
+    case previews(files: [Int], query: String, mode: Mode, focusLines: [Int?] = [])
     case opened(path: String)
 }
 
@@ -222,6 +223,7 @@ extension Request {
         var config: ConfigPatch?
         var path: String?
         var files: [Int]?
+        var focusLines: [Int?]?
         var rebuild: Bool?
     }
 
@@ -243,8 +245,9 @@ extension Request {
             w.type = "index"
         case .rebuildIndex:
             w.type = "index"; w.rebuild = true
-        case let .previews(files, query, mode):
+        case let .previews(files, query, mode, focusLines):
             w.type = "previews"; w.files = files; w.query = query; w.mode = mode
+            if !focusLines.isEmpty { w.focusLines = focusLines }
         case .cancelIndex:
             w.type = "cancelIndex"
         case let .opened(path):

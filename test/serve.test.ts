@@ -93,6 +93,14 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   const previews = batch.previews as { id: number; message?: string }[]
   expect(previews.map((p) => p.id)).toEqual([hit!.id, 999_999])
   expect(previews[1]!.message).toBeDefined()
+  // Each file's preview centres on its hit's line when one is given, as a single preview's does.
+  expect((previews[0] as { focusLine?: number }).focusLine).toBe(1)
+  s.send({ id: 42, type: "previews", files: [hit!.id, 999_999], focusLines: [3, null], query: "pancakes" })
+  const focused = (await s.reply(42)).previews as { id: number; focusLine: number }[]
+  expect(focused.map((p) => [p.id, p.focusLine])).toEqual([
+    [hit!.id, 3],
+    [999_999, 1],
+  ])
 
   // Rebuilding empties the index in place and indexes again.
   s.send({ id: 41, type: "index", rebuild: true })
