@@ -56,6 +56,13 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
         send({ type: "preview", qid: msg.qid, preview: engine.preview(msg.id, msg.query, msg.mode, msg.focusLine) })
         break
       }
+      case "previews": {
+        if (!engine) throw new Error("search worker not initialised")
+        // Prefetch for the files next to the selection; never superseded by a single preview.
+        const previews = msg.ids.map((id) => engine!.preview(id, msg.query, msg.mode))
+        send({ type: "previews", qid: msg.qid, previews })
+        break
+      }
       case "refresh": {
         if (!engine) break
         const changed = engine.refresh(msg.force ?? false)

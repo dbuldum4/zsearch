@@ -1,12 +1,12 @@
 /** Worker entry that runs one indexing pass and streams progress to the parent. */
 import type { Config } from "../config.ts"
-import { openDb } from "./db.ts"
+import { clearIndex, openDb } from "./db.ts"
 import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 
 declare const self: Worker
 
-export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string } | { type: "cancel" }
+export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; rebuild?: boolean } | { type: "cancel" }
 
 export type IndexWorkerOut =
   | { type: "progress"; progress: IndexProgress }
@@ -31,6 +31,7 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
   }
   try {
     const db = openDb(msg.dbPath)
+    if (msg.rebuild) clearIndex(db)
     let lastCommit = 0
     const indexer = new Indexer(db, msg.config, {
       signal: controller.signal,
@@ -44,9 +45,13 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     })
     const result = await indexer.run()
     db.close()
+    // Release before reporting: the parent terminates this worker as soon as it hears "done",
+    // which could otherwise leave the lock behind and refuse the next run.
+    release()
     send({ type: "commit" })
     send({ type: "done", progress: result })
   } catch (err) {
+    release()
     send({ type: "fatal", error: (err as Error).message })
   } finally {
     release()

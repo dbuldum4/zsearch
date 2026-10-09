@@ -19,10 +19,11 @@ import { MODES, type Mode } from "./search/query.ts"
 export type ServeIn =
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
+  | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode }
   | { id?: number; type: "stats" }
   | { id?: number; type: "config" }
   | { id?: number; type: "setConfig"; config: Partial<Config> }
-  | { id?: number; type: "index" }
+  | { id?: number; type: "index"; rebuild?: boolean }
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
 
@@ -30,6 +31,7 @@ export type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
   | { id?: number; type: "results"; response: SearchResponse }
   | { id?: number; type: "preview"; preview: Preview }
+  | { id?: number; type: "previews"; previews: Preview[] }
   | { id?: number; type: "stats"; stats: IndexStats }
   | { id?: number; type: "config"; config: Config }
   | { id?: number; type: "cancelled" }
@@ -55,7 +57,7 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  const startIndex = (id?: number) => {
+  const startIndex = (id?: number, rebuild = false) => {
     if (index) return send({ id, type: "error", error: "indexing is already running" })
     const other = lockHolder(p.lock)
     if (other !== null) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
@@ -71,7 +73,7 @@ export async function serve(version: string): Promise<number> {
         send({ type: "indexProgress", progress })
       },
       onCommit: () => client.refresh(),
-    })
+    }, rebuild)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
@@ -95,6 +97,11 @@ export async function serve(version: string): Promise<number> {
         const preview = await client.preview(msg.file, String(msg.query ?? ""), mode(msg.mode), msg.focusLine)
         return send(preview ? { id, type: "preview", preview } : { id, type: "cancelled" })
       }
+      case "previews": {
+        const files = Array.isArray(msg.files) ? msg.files.filter((f) => typeof f === "number").slice(0, 32) : []
+        const previews = await client.previews(files, String(msg.query ?? ""), mode(msg.mode))
+        return send(previews ? { id, type: "previews", previews } : { id, type: "cancelled" })
+      }
       case "stats": {
         const reply = await client.stats()
         return send(reply ? { id, type: "stats", stats: reply.stats } : { id, type: "cancelled" })
@@ -108,7 +115,7 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "config", config })
       }
       case "index":
-        return startIndex(id)
+        return startIndex(id, msg.rebuild === true)
       case "cancelIndex":
         index?.cancel()
         return send({ id, type: "ok" })

@@ -77,11 +77,12 @@ export class SearchClient {
         break
       case "results":
       case "preview":
+      case "previews":
       case "stats": {
         const p = this.pending.get(m.qid)
         if (!p) break
         this.pending.delete(m.qid)
-        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : { stats: m.stats })
+        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : m.type === "previews" ? m.previews : { stats: m.stats })
         break
       }
       case "refreshed":
@@ -123,6 +124,11 @@ export class SearchClient {
 
   preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null> {
     return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine }))
+  }
+
+  /** Previews of several files at once (prefetching). A newer batch supersedes an older one. */
+  previews(ids: number[], query: string, mode: Mode): Promise<Preview[] | null> {
+    return this.request<Preview[]>("previews", (qid) => ({ type: "previews", qid, ids, query, mode }))
   }
 
   stats(): Promise<StatsReply | null> {

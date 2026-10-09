@@ -82,6 +82,20 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(pv.type).toBe("preview")
   expect((pv.preview as { lines: { text: string }[] }).lines.map((l) => l.text).join("\n")).toContain("Mix flour")
 
+  s.send({ id: 40, type: "previews", files: [hit!.id, 999_999], query: "pancakes" })
+  const batch = await s.reply(40)
+  expect(batch.type).toBe("previews")
+  const previews = batch.previews as { id: number; message?: string }[]
+  expect(previews.map((p) => p.id)).toEqual([hit!.id, 999_999])
+  expect(previews[1]!.message).toBeDefined()
+
+  // Rebuilding empties the index in place and indexes again.
+  s.send({ id: 41, type: "index", rebuild: true })
+  expect(await s.reply(41)).toEqual({ id: 41, type: "ok" })
+  expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+  s.send({ id: 42, type: "search", query: "pancakes", mode: "find" })
+  expect(((await s.reply(42)).response as { hits: { path: string }[] }).hits.some((h) => h.path.endsWith("pancakes.txt"))).toBe(true)
+
   s.send({ id: 5, type: "stats" })
   const st = await s.reply(5)
   expect((st.stats as { files: number }).files).toBeGreaterThan(5)

@@ -95,6 +95,22 @@ function migrate(db: Database, opts: OpenOptions) {
   })()
 }
 
+/** Empty the index (files, texts, vocabulary) in place, so that the next run rebuilds it. */
+export function clearIndex(db: Database): void {
+  db.transaction(() => {
+    if (getMeta(db, "fts_delete") === "manual") {
+      db.exec("DROP TABLE fts")
+      db.exec("CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)")
+    } else {
+      db.exec("INSERT INTO fts(fts) VALUES ('delete-all')")
+    }
+    db.exec("DELETE FROM content")
+    db.exec("DELETE FROM files")
+    db.exec("DELETE FROM vocab_chunks")
+    setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
+  })()
+}
+
 export function getMeta(db: Database, key: string): string | null {
   const row = db.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null
   return row?.value ?? null
