@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>zsearch</string>
+	<key>CFBundleExecutable</key>
+	<string>ZSearch</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.dbuldum4.zsearch</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>zsearch</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>zsearch indexes your Documents folder so you can search file names and contents. The index stays on this Mac.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>zsearch indexes your Downloads folder so you can search file names and contents. The index stays on this Mac.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>zsearch indexes the folders you choose so you can search file names and contents. The index stays on this Mac.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>zsearch indexes the folders you choose so you can search file names and contents. The index stays on this Mac.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>zsearch indexes the folders you choose so you can search file names and contents. The index stays on this Mac.</string>
+	<key>ZSearchCommit</key>
+	<string>@COMMIT@</string>
+</dict>
+</plist>

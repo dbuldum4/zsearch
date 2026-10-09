@@ -1,0 +1,75 @@
+# zsearch for Mac
+
+A native SwiftUI front end for zsearch. The search engine is the same `zsearch` binary as the terminal app, bundled inside the app and run as `zsearch serve`. The app sends it JSON requests on stdin and reads replies on stdout (see [`src/serve.ts`](../src/serve.ts)). The engine has a single implementation, and the Swift code only draws the UI.
+
+```
+zsearch.app/Contents/
+  MacOS/ZSearch        the SwiftUI app (this package)
+  Helpers/zsearch      the engine (bun run build)
+  Info.plist           from macos/Info.plist
+```
+
+## Building without Xcode
+
+The app is built and tested on GitHub Actions ([`.github/workflows/macos-app.yml`](../.github/workflows/macos-app.yml)). You do not need Xcode, or a Mac, to work on it:
+
+| Where | What runs |
+| --- | --- |
+| Any Linux or Mac with Swift | `swift test --package-path macos`: protocol decoding, line splitting, highlighting. `ZSearchKit` uses only Foundation. |
+| GitHub Actions, Linux | the same tests, in the `swift:6.2-noble` container |
+| GitHub Actions, macOS | builds the engine, runs the Swift tests against it (`ZSEARCH_ENGINE`), compiles the SwiftUI app, signs it ad hoc, makes `zsearch.dmg` and publishes it |
+
+Every pull request from this repository gets a pre-release named `preview-pr-<n>`, plus a comment on the PR linking to it. Each push replaces the release, and it is deleted when the PR closes. `main` publishes `preview-main`. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
+
+Keep `Sources/ZSearch` (the macOS-only UI) thin and put logic in `Sources/ZSearchKit`, where it can be tested on Linux. The UI files are wrapped in `#if os(macOS)`, so `swift build` also works on Linux (it builds a stub).
+
+## Installing a preview
+
+```sh
+macos/scripts/install-preview.sh 12          # pull request #12
+macos/scripts/install-preview.sh main        # latest main
+macos/scripts/install-preview.sh 12 --open
+```
+
+The script downloads with `curl`, mounts the DMG and copies `zsearch.app` to `~/Applications`, quitting a running copy first. It needs no admin rights. Files fetched with `curl` are not quarantined, so Gatekeeper does not block the app. If you download the DMG in a browser instead, the first launch is blocked: open System Settings › Privacy & Security and click **Open Anyway** (or run `xattr -dr com.apple.quarantine ~/Applications/zsearch.app`).
+
+`Info.plist` records the commit as `ZSearchCommit`:
+
+```sh
+/usr/libexec/PlistBuddy -c 'Print :ZSearchCommit' ~/Applications/zsearch.app/Contents/Info.plist
+```
+
+## Signing and folder permissions
+
+Builds are signed ad hoc (`codesign --sign -`), not with a Developer ID, and are not notarized. macOS ties folder permissions (Documents, Downloads, Full Disk Access) to the code signature, and an ad hoc signature changes with every build. A new preview may therefore ask again for access to Documents and Downloads, and a Full Disk Access grant must be renewed after each update.
+
+Signing with a Developer ID and notarizing (Apple Developer Program, $99 a year) fixes both problems. That needs these steps in `build-app.sh`, with the certificate and an App Store Connect API key stored as repository secrets:
+
+1. `codesign --options runtime --timestamp --sign "Developer ID Application: …"` instead of `--sign -`. The engine is a Bun executable and needs the JIT entitlements (`com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`) under the hardened runtime.
+2. `xcrun notarytool submit dist/zsearch.dmg --wait`, then `xcrun stapler staple dist/zsearch.dmg`.
+
+## Running from source on a Mac
+
+If the Command Line Tools are installed (`xcode-select --install`; this is not Xcode), you can run the app without bundling it:
+
+```sh
+bun run build
+ZSEARCH_ENGINE=$PWD/dist/zsearch swift run --package-path macos ZSearch
+```
+
+`swift build --package-path macos` checks that everything compiles. `swift test` may not work with the Command Line Tools alone (they may not include XCTest); CI runs the tests.
+
+## Protocol
+
+Each line is one JSON object. Requests may carry a numeric `id`, and the reply carries the same `id`. Newer search and preview requests supersede older ones, which reply `{"type":"cancelled"}`.
+
+| Request | Reply |
+| --- | --- |
+| `{"id":1,"type":"search","query":"budget","mode":"find","limit":200}` | `results` with `response` (hits, strategy, timing) |
+| `{"id":2,"type":"preview","file":17,"query":"budget","mode":"find","focusLine":3}` | `preview` with numbered lines and match ranges |
+| `{"id":3,"type":"stats"}` | `stats` |
+| `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (merged with defaults, saved) |
+| `{"id":5,"type":"index"}` / `{"type":"cancelIndex"}` | `ok`, then `indexProgress` events and one `indexDone` |
+| `{"type":"opened","path":"/…"}` | `ok` (records the open for ranking) |
+
+Events without an `id`: `ready` (first line: version, `firstRun`, config), `indexProgress`, `indexDone`, `refreshed`, and `error` for unreadable input. Match ranges are `[start, end)` offsets in UTF-16 code units (JavaScript string indices). `highlightRuns` in ZSearchKit converts them. The engine exits when stdin closes.

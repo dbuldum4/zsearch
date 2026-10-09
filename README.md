@@ -51,6 +51,17 @@ cp dist/zsearch ~/.local/bin/
 
 Optional: install `pdftotext` (`brew install poppler` / `apt install poppler-utils`) for faster PDF indexing. Without it, zsearch uses its built-in PDF reader.
 
+### Mac app (preview)
+
+There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
+
+```sh
+macos/scripts/install-preview.sh main       # latest main
+macos/scripts/install-preview.sh 12         # pull request #12
+```
+
+See [macos/README.md](macos/README.md) for how it is built and how to work on it without Xcode.
+
 ## Quick start
 
 ```sh
@@ -186,6 +197,7 @@ zsearch status [--errors]       what is indexed (--json)
 zsearch config [show|get|set|path|reset]
 zsearch doctor                  check SQLite/FTS5, pdftotext and the index
 zsearch reset                   delete the index
+zsearch serve                   JSON lines on stdin/stdout, for the Mac app (see src/serve.ts)
 ```
 
 `zsearch search` exits with 0 when it finds matches, 1 when it finds none and 2 on errors, the same as `grep`:
@@ -205,6 +217,8 @@ src/
               vocabulary index, snippets, fusion/ranking, search worker
   tui/        Solid + OpenTUI app: setup, results, preview, status, help
   cli.ts      command line
+  serve.ts    the engine over JSON lines, for the Mac app
+macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
 - **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, diacritics removed), and extracted text is stored once (small texts raw, large ones zstd-compressed). A `vocab` table lists every indexed term.
