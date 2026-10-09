@@ -3,6 +3,13 @@ import AppKit
 import SwiftUI
 import ZSearchKit
 
+/// Indexing progress, kept apart from `SearchModel` because it changes many times a second:
+/// only the views that show it are redrawn.
+@MainActor
+final class IndexActivity: ObservableObject {
+    @Published var progress: IndexProgress?
+}
+
 /// App state. Talks to the bundled `zsearch serve` engine.
 @MainActor
 final class SearchModel: ObservableObject {
@@ -20,17 +27,22 @@ final class SearchModel: ObservableObject {
     @Published private(set) var preview: FilePreview?
     @Published private(set) var stats: IndexStats?
     @Published private(set) var config: Config?
-    @Published private(set) var progress: IndexProgress?
     @Published private(set) var indexing = false
     @Published private(set) var firstRun = false
     @Published private(set) var notice: String?
     @Published private(set) var engineFailure: String?
+
+    let activity = IndexActivity()
 
     private var engine: EngineConnection?
     /// Bumped on every start, so an old engine's exit is not mistaken for the current one's.
     private var generation = 0
     private var searchTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    /// Re-runs the search after the index changes; separate from `searchTask` so it never delays typing.
+    private var refreshTask: Task<Void, Never>?
+    /// What the current (or pending) preview was requested for, so unchanged results do not reload it.
+    private var previewKey: PreviewKey?
     private var noticeTask: Task<Void, Never>?
 
     var hits: [SearchHit] { response?.hits ?? [] }
@@ -92,7 +104,7 @@ final class SearchModel: ObservableObject {
     private func engineExited(_ error: EngineError) {
         engine = nil
         indexing = false
-        progress = nil
+        activity.progress = nil
         engineFailure = error.localizedDescription
     }
 
@@ -112,11 +124,11 @@ final class SearchModel: ObservableObject {
                 scheduleSearch(delay: 0)
             }
         case let .indexProgress(p):
-            indexing = true
-            progress = p
+            if !indexing { indexing = true }
+            activity.progress = p
         case let .indexDone(done):
             indexing = false
-            progress = nil
+            activity.progress = nil
             switch done.status {
             case "done":
                 if let p = done.progress {
@@ -130,7 +142,7 @@ final class SearchModel: ObservableObject {
             Task { await refreshStats() }
             scheduleSearch(delay: 0)
         case let .refreshed(_, changed):
-            if changed { scheduleSearch(delay: 0.25) }
+            if changed { scheduleRefresh() }
         case let .error(text):
             show(text)
         default:
@@ -149,11 +161,26 @@ final class SearchModel: ObservableObject {
         }
     }
 
+    /// Search again because the index changed. While indexing, commits arrive several times a
+    /// second; re-searching at most every 1.5 s keeps the list from churning under the pointer.
+    private func scheduleRefresh() {
+        guard refreshTask == nil else { return }
+        let delay: UInt64 = indexing ? 1_500_000_000 : 300_000_000
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            self?.refreshTask = nil
+            await self?.runSearch()
+        }
+    }
+
     private func runSearch() async {
         guard let engine else { return }
+        let (query, mode) = (self.query, self.mode)
         do {
             guard case let .results(r) = try await engine.request(.search(query: query, mode: mode)) else { return }
-            guard r.query == query else { return }
+            guard query == self.query, mode == self.mode else { return }
+            // Same hits as before (typical for a refresh): keep the current list and preview untouched.
+            if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits { return }
             response = r
             if let id = selection, r.hits.contains(where: { $0.id == id }) {
                 loadPreview()
@@ -166,16 +193,29 @@ final class SearchModel: ObservableObject {
     }
 
     private func loadPreview() {
-        previewTask?.cancel()
         guard let hit = selectedHit, let engine else {
+            previewTask?.cancel()
+            previewKey = nil
             preview = nil
             return
         }
+        let key = PreviewKey(file: hit.id, query: query, mode: mode)
+        guard key != previewKey else { return }
+        previewTask?.cancel()
+        previewKey = key
+        // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
         let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: hit.lines.first?.line)
         previewTask = Task { [weak self] in
             guard case let .preview(p)? = try? await engine.request(request), !Task.isCancelled else { return }
-            if self?.selection == p.id { self?.preview = p }
+            guard let self, self.previewKey == key else { return }
+            self.preview = p
         }
+    }
+
+    private struct PreviewKey: Equatable {
+        var file: Int
+        var query: String
+        var mode: Mode
     }
 
     func moveSelection(by delta: Int) {
