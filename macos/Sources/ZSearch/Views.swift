@@ -11,6 +11,7 @@ struct ContentView: View {
         @Bindable var model = model
         VStack(spacing: 0) {
             SearchBar(focused: $searchFocused)
+            FilterBar()
             Divider()
             if let failure = model.engineFailure {
                 EngineFailureView(message: failure)

@@ -34,6 +34,14 @@ describe("query parsing", () => {
     expect(q.filters.limit).toBe(7)
   })
 
+  test("a quoted filter value can hold spaces", () => {
+    const q = parseQuery('in:"~/My Folder" type:pdf budget "next year"', now)
+    expect(q.filters.inPaths).toEqual([`${home()}/My Folder`])
+    expect([...q.filters.kinds!]).toEqual(["pdf"])
+    expect(q.words).toEqual(["budget"])
+    expect(q.phrases).toEqual(["next year"])
+  })
+
   test("type aliases and negated types", () => {
     const q = parseQuery("type:docs -type:pdf notes", now)
     expect(q.filters.kinds!.has("doc")).toBe(true)
@@ -389,4 +397,12 @@ describe("result list layout", () => {
     expect(resultRows(hits, 7, 0, 60, 10, DARK)).toHaveLength(2)
     expect(clampScroll([], 3, 2, 10)).toBe(0)
   })
+})
+
+test("the Mac app knows the same type names as the engine", async () => {
+  const { KIND_ALIASES } = await import("../src/kinds.ts")
+  const swift = await Bun.file(new URL("../macos/Sources/ZSearchKit/QueryFilters.swift", import.meta.url)).text()
+  const list = /kindAliases: Set<String> = \[([\s\S]*?)\]/.exec(swift)![1]!
+  const names = [...list.matchAll(/"(\w+)"/g)].map((m) => m[1])
+  expect(names.sort()).toEqual(Object.keys(KIND_ALIASES).sort())
 })

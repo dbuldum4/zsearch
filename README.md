@@ -90,7 +90,7 @@ Filters can be combined with any mode:
 | --- | --- | --- |
 | `ext:` | `ext:pdf,docx` | File extension |
 | `type:` | `type:doc`, `type:sheet`, `type:slides`, `type:code`, `type:image`, `type:folder`, `-type:pdf` | Kind of file. Aliases include `docs`, `spreadsheet`, `presentation`, `photo`, `music` and `notes` |
-| `in:` | `in:~/Documents`, `in:Projects/site` | Inside a folder (paths without `~` or `/` are relative to home) |
+| `in:` | `in:~/Documents`, `in:Projects/site`, `in:"~/My Folder"` | Inside a folder (paths without `~` or `/` are relative to home; quote paths with spaces) |
 | `path:` | `path:2024` | The path contains this text |
 | `size:` | `size:>5mb`, `size:<100k`, `size:1mb..10mb` | File size |
 | `mtime:` | `mtime:<7d`, `mtime:>1y`, `mtime:today`, `mtime:2023`, `after:2024-01-01`, `before:2024-06` | Modification time |
