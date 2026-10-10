@@ -402,7 +402,9 @@ export class Indexer {
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
-      if (this.early.size >= EARLY_JOBS || this.earlyBytes + this.cost(p) > MAX_INFLIGHT_BYTES) break
+      // Only what the workers have room for: a file queued behind a slow document could not go
+      // to another worker. The rest start in the content phase.
+      if (!pool.capacity || this.early.size >= EARLY_JOBS || this.earlyBytes + this.cost(p) > MAX_INFLIGHT_BYTES) break
       this.earlyBytes += this.cost(p)
       this.early.set(p.id, this.extract(pool, p))
     }

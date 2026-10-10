@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
 import { clearIndex, ContentState, decompressText, indexStats, loadVocabTerms, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
-import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
+import { FIXTURES, makeCorpus, homeConfig } from "./helpers/corpus.ts"
+import { ExtractPool } from "../src/index/pool.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
@@ -264,6 +265,33 @@ describe("threaded indexing (extraction workers, writer thread, extraction durin
     expect(() => db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
     clean.close()
     db.close()
+  })
+
+  test("extraction during the scan queues no more than the workers have room for", async () => {
+    // One worker with a document queued takes two jobs: more would wait behind it.
+    const dir = join(corpus.home, "Documents", "papers")
+    mkdirSync(dir, { recursive: true })
+    for (let i = 0; i < 6; i++) copyFileSync(join(FIXTURES, "docs", "paper.pdf"), join(dir, `paper${i}.pdf`))
+    const run = ExtractPool.prototype.run
+    let overfull = 0
+    let jobs = 0
+    ExtractPool.prototype.run = function (this: ExtractPool, job) {
+      jobs++
+      if (!this.capacity) overfull++
+      return run.call(this, job)
+    }
+    try {
+      const db = fresh("room.db")
+      const config = { ...homeConfig(), workers: 1 }
+      expect((await new Indexer(db, config, { inProcess: false }).run()).phase).toBe("done")
+      expect(jobs).toBeGreaterThan(6)
+      expect(overfull).toBe(0)
+      expect(ftsCount(db, "paper0")).toBe(1)
+      db.close()
+    } finally {
+      ExtractPool.prototype.run = run
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("re-indexing added, changed and removed files gives the in-process index", async () => {
