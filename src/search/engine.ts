@@ -764,22 +764,16 @@ export class SearchEngine {
       }
     }
     // Matches for highlighting.
-    const q = parseQuery(rawQuery)
-    let re: RegExp | null = null
-    const effective = q.forcedMode ?? mode
+    let pattern: ReturnType<SearchEngine["matchPattern"]> = null
     try {
-      if (effective === "find") {
-        if (q.text) re = this.buildRegex(q, q.regex).re
-      } else {
-        const p = termsPattern(q.words, q.phrases, q.typing)
-        if (p) re = new RegExp(p, "giu")
-      }
+      pattern = this.matchPattern(rawQuery, mode)
     } catch {
-      re = null
+      pattern = null
     }
     const matchRanges = new Map<number, [number, number][]>()
-    if (re) {
-      const r = /[^\x00-\x7f]/.test(text) && re.flags.includes("u") && effective === "fuzzy" ? keywordLines(text, re.source, 2000) : findLines(text, re, 2000, 20_000, Date.now() + 500, false)
+    if (pattern) {
+      const re = pattern.re
+      const r = /[^\x00-\x7f]/.test(text) && re.flags.includes("u") && pattern.folded ? keywordLines(text, re.source, 2000) : findLines(text, re, 2000, 20_000, Date.now() + 500, false)
       for (const l of r.lines) {
         base.matchLines.push(l.line)
         if (!matchRanges.has(l.line)) matchRanges.set(l.line, l.ranges)
@@ -794,6 +788,18 @@ export class SearchEngine {
       base.lines.push({ n, text: t.length > 2000 ? t.slice(0, 2000) + "…" : t, ranges: (matchRanges.get(n) ?? []).filter(([a]) => a < 2000) })
     }
     return base
+  }
+
+  /**
+   * The regex (with the `g` flag) that marks a query's matches in a file's text, or null when
+   * the query has no text to match. `folded`: match on folded text (fuzzy mode), as snippets do.
+   * Throws on an invalid regex.
+   */
+  matchPattern(rawQuery: string, mode: Mode): { re: RegExp; folded: boolean } | null {
+    const q = parseQuery(rawQuery)
+    if ((q.forcedMode ?? mode) === "find") return q.text ? { re: this.buildRegex(q, q.regex).re, folded: false } : null
+    const p = termsPattern(q.words, q.phrases, q.typing)
+    return p ? { re: new RegExp(p, "giu"), folded: true } : null
   }
 
   private folderPreview(base: Preview): Preview {

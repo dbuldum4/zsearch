@@ -2,6 +2,7 @@ import type { Config } from "../config.ts"
 import type { IndexStats } from "../index/db.ts"
 import type { Preview, SearchResponse } from "./engine.ts"
 import type { Mode } from "./query.ts"
+import type { ReadOptions, ReadResult } from "./read.ts"
 
 export type SearchIn =
   | { type: "init"; dbPath: string; config: Config }
@@ -12,6 +13,7 @@ export type SearchIn =
   | { type: "config"; config: Config }
   | { type: "opened"; path: string }
   | { type: "stats"; qid: number }
+  | { type: "read"; qid: number; path: string; query: string; mode: Mode; opts: ReadOptions }
 
 export type SearchOut =
   | { type: "ready"; files: number }
@@ -20,4 +22,5 @@ export type SearchOut =
   | { type: "previews"; qid: number; previews: Preview[] }
   | { type: "refreshed"; files: number; changed: boolean }
   | { type: "stats"; qid: number; stats: IndexStats }
+  | { type: "read"; qid: number; result: ReadResult | null; error?: string }
   | { type: "error"; qid?: number; error: string }

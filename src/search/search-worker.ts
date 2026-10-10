@@ -3,6 +3,7 @@ import type { Config } from "../config.ts"
 import { indexStats, openDb } from "../index/db.ts"
 import { SearchEngine } from "./engine.ts"
 import type { SearchIn, SearchOut } from "./protocol.ts"
+import { readIndexed } from "./read.ts"
 
 declare const self: Worker
 
@@ -61,6 +62,17 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
         // Prefetch for the files next to the selection; never superseded by a single preview.
         const previews = msg.ids.map((id, i) => engine!.preview(id, msg.query, msg.mode, msg.focusLines?.[i] ?? undefined))
         send({ type: "previews", qid: msg.qid, previews })
+        break
+      }
+      case "read": {
+        if (!engine) throw new Error("search worker not initialised")
+        // Index changes made by another process must not leave stale catalog data behind.
+        engine.refresh()
+        try {
+          send({ type: "read", qid: msg.qid, result: readIndexed(engine, msg.path, msg.query, msg.mode, msg.opts) })
+        } catch (err) {
+          send({ type: "read", qid: msg.qid, result: null, error: (err as Error).message })
+        }
         break
       }
       case "refresh": {
