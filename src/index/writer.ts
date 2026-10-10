@@ -160,8 +160,8 @@ export type WriteWorkerIn =
   | { type: "open"; path: string; role: "writer" | "checkpointer" }
   | { type: "write"; items: ContentItem[]; fresh: string[]; bytes: number }
   | { type: "commit" }
-  | { type: "checkpoint" }
-export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "committed" } | { type: "error"; error: string }
+  | { type: "checkpoint"; last?: boolean }
+export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "committed" } | { type: "checkpointed" } | { type: "error"; error: string }
 
 /**
  * The writer leaves copying the log into the database (and the syncs that go with it) to a
@@ -198,7 +198,7 @@ export class ThreadSink implements ContentSink {
         this.commits--
         this.checkpointer.postMessage({ type: "checkpoint" } satisfies WriteWorkerIn)
         this.onCommit?.()
-      } else this.error ??= m.error
+      } else if (m.type === "error") this.error ??= m.error
       this.onProgress?.()
       for (const w of this.waiters.splice(0)) w()
     }
@@ -214,6 +214,7 @@ export class ThreadSink implements ContentSink {
     // do the copying anyway.
     this.checkpointer = new Worker(workerUrl("index/write-worker.ts"))
     this.checkpointer.onerror = (ev) => ev.preventDefault?.()
+    this.checkpointer.onmessage = () => this.checkpointer.terminate()
     this.checkpointer.postMessage({ type: "open", path, role: "checkpointer" } satisfies WriteWorkerIn)
   }
 
@@ -247,8 +248,14 @@ export class ThreadSink implements ContentSink {
     this.commit()
     while (this.commits > 0 && !this.error) await new Promise<void>((r) => this.waiters.push(r))
     this.worker.terminate()
-    this.checkpointer.terminate()
-    if (this.error) throw new Error(this.error)
+    if (this.error) {
+      this.checkpointer.terminate()
+      throw new Error(this.error)
+    }
+    // The last copy into the database goes on without holding up the end of the run (the
+    // indexer's own checkpoint skips what this one is doing). It is safe to cut short.
+    this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
+    this.checkpointer.unref()
   }
 
   abandon() {
