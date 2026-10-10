@@ -5,7 +5,7 @@ import { extOf, kindOf, type Kind } from "../kinds.ts"
 import { cloudFolders, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
-import { ContentState, decompressText, getMeta, loadVocabTerms, setMeta } from "./db.ts"
+import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import type { ExtractReply } from "./extract-job.ts"
 import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
@@ -135,6 +135,7 @@ export class Indexer {
     contentGet: Statement
     contentDel: Statement
     fileDel: Statement
+    logRemoved: Statement
   }
 
   constructor(
@@ -174,6 +175,7 @@ export class Indexer {
       contentGet: q("SELECT data FROM content WHERE id = ?"),
       contentDel: q("DELETE FROM content WHERE id = ?"),
       fileDel: q("DELETE FROM files WHERE id = ?"),
+      logRemoved: q("INSERT INTO removed(id) VALUES (?)"),
     }
   }
 
@@ -253,7 +255,8 @@ export class Indexer {
       setMeta(this.db, "last_indexed_at", String(now))
       setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
       setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
-      setMeta(this.db, "generation", String(Number(getMeta(this.db, "generation") ?? 0) + 1))
+      // Readers follow the removed files from this log; only its recent part is needed.
+      this.db.query("DELETE FROM removed WHERE n <= (SELECT MAX(n) FROM removed) - ?").run(REMOVED_KEPT)
       this.db.exec("PRAGMA optimize")
     }
     this.db.exec("PRAGMA wal_checkpoint(PASSIVE)")
@@ -590,6 +593,7 @@ export class Indexer {
           this.ftsDelete(id, row.path, body)
           this.st.contentDel.run(id)
           this.st.fileDel.run(id)
+          this.st.logRemoved.run(id)
         }
       }).immediate()
     }

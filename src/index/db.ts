@@ -29,6 +29,14 @@ export interface FileRow {
   note: string | null
 }
 
+/**
+ * The ids of files removed from the index, in order: readers keeping the file list in memory
+ * drop them from it rather than reading the whole list again. Trimmed to its last
+ * REMOVED_KEPT rows; a reader that fell behind that far reads everything again.
+ */
+const REMOVED_TABLE = "CREATE TABLE IF NOT EXISTS removed (n INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL)"
+export const REMOVED_KEPT = 100_000
+
 function versionAtLeast(v: string, major: number, minor: number): boolean {
   const [a = 0, b = 0] = v.split(".").map(Number)
   return a > major || (a === major && b >= minor)
@@ -55,10 +63,14 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
 function migrate(db: Database, opts: OpenOptions) {
   db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
   const version = Number(getMeta(db, "schema_version") ?? 0)
-  if (version === SCHEMA_VERSION) return
+  if (version === SCHEMA_VERSION) {
+    // Added after version 8 without a rebuild: older indexes get it here.
+    db.exec(REMOVED_TABLE)
+    return
+  }
   db.transaction(() => {
     // "chunks" held semantic search vectors before version 6; "vocab" was one row per term before version 7.
-    for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab", "vocab_chunks"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
+    for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab", "vocab_chunks", "removed"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
     db.exec(`CREATE TABLE files (
       id INTEGER PRIMARY KEY,
       path TEXT NOT NULL UNIQUE,
@@ -89,6 +101,7 @@ function migrate(db: Database, opts: OpenOptions) {
     )
     // The content vocabulary, append-only: each row is a compressed, newline-separated batch of new terms.
     db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
+    db.exec(REMOVED_TABLE)
     db.exec("CREATE TABLE IF NOT EXISTS frecency (path TEXT PRIMARY KEY, count INTEGER NOT NULL, last INTEGER NOT NULL)")
     db.exec("DELETE FROM meta WHERE key <> 'created_at'")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
@@ -111,6 +124,7 @@ export function clearIndex(db: Database): void {
     db.exec("DELETE FROM content")
     db.exec("DELETE FROM files")
     db.exec("DELETE FROM vocab_chunks")
+    db.exec("DELETE FROM removed")
     setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
   })()
   compact(db)
