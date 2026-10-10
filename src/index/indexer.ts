@@ -115,6 +115,8 @@ export class Indexer {
   /** Extractions started during the scan, by file id. */
   private early = new Map<number, Promise<ExtractReply>>()
   private earlyBytes = 0
+  /** Files the scan found to extract so far. */
+  private earlyFound = 0
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -358,15 +360,22 @@ export class Indexer {
 
   /* ---------------------------------------------------------- content -- */
 
-  private startPool(files: number): ExtractPool {
+  /**
+   * The extraction pool, with workers enough for `files` files to extract. The scan starts it
+   * on the first files it finds, and it grows as more turn up.
+   */
+  private poolFor(files: number): ExtractPool {
     const c = this.config.content
     const workers = this.config.workers > 0 ? this.config.workers : ExtractPool.defaultSize()
-    this.pool = new ExtractPool(
-      Math.min(workers, Math.max(1, Math.ceil(files / 4))),
-      { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
-      JOBS_PER_WORKER,
-      this.opts.inProcess,
-    )
+    const size = Math.min(workers, Math.max(1, Math.ceil(files / 4)))
+    if (this.pool) this.pool.grow(size)
+    else
+      this.pool = new ExtractPool(
+        size,
+        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
+        JOBS_PER_WORKER,
+        this.opts.inProcess,
+      )
     return this.pool
   }
 
@@ -384,11 +393,13 @@ export class Indexer {
    * for it otherwise. Their results wait here until the content phase writes them first.
    */
   private startEarly(files: Pending[]) {
-    if (this.opts.inProcess) return
+    if (this.opts.inProcess || !files.length) return
+    this.earlyFound += files.length
+    const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
       if (this.early.size >= EARLY_JOBS || this.earlyBytes + this.cost(p) > MAX_INFLIGHT_BYTES) break
       this.earlyBytes += this.cost(p)
-      this.early.set(p.id, this.extract(this.pool ?? this.startPool(files.length), p))
+      this.early.set(p.id, this.extract(pool, p))
     }
     // The scan keeps this thread busy: the jobs go out now rather than at its end.
     this.pool?.flush()
@@ -412,7 +423,7 @@ export class Indexer {
       for (let k = 0; k < run.length; k++) pending[i + k] = run[k]!
     }
     pending.unshift(...started)
-    const pool = this.pool ?? this.startPool(pending.length)
+    const pool = this.poolFor(pending.length)
 
     // Resolved by the next finished job, or when the writer catches up. Promise.race over every
     // job in flight would cost a pass over all of them per job, and leave a reaction behind on each.

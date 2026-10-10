@@ -185,6 +185,7 @@ export class ThreadSink implements ContentSink {
   private error: string | null = null
   private waiters: (() => void)[] = []
   private checkpointed: (() => void) | null = null
+  private checkpointerDown = false
 
   onProgress?: () => void
 
@@ -217,6 +218,7 @@ export class ThreadSink implements ContentSink {
     this.checkpointer = new Worker(workerUrl("index/write-worker.ts"))
     this.checkpointer.onerror = (ev) => {
       ev.preventDefault?.()
+      this.checkpointerDown = true
       this.checkpointed?.()
     }
     this.checkpointer.onmessage = () => this.checkpointed?.()
@@ -259,10 +261,11 @@ export class ThreadSink implements ContentSink {
       throw new Error(this.error)
     }
     // The last copy into the database: little is left by now, as the checkpointer kept up.
-    await new Promise<void>((resolve) => {
-      this.checkpointed = resolve
-      this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
-    })
+    if (!this.checkpointerDown)
+      await new Promise<void>((resolve) => {
+        this.checkpointed = resolve
+        this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
+      })
     this.checkpointer.terminate()
   }
 

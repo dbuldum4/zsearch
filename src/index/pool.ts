@@ -22,7 +22,8 @@ export class ExtractPool {
   private affinity = new Map<string, Worker>()
   private flushQueued = false
   private idleResolvers: (() => void)[] = []
-  readonly size: number
+  /** Workers in the pool. */
+  size: number
 
   constructor(
     size: number,
@@ -33,6 +34,14 @@ export class ExtractPool {
     this.size = Math.max(1, size)
     if (inProcess) return
     for (let i = 0; i < this.size; i++) this.spawn()
+  }
+
+  /** Add workers, up to `size` in all. */
+  grow(size: number) {
+    while (this.size < size) {
+      this.size++
+      if (!this.inProcess) this.spawn()
+    }
   }
 
   /** The cores this process may use, less the indexer's thread and the writer's, which keep one each busy. */
