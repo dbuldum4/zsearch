@@ -21,7 +21,15 @@ self.onmessage = (ev: MessageEvent<WriteWorkerIn>) => {
     } catch {
       // busy or failed: the next one, or the writer's own, does it
     }
-    if (msg.type === "checkpoint" && msg.last) send({ type: "checkpointed" })
+    if (msg.type === "checkpoint" && msg.last) {
+      try {
+        checkpointDb?.close(true)
+      } catch {
+        // the thread ends anyway
+      }
+      checkpointDb = null
+      send({ type: "checkpointed" })
+    }
     return
   }
   try {
@@ -29,6 +37,10 @@ self.onmessage = (ev: MessageEvent<WriteWorkerIn>) => {
     else if (msg.type === "write") {
       writer!.write(msg.items, msg.fresh ? [msg.fresh] : [])
       send({ type: "written", bytes: msg.bytes })
+    } else if (msg.type === "close") {
+      writer!.close()
+      writer = null
+      send({ type: "closed" })
     } else {
       writer!.commit()
       send({ type: "committed" })

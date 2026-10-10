@@ -282,9 +282,11 @@ export class Indexer {
       if (!batch.length) return
       const work = batch
       batch = []
+      // Immediate: these read before they write, and a deferred transaction that finds another
+      // connection's write in the way fails at once instead of waiting for it.
       this.db.transaction(() => {
         for (const fn of work) fn()
-      })()
+      }).immediate()
       lastCommit = Date.now()
       this.opts.onCommit?.()
       this.startEarly(waiting)
@@ -570,7 +572,7 @@ export class Indexer {
           this.st.contentDel.run(id)
           this.st.fileDel.run(id)
         }
-      })()
+      }).immediate()
     }
     if (removed.length) this.opts.onCommit?.()
   }

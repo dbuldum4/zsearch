@@ -102,6 +102,12 @@ export class ContentWriter {
     this.db.exec("ROLLBACK")
     this.inTx = false
   }
+
+  /** Close the connection, now: its statements are finalized first, or SQLite would put it off. */
+  close(): void {
+    for (const st of Object.values(this.st)) st.finalize()
+    this.db.close(true)
+  }
 }
 
 /** Where the indexer sends extracted contents. */
@@ -162,7 +168,13 @@ export type WriteWorkerIn =
   | { type: "write"; items: ContentItem[]; fresh: string; bytes: number }
   | { type: "commit" }
   | { type: "checkpoint"; last?: boolean }
-export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "committed" } | { type: "checkpointed" } | { type: "error"; error: string }
+  | { type: "close" }
+export type WriteWorkerOut =
+  | { type: "written"; bytes: number }
+  | { type: "committed" }
+  | { type: "checkpointed" }
+  | { type: "closed" }
+  | { type: "error"; error: string }
 
 /**
  * The writer leaves copying the log into the database (and the syncs that go with it) to a
@@ -186,6 +198,7 @@ export class ThreadSink implements ContentSink {
   private waiters: (() => void)[] = []
   private checkpointed: (() => void) | null = null
   private checkpointerDown = false
+  private closed = false
 
   onProgress?: () => void
 
@@ -201,7 +214,8 @@ export class ThreadSink implements ContentSink {
         this.commits--
         this.checkpointer.postMessage({ type: "checkpoint" } satisfies WriteWorkerIn)
         this.onCommit?.()
-      } else if (m.type === "error") this.error ??= m.error
+      } else if (m.type === "closed") this.closed = true
+      else if (m.type === "error") this.error ??= m.error
       this.onProgress?.()
       for (const w of this.waiters.splice(0)) w()
     }
@@ -255,18 +269,23 @@ export class ThreadSink implements ContentSink {
   async close() {
     this.commit()
     while (this.commits > 0 && !this.error) await new Promise<void>((r) => this.waiters.push(r))
-    this.worker.terminate()
     if (this.error) {
-      this.checkpointer.terminate()
+      this.abandon()
       throw new Error(this.error)
     }
-    // The last copy into the database: little is left by now, as the checkpointer kept up.
+    // Both threads close their connections before `close` resolves. Closing one takes locks
+    // for a moment, and a write the indexer starts then would fail rather than wait.
+    this.post({ type: "close" })
+    while (!this.closed && !this.error) await new Promise<void>((r) => this.waiters.push(r))
+    this.worker.terminate()
+    // The last copy into the database, then the checkpointer closes its connection too.
     if (!this.checkpointerDown)
       await new Promise<void>((resolve) => {
         this.checkpointed = resolve
         this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
       })
     this.checkpointer.terminate()
+    if (this.error) throw new Error(this.error)
   }
 
   abandon() {
