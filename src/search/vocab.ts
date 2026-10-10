@@ -102,7 +102,8 @@ export class Vocab {
         if (d <= max && d > 0) out.push({ t, d })
       }
     }
-    out.sort((a, b) => a.d - b.d)
+    // Ties go by term, not by the order terms were indexed in, which differs from one rebuild to the next.
+    out.sort((a, b) => a.d - b.d || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0))
     return out.slice(0, limit).map((x) => x.t)
   }
 }
