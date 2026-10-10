@@ -118,10 +118,10 @@ function fetchProject(cache: string, p: { repo: string; commit: string }): strin
   return dir
 }
 
-/** Put a copy of `src` at `dest`: hard links where the file system allows, so it is quick. */
+/** Put a copy of `src` at `dest`, with its times: hard links where the file system allows, so it is quick. */
 function linkTree(src: string, dest: string) {
   mkdirSync(dirname(dest), { recursive: true })
-  for (const flags of [["-al"], ["-cR"], ["-R"]]) {
+  for (const flags of [["-al"], ["-cpR"], ["-pR"]]) {
     if (spawnSync("cp", [...flags, src, dest], { stdio: "ignore" }).status === 0) return
     rmSync(dest, { recursive: true, force: true })
   }
@@ -298,11 +298,14 @@ async function bench(): Promise<BenchResult> {
   const dbPath = join(work, "data", "index.db")
   try {
     let t = performance.now()
+    // Fetched first: their files are then older than the generated ones on every run, so the
+    // searches that go newest-first meet the same files first.
+    const projects = REAL ? REAL_PROJECTS.map((p) => ({ ...p, dir: fetchProject(cache, p) })) : []
     const corpus = makeCorpus(home, FILES, SEED)
     if (REAL) {
-      for (const p of REAL_PROJECTS) {
+      for (const p of projects) {
         const dest = join(home, p.into)
-        linkTree(fetchProject(cache, p), dest)
+        linkTree(p.dir, dest)
         const m = measure(dest)
         corpus.files += m.files
         corpus.bytes += m.bytes
