@@ -8,6 +8,7 @@ import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, loadVocabTerms, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import type { ExtractReply } from "./extract-job.ts"
+import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
 import { ExtractPool } from "./pool.ts"
 import { type ContentItem, type ContentSink, InlineSink, ThreadSink } from "./writer.ts"
 
@@ -120,6 +121,9 @@ export class Indexer {
   private earlyBytes = 0
   /** Files the scan found to extract so far. */
   private earlyFound = 0
+  /** The share of the computer this run may use (see `indexLoad`). */
+  private share: number
+  private cpu: CpuBudget
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -139,6 +143,8 @@ export class Indexer {
     private opts: IndexOptions = {},
   ) {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
+    this.share = loadShare(config.indexLoad)
+    this.cpu = new CpuBudget(this.share)
     const now = Date.now()
     this.progress = {
       phase: "starting",
@@ -213,6 +219,8 @@ export class Indexer {
   }
 
   async run(): Promise<IndexProgress> {
+    // This thread walks the folders: indexing runs on a thread of its own, or is all a process does.
+    if (this.share < 1 && !this.opts.inProcess) backgroundDisk()
     try {
       return await this.runPhases()
     } finally {
@@ -371,7 +379,7 @@ export class Indexer {
    */
   private poolFor(files: number): ExtractPool {
     const c = this.config.content
-    const workers = this.config.workers > 0 ? this.config.workers : ExtractPool.defaultSize()
+    const workers = this.config.workers > 0 ? this.config.workers : defaultWorkers(this.share)
     const size = Math.min(workers, Math.max(1, Math.ceil(files / 4)))
     if (this.pool) this.pool.grow(size)
     else
@@ -380,6 +388,7 @@ export class Indexer {
         { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
         JOBS_PER_WORKER,
         this.opts.inProcess,
+        this.share < 1,
       )
     return this.pool
   }
@@ -398,7 +407,8 @@ export class Indexer {
    * for it otherwise. Their results wait here until the content phase writes them first.
    */
   private startEarly(files: Pending[]) {
-    if (this.opts.inProcess || !files.length) return
+    // Over the CPU budget, the content phase starts them instead.
+    if (this.opts.inProcess || !files.length || this.cpu.over) return
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
@@ -441,7 +451,7 @@ export class Indexer {
     // this one takes in results and hands out jobs meanwhile.
     const file = this.db.filename
     const onCommit = () => this.opts.onCommit?.()
-    const sink: ContentSink = this.opts.inProcess || !file || file === ":memory:" ? new InlineSink(this.db, onCommit) : new ThreadSink(file, onCommit)
+    const sink: ContentSink = this.opts.inProcess || !file || file === ":memory:" ? new InlineSink(this.db, onCommit) : new ThreadSink(file, onCommit, this.share < 1)
     sink.onProgress = () => wake?.()
     this.known ??= loadVocabTerms(this.db)
     const known = this.known
@@ -529,9 +539,12 @@ export class Indexer {
       while ((next < pending.length || active) && !sink.failed) {
         // No new jobs while the writer has much to catch up on.
         const behind = sink.backlog > MAX_INFLIGHT_BYTES
+        // Nor while this process takes more CPU time than it may: it waits for the workers to
+        // finish what they have, or for a moment if they have nothing.
+        const throttled = this.cpu.over
         // The workers are topped up once half their queue is done, so jobs go out in batches.
         const refill = Math.max(1, pool.slots >> 1)
-        if (!behind && pool.capacity >= Math.min(refill, pending.length - next)) {
+        if (!behind && !throttled && pool.capacity >= Math.min(refill, pending.length - next)) {
           while (next < pending.length && pool.capacity > 0 && !this.aborted) {
             const job = pending[next]!
             if (active && inflightBytes + cost(job) > MAX_INFLIGHT_BYTES) break
@@ -540,6 +553,7 @@ export class Indexer {
         }
         if (this.aborted) break
         if (active || behind) await new Promise<void>((r) => (wake = r))
+        else if (throttled) await new Promise<void>((r) => setTimeout(r, 20))
         wake = null
         flush(heldBytes > MAX_HELD_BYTES)
         if (Date.now() - lastCommit > 1000) {

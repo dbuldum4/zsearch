@@ -27,6 +27,7 @@ export function uniqueTerms(text: string, into: Set<string> = new Set()): Set<st
 
 /** ASCII characters other than letters and digits: separators for unicode61, so no token spans one. */
 const ASCII_SEPARATORS = /[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/
+const ASCII_UPPER = /[A-Z]+/g
 
 /**
  * What the index keeps of a text: its distinct words for the FTS `body` column, and its
@@ -41,8 +42,9 @@ export function indexTerms(text: string): { body: string; terms: Iterable<string
     const body = words.join(" ")
     return { body, terms: words.some((w) => w.length > 64) ? words.filter((w) => w.length <= 64) : words }
   }
-  // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer.
-  const body = [...new Set(text.split(ASCII_SEPARATORS))].join(" ")
+  // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer. ASCII
+  // letters are lower-cased first, as it would, so that a word in other cases goes in once.
+  const body = [...new Set(text.replace(ASCII_UPPER, (w) => w.toLowerCase()).split(ASCII_SEPARATORS))].filter(Boolean).join(" ")
   return { body, terms: uniqueTerms(body) }
 }
 

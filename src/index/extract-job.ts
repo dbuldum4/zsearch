@@ -1,6 +1,6 @@
 import { type ExtractOptions, extractRaw, textOf } from "./extract/index.ts"
 import { compressBytes, compressText } from "./db.ts"
-import { asciiTerms } from "./ascii-terms.ts"
+import { byteTerms } from "./byte-terms.ts"
 import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
 
@@ -89,13 +89,13 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
   try {
     const raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts)
     if (raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
-      // Plain ASCII text is its own UTF-8, and its words need no decoding.
-      const a = asciiTerms(raw.bytes, job.run)
+      // UTF-8 text is stored as it is, and its words need no decoding.
+      const a = byteTerms(raw.bytes, job.run)
       if (a) {
         if (!a.body.length && blank(raw.bytes)) return { id: job.id, status: "skip", reason: "empty" }
         const text = lineFeeds(raw.bytes)
         const compressed = compressBytes(text)
-        return { id: job.id, status: "ok", chars: text.length, body: a.body, compressed, terms: a.report(), truncated: false }
+        return { id: job.id, status: "ok", chars: text.length - a.wide, body: a.body, compressed, terms: a.report(), truncated: false }
       }
     }
     const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw

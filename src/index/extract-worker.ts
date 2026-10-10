@@ -1,6 +1,7 @@
 /** Worker entry: runs extraction jobs off the indexer thread. */
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
+import { backgroundDisk } from "./load.ts"
 import type { ExtractWorkerIn } from "./pool.ts"
 
 declare const self: Worker
@@ -30,7 +31,10 @@ function pump() {
 
 self.onmessage = (ev: MessageEvent<ExtractWorkerIn>) => {
   const msg = ev.data
-  if ("opts" in msg) opts = msg.opts
+  if ("opts" in msg) {
+    opts = msg.opts
+    if (msg.backgroundDisk) backgroundDisk()
+  }
   else {
     for (const job of msg.jobs) queue.push(job)
     pump()

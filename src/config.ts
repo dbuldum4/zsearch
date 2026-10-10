@@ -35,6 +35,11 @@ export interface Config {
   autoRefreshMinutes: number
   /** Extraction worker threads (0 = automatic). */
   workers: number
+  /**
+   * How much of the computer indexing may use, in percent: of its cores (with `workers` at 0)
+   * and of its CPU time. Below 100, indexing also reads and writes at a low disk priority.
+   */
+  indexLoad: number
   /** Command used to open files in an editor (defaults to $VISUAL / $EDITOR). */
   editor: string
   /** Default search mode in the TUI. */
@@ -59,6 +64,7 @@ export function defaultConfig(): Config {
     content: { enabled: true, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000 },
     autoRefreshMinutes: 60,
     workers: 0,
+    indexLoad: 70,
     editor: "",
     defaultMode: "find",
     preview: true,

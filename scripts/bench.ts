@@ -7,6 +7,7 @@
  *   bun run bench --json=out.json          # also write the results as JSON
  *   bun run bench --compare=base.json      # show the change against an earlier run
  *   bun run bench --keep                   # keep the corpus and index (path is printed)
+ *   bun run bench --index-load=100         # let indexing use the whole computer (default: as configured)
  *   bun run bench --corpus=real            # add real projects to 5,000 generated files
  *
  * The corpus is the same for the same --files and --seed: a home folder with Documents and
@@ -38,6 +39,7 @@ const REAL = args.get("corpus") === "real"
 const FILES = Number(args.get("files") ?? (REAL ? 5_000 : 20_000))
 const SEED = Number(args.get("seed") ?? 1)
 const REPS = Number(args.get("reps") ?? 7)
+const INDEX_LOAD = args.has("index-load") ? Number(args.get("index-load")) : defaultConfig().indexLoad
 
 /* ------------------------------------------------------------- corpus -- */
 
@@ -313,9 +315,10 @@ async function bench(): Promise<BenchResult> {
     }
     console.error(`corpus: ${corpus.files.toLocaleString()} files, ${(corpus.bytes / 1e6).toFixed(1)} MB in ${((performance.now() - t) / 1000).toFixed(1)}s (${work})`)
 
-    const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads")] }
+    const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads")], indexLoad: INDEX_LOAD }
     let db = openDb(dbPath)
     t = performance.now()
+    const cpu0 = process.cpuUsage()
     // How long each phase took, for the log.
     const phases: string[] = []
     let phase = ""
@@ -329,6 +332,8 @@ async function bench(): Promise<BenchResult> {
     }
     const first = await new Indexer(db, config, { onProgress }).run()
     const indexSeconds = (performance.now() - t) / 1000
+    const cpu = process.cpuUsage(cpu0)
+    const busyCpus = (cpu.user + cpu.system) / 1e6 / indexSeconds
     if (first.phase !== "done") throw new Error(`indexing ended with ${first.phase}: ${first.error ?? ""}`)
     t = performance.now()
     await new Indexer(db, config).run()
@@ -340,7 +345,7 @@ async function bench(): Promise<BenchResult> {
     }
     db.close()
     const dbMB = +(statSync(dbPath).size / 1e6).toFixed(2)
-    console.error(`index: ${indexSeconds.toFixed(1)}s (${phases.join(", ")}; ${availableParallelism()} CPUs), re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
+    console.error(`index: ${indexSeconds.toFixed(1)}s (${phases.join(", ")}; ${availableParallelism()} CPUs, ${busyCpus.toFixed(1)} busy on average, index load ${INDEX_LOAD}%), re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
 
     db = openDb(dbPath)
     const engine = new SearchEngine(db, config)
