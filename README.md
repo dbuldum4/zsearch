@@ -30,6 +30,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
 - **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
 - **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
+- **AI assistants can use it.** `zsearch mcp` lets Claude and other MCP clients search your files and read their text (see [below](#use-it-from-claude-and-other-ai-apps-mcp)).
 
 ## Install
 
@@ -188,6 +189,41 @@ Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (hand
 
 The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it.
 
+## Use it from Claude and other AI apps (MCP)
+
+`zsearch mcp` runs zsearch as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop and other MCP clients can search your files and read what is in them. It uses the same index and settings as the terminal app and the Mac app, and everything still stays on your machine: the assistant only sees the results and file text it asks for, and only from the folders you indexed.
+
+**Claude Code**
+
+```sh
+claude mcp add --scope user zsearch -- zsearch mcp
+```
+
+**Claude Desktop.** Open *Settings › Developer › Edit Config* (`~/Library/Application Support/Claude/claude_desktop_config.json`) and add zsearch, then restart Claude:
+
+```json
+{
+  "mcpServers": {
+    "zsearch": { "command": "/Users/you/.local/bin/zsearch", "args": ["mcp"] }
+  }
+}
+```
+
+Desktop apps don't see your shell's `PATH`, so give the full path. For a standalone binary (`bun run build`) it's where you copied it (`command -v zsearch` shows it). With `bun link` from a clone, run it with Bun: `"command": "/Users/you/.bun/bin/bun", "args": ["/path/to/zsearch/src/main.ts", "mcp"]`. If you have the Mac app, its engine works too: `"command": "/Users/you/Applications/zsearch.app/Contents/Helpers/zsearch"`.
+
+Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mcp`.
+
+| Tool | What it does |
+| --- | --- |
+| `search` | Find files by name and contents, with everything the query syntax offers: exact text, `regex`, `fuzzy` mode, and filters as arguments (`type`, `exclude_type`, `ext`, `folder`, `path`, `modified`, `after`, `before`, `size`) or in the query (`type:pdf mtime:<30d`). Returns paths, kinds, sizes, dates and the matching lines with line and page numbers; `offset` pages through long result lists |
+| `read_file` | Read an indexed file's text with line numbers: the extracted text of PDFs and Office files (with page, slide and sheet markers), or the file itself for code and text. `query` marks the matches and starts at the first one; `matches_only` returns just the matching lines with context |
+| `index_status` | What is indexed, when it was last updated, indexing progress, and (with `errors`) the files that could not be read |
+| `update_index` | Update the index in the background, index other folders (`roots`), or rebuild it; `wait_seconds` waits for it with progress notifications |
+| `cancel_index` | Stop indexing |
+| `get_config` / `set_config` | Show or change a setting (the same keys as `zsearch config`) |
+
+Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and each indexed file's text as `file:///path/to/file`. Prompts: `find_files` (find files about something and say what is in them) and `summarize_file` (with path completion). If the index is older than `autoRefreshMinutes`, the server updates it in the background, as the app does. The server reads only files that are in the index, and never changes them.
+
 ## Command line
 
 ```text
@@ -199,6 +235,7 @@ zsearch config [show|get|set|path|reset]
 zsearch doctor                  check SQLite/FTS5, pdftotext and the index
 zsearch reset                   delete the index
 zsearch serve                   JSON lines on stdin/stdout, for the Mac app (see src/serve.ts)
+zsearch mcp                     MCP server on stdin/stdout, for Claude and other AI apps (see above)
 ```
 
 `zsearch search` exits with 0 when it finds matches, 1 when it finds none and 2 on errors, the same as `grep`:
@@ -219,6 +256,7 @@ src/
   tui/        Solid + OpenTUI app: setup, results, preview, status, help
   cli.ts      command line
   serve.ts    the engine over JSON lines, for the Mac app
+  mcp/        the engine as an MCP server: protocol (rpc.ts) and tools (server.ts)
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 

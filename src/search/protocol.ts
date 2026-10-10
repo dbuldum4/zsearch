@@ -6,7 +6,7 @@ import type { Mode } from "./query.ts"
 export type SearchIn =
   | { type: "init"; dbPath: string; config: Config }
   | { type: "search"; qid: number; query: string; mode: Mode; limit: number }
-  | { type: "preview"; qid: number; id: number; query: string; mode: Mode; focusLine?: number }
+  | { type: "preview"; qid: number; id: number; query: string; mode: Mode; focusLine?: number; window?: number }
   | { type: "previews"; qid: number; ids: number[]; query: string; mode: Mode; focusLines?: (number | null)[] }
   | { type: "refresh"; force?: boolean }
   | { type: "config"; config: Config }

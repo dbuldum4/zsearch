@@ -53,7 +53,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
         // Previews are cheap but arrive in bursts while scrolling; skip stale ones.
         await new Promise((r) => setTimeout(r, 0))
         if (latestPreview !== msg.qid) break
-        send({ type: "preview", qid: msg.qid, preview: engine.preview(msg.id, msg.query, msg.mode, msg.focusLine) })
+        send({ type: "preview", qid: msg.qid, preview: engine.preview(msg.id, msg.query, msg.mode, msg.focusLine, msg.window) })
         break
       }
       case "previews": {

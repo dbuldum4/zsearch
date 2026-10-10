@@ -122,8 +122,9 @@ export class SearchClient {
     return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit }))
   }
 
-  preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null> {
-    return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine }))
+  /** `window` is how many lines to return (default 400), starting a quarter of it above the focus. */
+  preview(id: number, query: string, mode: Mode, focusLine?: number, window?: number): Promise<Preview | null> {
+    return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine, window }))
   }
 
   /**

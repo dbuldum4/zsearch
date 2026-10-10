@@ -36,6 +36,7 @@ Usage
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
   zsearch serve                   JSON lines on stdin/stdout (for the macOS app)
+  zsearch mcp                     MCP server on stdin/stdout (for Claude and other AI apps)
 
 Interactive options
   -m, --mode <mode>   start in find (default) | fuzzy
@@ -161,6 +162,10 @@ export async function main(argv: string[]): Promise<number> {
       case "serve": {
         const { serve } = await import("./serve.ts")
         return await serve(VERSION)
+      }
+      case "mcp": {
+        const { mcp } = await import("./mcp/server.ts")
+        return await mcp(VERSION)
       }
       case "help":
         process.stdout.write(HELP)
