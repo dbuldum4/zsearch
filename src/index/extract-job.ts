@@ -62,6 +62,28 @@ function newTerms(terms: Iterable<string>, run: string): string[] {
   return out
 }
 
+/** Only white space, which extraction takes as empty. */
+function blank(bytes: Uint8Array): boolean {
+  for (const b of bytes) if (b !== 32 && (b < 9 || b > 13)) return false
+  return true
+}
+
+/** The text with its line ends as extraction leaves them (see `finish` there): \r\n and \r become \n. */
+function lineFeeds(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const n = bytes.length
+  let i = bytes.indexOf(13)
+  if (i < 0) return bytes as Uint8Array<ArrayBuffer>
+  const out = new Uint8Array(n)
+  out.set(bytes.subarray(0, i))
+  let o = i
+  for (; i < n; i++) {
+    const b = bytes[i]!
+    if (b !== 13) out[o++] = b
+    else if (bytes[i + 1] !== 10) out[o++] = 10
+  }
+  return out.slice(0, o)
+}
+
 /** Read a file, extract its text, compress it and list its (new) vocabulary. */
 export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise<ExtractReply> {
   try {
@@ -69,16 +91,19 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
     if (raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
       // Plain ASCII text is its own UTF-8, and its words need no decoding.
       const a = asciiTerms(raw.bytes, job.run)
-      if (a)
+      if (a) {
+        if (!a.body.length && blank(raw.bytes)) return { id: job.id, status: "skip", reason: "empty" }
+        const text = lineFeeds(raw.bytes)
         return {
           id: job.id,
           status: "ok",
-          chars: raw.bytes.length,
+          chars: text.length,
           body: a.body,
-          compressed: compressBytes(raw.bytes as Uint8Array<ArrayBuffer>),
+          compressed: compressBytes(text),
           terms: a.fresh,
           truncated: false,
         }
+      }
     }
     const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
     if (r.status === "skip") return { id: job.id, status: "skip", reason: r.reason }

@@ -20,6 +20,8 @@ for (let b = 0; b < 256; b++) {
  */
 let seen = new Int32Array(4096 * 4)
 let gen = 0
+/** The hash of each distinct word of the text, in order. */
+let wordHash = new Int32Array(4096)
 
 /** Words already reported this run, kept in `arena`: slots of (used, hash, start, length). */
 let done = new Int32Array((1 << 16) * 4)
@@ -52,7 +54,6 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
   const out = new Uint8Array(buf.length)
   let outLen = 0
   let words = 0
-  const fresh: string[] = []
   const n = buf.length
   let i = 0
   while (i < n) {
@@ -91,10 +92,24 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
     seen[s + 1] = h
     seen[s + 2] = at
     seen[s + 3] = len
+    if (words === wordHash.length) {
+      const bigger = new Int32Array(words * 2)
+      bigger.set(wordHash)
+      wordHash = bigger
+    }
+    wordHash[words] = h
     if (++words * 2 > mask + 1) growSeen()
     if (at) out[at - 1] = 0x20
     outLen = o
-    if (len <= 64 && report(out, at, len, h)) fresh.push(latin1.decode(out.subarray(at, o)))
+  }
+  // Only now that the whole text is known to be plain: a word reported for a text that then
+  // takes the other path (where it may be part of a longer word) would never be reported again.
+  const fresh: string[] = []
+  for (let k = 0, at = 0; k < words; k++) {
+    const end = k === words - 1 ? outLen : out.indexOf(0x20, at)
+    const len = end - at
+    if (len <= 64 && report(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
+    at = end + 1
   }
   return { body: out.slice(0, outLen), fresh }
 }

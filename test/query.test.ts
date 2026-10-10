@@ -282,6 +282,35 @@ describe("text utilities", () => {
     expect(asciiTerms(enc("plan zeta"), "run 2")!.fresh).toEqual(["plan", "zeta"])
     expect(asciiTerms(enc("café"), "run 2")).toBeNull()
     expect(asciiTerms(enc("a\0b"), "run 2")).toBeNull()
+    // A text that turns out not to be plain reports nothing: there the word may be longer.
+    expect(asciiTerms(enc("early xcfd\u03e1000"), "run 3")).toBeNull()
+    expect(asciiTerms(enc("early xcfd"), "run 3")!.fresh).toEqual(["early", "xcfd"])
+  })
+  test("plain ASCII files are stored and indexed as from their decoded text", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { processJob } = await import("../src/index/extract-job.ts")
+    const { extract, DEFAULT_EXTRACT } = await import("../src/index/extract/index.ts")
+    const { decompressText } = await import("../src/index/db.ts")
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-ascii-"))
+    try {
+      const texts = ["one two\r\nthree\r\n", "old\rmac\rlines", "end\r", "\r\n", "  \t\n\n ", " -- ", "plain words\n", "café\r\n"]
+      for (const [i, text] of texts.entries()) {
+        const path = join(dir, `f${i}.txt`)
+        writeFileSync(path, text)
+        const size = Buffer.byteLength(text)
+        const got = await processJob({ run: "r", id: i, path, size, ext: "txt", kind: "text" }, DEFAULT_EXTRACT)
+        const want = await extract(path, size, "txt", "text")
+        expect(got.status).toBe(want.status)
+        if (got.status !== "ok" || want.status !== "ok") continue
+        expect(got.chars).toBe(want.text.length)
+        expect(decompressText(got.compressed)).toBe(want.text)
+        expect(new TextDecoder().decode(got.body)).toBe(indexTerms(want.text).body)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
   test("identifier splitting and name tokens", () => {
     expect(splitIdentifier("getHTTPResponse_v2")).toEqual(["get", "HTTP", "Response", "v", "2"])
