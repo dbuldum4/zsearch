@@ -158,26 +158,45 @@ struct KindBadge: View {
 
 struct PreviewPane: View {
     @Environment(SearchModel.self) private var model
+    /// PDFs show their pages unless the reader picked the extracted text instead.
+    @AppStorage("pdfShowsText") private var pdfShowsText = false
 
     var body: some View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
         // files swaps the content in place instead of flashing an empty pane.
         if let p = model.preview, !model.hits.isEmpty {
+            let pdf = p.kind == "pdf" ? PDFDocuments.shared.document(for: p) : nil
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(p.display)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(details(of: p))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(p.display)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(details(of: p))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if pdf != nil, p.message == nil {
+                        Picker("Show", selection: $pdfShowsText) {
+                            Text("Pages").tag(false)
+                            Text("Text").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Show the PDF's pages, or the text zsearch read from it")
+                    }
                 }
                 .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 Divider()
-                if let message = p.message {
+                // A PDF without indexed text (a scan, say) still shows its pages.
+                if let pdf, !pdfShowsText || p.message != nil {
+                    PDFPreviewView(preview: p, document: pdf)
+                } else if let message = p.message {
                     Text(message)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
