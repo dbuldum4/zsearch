@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { home, paths } from "./config.ts"
 
 export const isMac = process.platform === "darwin"
@@ -266,6 +266,19 @@ export function copyToClipboard(text: string): boolean {
     if (r.status === 0) return true
   }
   return false
+}
+
+/**
+ * The OCR helper, `zsearch-ocr`: bundled next to the engine in the Mac app (Contents/Helpers),
+ * or named by $ZSEARCH_OCR. It reads the text in images and in scanned PDF pages with macOS's
+ * Vision framework. `ZSEARCH_OCR=0` turns it off.
+ */
+export function ocrToolPath(): string | null {
+  const env = process.env.ZSEARCH_OCR
+  if (env !== undefined) return env && env !== "0" && existsSync(env) ? env : null
+  if (!isMac) return null
+  const bundled = join(dirname(process.execPath), "zsearch-ocr")
+  return existsSync(bundled) ? bundled : null
 }
 
 export function pdftotextPath(): string | null {

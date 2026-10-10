@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate document fixtures used by the extractor tests.
 
-Requires: python-docx, openpyxl, python-pptx, reportlab, xlwt.
+Requires: python-docx, openpyxl, python-pptx, reportlab, xlwt, Pillow (with the DejaVu fonts).
 Usage: python3 scripts/make-fixtures.py test/fixtures/docs
 """
 import json
@@ -186,6 +186,27 @@ def xls():
     wb.save(p("legacy.xls"))
 
 
-for fn in (docx, xlsx, pptx, pdf, odfs, epub, rtf, eml, ipynb, xls):
+def ocr():
+    """An image with text, and a PDF of scanned pages (images only), for the OCR helper."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "fixtures", "ocr")
+    os.makedirs(folder, exist_ok=True)
+    font = ImageFont.truetype("DejaVuSans.ttf", 48)
+
+    def page(lines, size=(1240, 1754)):
+        img = Image.new("RGB", size, "white")
+        d = ImageDraw.Draw(img)
+        for i, line in enumerate(lines):
+            d.text((100, 150 + i * 90), line, fill="black", font=font)
+        return img
+
+    page(["Receipt from the Harbour Cafe", "Total paid: 42.50"], (1400, 400)).save(os.path.join(folder, "receipt.png"))
+    first = page(["Scanned letter, page one", "Dear tenant, the boiler"])
+    second = page(["Page two mentions the zeppelin"])
+    first.save(os.path.join(folder, "scanned.pdf"), resolution=150, save_all=True, append_images=[second])
+
+
+for fn in (docx, xlsx, pptx, pdf, odfs, epub, rtf, eml, ipynb, xls, ocr):
     fn()
 print("fixtures written to", out)

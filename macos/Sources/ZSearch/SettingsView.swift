@@ -122,6 +122,9 @@ private struct IndexSettings: View {
 
             Section {
                 Toggle("Read the text inside files", isOn: flag(\.content.enabled) { ConfigPatch(content: ContentConfig(enabled: $0)) })
+                Toggle("Read text in images and scanned PDFs", isOn: ocr)
+                    .disabled(model.config?.content.enabled != true)
+                    .help("Recognizes text in screenshots, photos and scans (OCR), after the other files are read.")
                 Toggle("Include hidden files and folders", isOn: flag(\.includeHidden) { ConfigPatch(includeHidden: $0) })
                 Toggle("Skip what .gitignore files exclude", isOn: flag(\.respectGitignore) { ConfigPatch(respectGitignore: $0) })
                 Toggle("Follow symbolic links to folders", isOn: flag(\.followSymlinks) { ConfigPatch(followSymlinks: $0) })
@@ -201,6 +204,16 @@ private struct IndexSettings: View {
         Binding(
             get: { model.config?[keyPath: path] ?? false },
             set: { model.updateConfig(patch($0), reindex: true) }
+        )
+    }
+
+    private var ocr: Binding<Bool> {
+        Binding(
+            get: { model.config?.content.ocr ?? false },
+            set: { on in
+                guard let content = model.config?.content else { return }
+                model.updateConfig(ConfigPatch(content: ContentConfig(enabled: content.enabled, ocr: on)), reindex: true)
+            }
         )
     }
 

@@ -1,8 +1,8 @@
 import type { Database, Statement } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
-import { extOf, kindOf, type Kind } from "../kinds.ts"
-import { cloudFolders, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
+import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
+import { cloudFolders, ocrToolPath, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
@@ -124,6 +124,8 @@ export class Indexer {
   /** The share of the computer this run may use (see `indexLoad`). */
   private share: number
   private cpu: CpuBudget
+  /** The OCR helper, when this run reads images and scanned pages. */
+  private ocrTool: string | null
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -146,6 +148,7 @@ export class Indexer {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
     this.share = loadShare(config.indexLoad)
     this.cpu = new CpuBudget(this.share)
+    this.ocrTool = config.content.enabled && config.content.ocr ? ocrToolPath() : null
     const now = Date.now()
     this.progress = {
       phase: "starting",
@@ -315,7 +318,7 @@ export class Indexer {
       }
       const kind: Kind = kindOf(e.name, e.isDir)
       const ext = e.isDir ? "" : extOf(e.name)
-      const wants = !e.isDir && contentOn && !e.namesOnly && !e.offline && wantsContent(ext, kind)
+      const wants = !e.isDir && contentOn && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null)
       const prev = existing.get(e.path)
       if (prev) {
         visited.add(prev.id)
@@ -388,7 +391,7 @@ export class Indexer {
     else
       this.pool = new ExtractPool(
         size,
-        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000 },
+        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000, ocrTool: this.ocrTool },
         JOBS_PER_WORKER,
         this.opts.inProcess,
         this.share < 1,
@@ -415,6 +418,8 @@ export class Indexer {
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
+      // Images wait for the content phase, which reads them last.
+      if (OCR_EXTS.has(p.ext) && p.kind === "image") continue
       // Only what the workers have room for: a file queued behind a slow document could not go
       // to another worker. The rest start in the content phase.
       if (!pool.capacity || this.early.size >= EARLY_JOBS || this.earlyBytes + this.cost(p) > MAX_INFLIGHT_BYTES) break
@@ -443,6 +448,15 @@ export class Indexer {
       for (let k = 0; k < run.length; k++) pending[i + k] = run[k]!
     }
     pending.unshift(...started)
+    // Images take OCR, a fraction of a second each: everything else goes first.
+    if (this.ocrTool) {
+      const images = pending.filter((p) => OCR_EXTS.has(p.ext) && p.kind === "image")
+      if (images.length) {
+        const rest = pending.filter((p) => !(OCR_EXTS.has(p.ext) && p.kind === "image"))
+        pending.length = 0
+        pending.push(...rest, ...images)
+      }
+    }
     const pool = this.poolFor(pending.length)
 
     // Resolved by the next finished job, or when the writer catches up. Promise.race over every
