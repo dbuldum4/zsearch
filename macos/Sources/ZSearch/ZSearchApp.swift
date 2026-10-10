@@ -162,8 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The hotkey shows zsearch, or hides it when it is already in front.
+    /// The hotkey shows zsearch, or hides it when it is already in front: the floating panel,
+    /// or the main window if Settings say so.
     private func toggleMainWindow() {
+        if let model, UserDefaults.standard.string(forKey: AppSettings.shortcutOpens) != ShortcutTarget.window.rawValue {
+            return QuickPanel.shared.toggle(model)
+        }
         if NSApp.isActive, let key = NSApp.keyWindow, key.identifier?.rawValue.hasPrefix("main") == true {
             NSApp.hide(nil)
         } else {

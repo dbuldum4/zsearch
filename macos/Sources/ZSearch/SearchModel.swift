@@ -33,6 +33,8 @@ final class SearchModel {
     }
     /// The file shown in Quick Look, or nil when it is closed.
     var quickLookURL: URL?
+    /// Quick Look was opened from the floating panel, not the main window.
+    private(set) var quickLookInPanel = false
     var showSetup = false
     /// Bumped to ask the search field to take focus.
     private(set) var focusRequest = 0
@@ -422,6 +424,7 @@ final class SearchModel {
     // MARK: - Actions
 
     func open(_ hit: SearchHit) {
+        QuickPanel.shared.fileOpened()
         NSWorkspace.shared.open(URL(fileURLWithPath: hit.path))
         if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
     }
@@ -431,6 +434,7 @@ final class SearchModel {
     }
 
     func reveal(_ hit: SearchHit) {
+        QuickPanel.shared.fileOpened()
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.path)])
     }
 
@@ -450,6 +454,7 @@ final class SearchModel {
 
     /// Open or close Quick Look on the selected file (Space in the list, ⌘Y).
     func toggleQuickLook() {
+        if quickLookURL == nil { quickLookInPanel = QuickPanel.shared.isKey }
         quickLookURL = quickLookURL == nil ? selectedHit.map { URL(fileURLWithPath: $0.path) } : nil
     }
 
@@ -480,6 +485,7 @@ final class SearchModel {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            QuickPanel.shared.fileOpened()
             if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
         } catch {
             show("Could not open \(app.name): \(error.localizedDescription)")
@@ -511,6 +517,7 @@ final class SearchModel {
 
     /// Bring the search window forward (hotkey, menu bar, Dock), opening it if it was closed.
     func showMainWindow() {
+        QuickPanel.shared.hide()
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first(where: { ($0.identifier?.rawValue.hasPrefix("main") ?? false) && $0.canBecomeMain }) {
             window.makeKeyAndOrderFront(nil)

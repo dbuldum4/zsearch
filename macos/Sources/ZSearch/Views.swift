@@ -9,6 +9,12 @@ struct ContentView: View {
     @Environment(SearchModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @FocusState private var searchFocused: Bool
+    /// In the floating panel (see `QuickPanel`) rather than the main window.
+    let isPanel: Bool
+
+    init(isPanel: Bool = false) {
+        self.isPanel = isPanel
+    }
 
     var body: some View {
         @Bindable var model = model
@@ -28,23 +34,28 @@ struct ContentView: View {
             Divider()
             StatusBar()
         }
-        .sheet(isPresented: $model.showSetup) {
+        .background { if isPanel { PanelShortcuts() } }
+        // The setup sheet belongs to the main window.
+        .sheet(isPresented: isPanel ? .constant(false) : $model.showSetup) {
             SetupView(inSheet: true)
                 .environment(model)
                 .interactiveDismissDisabled(model.firstRun)
         }
         .onAppear {
             searchFocused = true
+            guard !isPanel else { return }
             let open = openWindow
             model.openMainWindow = { open(id: "main") }
         }
         .onChange(of: model.focusRequest) { searchFocused = true }
-        .quickLookPreview($model.quickLookURL)
+        // Quick Look is driven from the window it was opened in.
+        .quickLookPreview(isPanel == model.quickLookInPanel ? $model.quickLookURL : .constant(nil))
     }
 }
 
 struct SearchBar: View {
     @Environment(SearchModel.self) private var model
+    @Environment(\.dismissPanel) private var dismissPanel
     var focused: FocusState<Bool>.Binding
 
     var body: some View {
@@ -66,7 +77,12 @@ struct SearchBar: View {
                     return .handled
                 }
                 .onKeyPress(.escape) {
-                    if model.query.isEmpty { return .ignored }
+                    if model.query.isEmpty {
+                        // In the panel, a second Esc puts it away.
+                        guard let dismissPanel else { return .ignored }
+                        dismissPanel()
+                        return .handled
+                    }
                     model.query = ""
                     return .handled
                 }

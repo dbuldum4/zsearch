@@ -29,6 +29,15 @@ enum AppSettings {
     static let imageShowsText = "imageShowsText"
     /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
     static let editor = "editor"
+    /// What the global shortcut shows (see `ShortcutTarget`).
+    static let shortcutOpens = "shortcutOpens"
+}
+
+/// What the global shortcut shows.
+enum ShortcutTarget: String {
+    /// The floating panel (`QuickPanel`), over whatever app is in front.
+    case panel
+    case window
 }
 
 private struct GeneralSettings: View {
@@ -38,6 +47,7 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.hotKeyTaken) private var hotKeyTaken = false
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     @AppStorage(AppSettings.editor) private var editor = ""
+    @AppStorage(AppSettings.shortcutOpens) private var shortcutOpens = ShortcutTarget.panel.rawValue
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
@@ -58,6 +68,11 @@ private struct GeneralSettings: View {
             Picker("Shortcut to show zsearch", selection: $hotKey) {
                 ForEach(HotKeyChoice.allCases) { Text($0.label).tag($0.rawValue) }
             }
+            Picker("The shortcut opens", selection: $shortcutOpens) {
+                Text("A floating search panel").tag(ShortcutTarget.panel.rawValue)
+                Text("The main window").tag(ShortcutTarget.window.rawValue)
+            }
+            .disabled(hotKey == HotKeyChoice.off.rawValue)
             if hotKeyTaken {
                 Text("Another app already uses this shortcut. Pick a different one, or change it in that app.")
                     .font(.caption)
