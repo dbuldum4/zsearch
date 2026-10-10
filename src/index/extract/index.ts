@@ -25,6 +25,9 @@ export type ExtractResult =
   | { status: "ok"; text: string; truncated: boolean }
   | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" }
 
+/** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
+export type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
+
 /** Does this file get its contents read at all? */
 export function wantsContent(ext: string, kind: Kind): boolean {
   return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox"
@@ -58,6 +61,17 @@ function finish(text: string, maxChars: number): ExtractResult {
 
 /** Extract searchable text from a file. Throws on unreadable or corrupt documents. */
 export async function extract(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<ExtractResult> {
+  const r = await extractRaw(path, size, ext, kind, opts)
+  return r.status === "bytes" ? textOf(r.bytes, opts.maxChars) : r
+}
+
+/** The text of a plain text file's bytes. */
+export function textOf(bytes: Uint8Array, maxChars: number): ExtractResult {
+  return finish(decodeText(bytes), maxChars)
+}
+
+/** As `extract`, leaving plain text files undecoded. */
+export async function extractRaw(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<RawExtractResult> {
   if (DOCUMENT_EXTS.has(ext)) {
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
@@ -72,7 +86,7 @@ export async function extract(path: string, size: number, ext: string, kind: Kin
   }
   const buf = await readFile(path)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
-  return finish(decodeText(buf), opts.maxChars)
+  return { status: "bytes", bytes: buf }
 }
 
 async function extractDocument(path: string, ext: string, opts: ExtractOptions): Promise<string> {

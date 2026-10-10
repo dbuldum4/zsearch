@@ -8,6 +8,7 @@ import { literalToFts, reqToFts, Vocab } from "../src/search/vocab.ts"
 import { editDistance, foldTerm, indexTerms, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
 import { Database } from "bun:sqlite"
 import { compressText } from "../src/index/db.ts"
+import { asciiTerms } from "../src/index/ascii-terms.ts"
 
 describe("query parsing", () => {
   const now = new Date("2024-06-15T12:00:00").getTime()
@@ -266,6 +267,21 @@ describe("text utilities", () => {
     const vocab = (t: string) => db.query(`SELECT term, doc FROM ${t}_v ORDER BY term`).all()
     expect(vocab("once")).toEqual(vocab("full"))
     expect(indexTerms("Plan plan PLAN 2 2").body).toBe("plan 2")
+  })
+  test("index terms from ASCII bytes: as from the text, new terms once per run", () => {
+    const enc = (s: string) => new TextEncoder().encode(s)
+    const texts = ["The the THE; plan-B: 42 x42 x_42 " + "y".repeat(80) + " " + "Y".repeat(80), "Plan plan PLAN 2 2 zeta", "", " -- "]
+    const seen = new Set<string>()
+    for (const text of texts) {
+      const a = asciiTerms(enc(text), "run 1")!
+      expect(new TextDecoder().decode(a.body)).toBe(indexTerms(text).body)
+      const fresh = [...indexTerms(text).terms].filter((t) => !seen.has(t))
+      for (const t of fresh) seen.add(t)
+      expect(a.fresh).toEqual(fresh)
+    }
+    expect(asciiTerms(enc("plan zeta"), "run 2")!.fresh).toEqual(["plan", "zeta"])
+    expect(asciiTerms(enc("café"), "run 2")).toBeNull()
+    expect(asciiTerms(enc("a\0b"), "run 2")).toBeNull()
   })
   test("identifier splitting and name tokens", () => {
     expect(splitIdentifier("getHTTPResponse_v2")).toEqual(["get", "HTTP", "Response", "v", "2"])

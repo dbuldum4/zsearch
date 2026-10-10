@@ -158,7 +158,11 @@ function withHeader(kind: number, payload: Uint8Array): Uint8Array {
 }
 
 export function compressText(text: string): Uint8Array {
-  const raw = encoder.encode(text)
+  return compressBytes(encoder.encode(text))
+}
+
+/** `compressText` of the text these UTF-8 bytes hold. */
+export function compressBytes(raw: Uint8Array<ArrayBuffer>): Uint8Array {
   if (raw.length >= RAW_BELOW) {
     const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 3 }) : Bun.deflateSync(raw, { level: 4 })
     if (z.length < raw.length) return withHeader(raw.length >= ZSTD_FROM ? 1 : 2, z)

@@ -1,5 +1,6 @@
-import { type ExtractOptions, extract } from "./extract/index.ts"
-import { compressText } from "./db.ts"
+import { type ExtractOptions, extractRaw, textOf } from "./extract/index.ts"
+import { compressBytes, compressText } from "./db.ts"
+import { asciiTerms } from "./ascii-terms.ts"
 import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
 
@@ -64,7 +65,22 @@ function newTerms(terms: Iterable<string>, run: string): string[] {
 /** Read a file, extract its text, compress it and list its (new) vocabulary. */
 export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise<ExtractReply> {
   try {
-    const r = await extract(job.path, job.size, job.ext, job.kind, opts)
+    const raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts)
+    if (raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
+      // Plain ASCII text is its own UTF-8, and its words need no decoding.
+      const a = asciiTerms(raw.bytes, job.run)
+      if (a)
+        return {
+          id: job.id,
+          status: "ok",
+          chars: raw.bytes.length,
+          body: a.body,
+          compressed: compressBytes(raw.bytes as Uint8Array<ArrayBuffer>),
+          terms: a.fresh,
+          truncated: false,
+        }
+    }
+    const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
     if (r.status === "skip") return { id: job.id, status: "skip", reason: r.reason }
     const { body, terms } = indexTerms(r.text)
     return {
