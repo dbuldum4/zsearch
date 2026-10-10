@@ -18,7 +18,7 @@ import { indexStats, openDb } from "./index/db.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
 import { acquireLock, lockHolder } from "./index/lock.ts"
 import { KIND_BADGE } from "./kinds.ts"
-import { pdftotextPath } from "./platform.ts"
+import { ocrToolPath, pdftotextPath } from "./platform.ts"
 import { SearchEngine, type SearchHit } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "./util/text.ts"
@@ -474,6 +474,8 @@ function cmdDoctor(): number {
   console.log(`${ok(fts5)} SQLite ${sqlite} with FTS5${fts5 ? "" : " — missing! full-text search will not work"}`)
   const pdf = pdftotextPath()
   console.log(`${ok(!!pdf)} pdftotext ${pdf ?? "not found — using the built-in PDF reader (slower); install poppler for speed"}`)
+  const ocr = ocrToolPath()
+  console.log(`${ok(!!ocr)} OCR ${ocr ?? "not available — images and scanned PDF pages are indexed by name only (the Mac app has it)"}`)
   console.log(`${ok(existsSync(p.db))} index ${tildify(p.db)}`)
   console.log(`${ok(configExists())} config ${tildify(p.configFile)}`)
   return 0

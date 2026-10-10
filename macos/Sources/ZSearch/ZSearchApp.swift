@@ -41,6 +41,12 @@ struct ZSearchApp: App {
                 Button("Show in Finder") { model.revealSelected() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(model.selectedHit == nil)
+                Button("Open in Editor") { model.openSelectedInEditor() }
+                    .keyboardShortcut("e")
+                    .disabled(model.selectedHit == nil)
+                Button(model.quickLookURL == nil ? "Quick Look" : "Close Quick Look") { model.toggleQuickLook() }
+                    .keyboardShortcut("y")
+                    .disabled(model.selectedHit == nil)
             }
             CommandMenu("Search") {
                 Button("Find in Names and Contents") { model.mode = .find; model.requestSearchFocus() }
@@ -54,6 +60,11 @@ struct ZSearchApp: App {
                     .keyboardShortcut("j")
                 Button("Previous Result") { model.moveSelection(by: -1) }
                     .keyboardShortcut("k")
+                Divider()
+                Button("Next Match in Preview") { model.jumpToMatch(by: 1) }
+                    .keyboardShortcut("g")
+                Button("Previous Match in Preview") { model.jumpToMatch(by: -1) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
 
@@ -151,8 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The hotkey shows zsearch, or hides it when it is already in front.
+    /// The hotkey shows zsearch, or hides it when it is already in front: the floating panel,
+    /// or the main window if Settings say so.
     private func toggleMainWindow() {
+        if let model, UserDefaults.standard.string(forKey: AppSettings.shortcutOpens) != ShortcutTarget.window.rawValue {
+            return QuickPanel.shared.toggle(model)
+        }
         if NSApp.isActive, let key = NSApp.keyWindow, key.identifier?.rawValue.hasPrefix("main") == true {
             NSApp.hide(nil)
         } else {

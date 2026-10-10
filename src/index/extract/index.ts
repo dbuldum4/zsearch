@@ -1,7 +1,8 @@
 import { closeSync, openSync, readFileSync, readSync } from "node:fs"
-import { DOCUMENT_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
+import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
+import { ocrImage } from "./ocr.ts"
 import { extractPdf } from "./pdf.ts"
 import { decodeText, extractEmail, extractNotebook, looksBinary } from "./text.ts"
 import { htmlText } from "./xml.ts"
@@ -12,6 +13,8 @@ export interface ExtractOptions {
   maxDocBytes: number
   maxChars: number
   pdfTimeoutMs?: number
+  /** The OCR helper, when images and scanned pages are to be read (see `ocrToolPath`). */
+  ocrTool?: string | null
 }
 
 export const DEFAULT_EXTRACT: ExtractOptions = {
@@ -28,9 +31,9 @@ export type ExtractResult =
 /** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
 export type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
 
-/** Does this file get its contents read at all? */
-export function wantsContent(ext: string, kind: Kind): boolean {
-  return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox"
+/** Does this file get its contents read at all? Images only with `ocr`. */
+export function wantsContent(ext: string, kind: Kind, ocr = false): boolean {
+  return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox" || (ocr && OCR_EXTS.has(ext))
 }
 
 // Files are read synchronously: extraction runs on worker threads, where blocking is fine, and
@@ -77,6 +80,12 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
     if (size === 0) return { status: "skip", reason: "empty" }
     return finish(await extractDocument(path, ext, opts), opts.maxChars)
   }
+  if (OCR_EXTS.has(ext) && kind === "image") {
+    if (!opts.ocrTool) return { status: "skip", reason: "unsupported" }
+    if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
+    if (size === 0) return { status: "skip", reason: "empty" }
+    return finish(await ocrImage(opts.ocrTool, path, opts.pdfTimeoutMs ?? 60_000), opts.maxChars)
+  }
   if (!wantsContent(ext, kind)) return { status: "skip", reason: "unsupported" }
   if (size > opts.maxTextBytes) return { status: "skip", reason: "too-large" }
   if (size === 0) return { status: "skip", reason: "empty" }
@@ -90,7 +99,7 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
 }
 
 async function extractDocument(path: string, ext: string, opts: ExtractOptions): Promise<string> {
-  if (ext === "pdf") return extractPdf(path, () => readFile(path), opts.pdfTimeoutMs)
+  if (ext === "pdf") return extractPdf(path, () => readFile(path), opts.pdfTimeoutMs, opts.ocrTool)
   const buf = await readFile(path)
   switch (ext) {
     case "docx":

@@ -25,6 +25,19 @@ enum AppSettings {
     static let hotKeyTaken = "hotKeyTaken"
     /// PDFs preview as their extracted text instead of their pages. The switch above the preview changes it too.
     static let pdfShowsText = "pdfShowsText"
+    /// Images (and other files Quick Look shows) preview as the text read from them instead.
+    static let imageShowsText = "imageShowsText"
+    /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
+    static let editor = "editor"
+    /// What the global shortcut shows (see `ShortcutTarget`).
+    static let shortcutOpens = "shortcutOpens"
+}
+
+/// What the global shortcut shows.
+enum ShortcutTarget: String {
+    /// The floating panel (`QuickPanel`), over whatever app is in front.
+    case panel
+    case window
 }
 
 private struct GeneralSettings: View {
@@ -33,6 +46,8 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.hotKey) private var hotKey = HotKeyChoice.optionSpace.rawValue
     @AppStorage(AppSettings.hotKeyTaken) private var hotKeyTaken = false
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
+    @AppStorage(AppSettings.editor) private var editor = ""
+    @AppStorage(AppSettings.shortcutOpens) private var shortcutOpens = ShortcutTarget.panel.rawValue
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
@@ -46,9 +61,18 @@ private struct GeneralSettings: View {
                 Text("Pages").tag(false)
                 Text("Text").tag(true)
             }
+            Picker("Open code in (⌘E)", selection: $editor) {
+                Text("First editor installed").tag("")
+                ForEach(installedEditors) { Text($0.name).tag($0.bundleID) }
+            }
             Picker("Shortcut to show zsearch", selection: $hotKey) {
                 ForEach(HotKeyChoice.allCases) { Text($0.label).tag($0.rawValue) }
             }
+            Picker("The shortcut opens", selection: $shortcutOpens) {
+                Text("A floating search panel").tag(ShortcutTarget.panel.rawValue)
+                Text("The main window").tag(ShortcutTarget.window.rawValue)
+            }
+            .disabled(hotKey == HotKeyChoice.off.rawValue)
             if hotKeyTaken {
                 Text("Another app already uses this shortcut. Pick a different one, or change it in that app.")
                     .font(.caption)
@@ -67,6 +91,10 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var installedEditors: [EditorApp] {
+        EditorApp.known.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil }
     }
 
     private var defaultMode: Binding<Mode> {
@@ -122,6 +150,9 @@ private struct IndexSettings: View {
 
             Section {
                 Toggle("Read the text inside files", isOn: flag(\.content.enabled) { ConfigPatch(content: ContentConfig(enabled: $0)) })
+                Toggle("Read text in images and scanned PDFs", isOn: ocr)
+                    .disabled(model.config?.content.enabled != true)
+                    .help("Recognizes text in screenshots, photos and scans (OCR), after the other files are read.")
                 Toggle("Include hidden files and folders", isOn: flag(\.includeHidden) { ConfigPatch(includeHidden: $0) })
                 Toggle("Skip what .gitignore files exclude", isOn: flag(\.respectGitignore) { ConfigPatch(respectGitignore: $0) })
                 Toggle("Follow symbolic links to folders", isOn: flag(\.followSymlinks) { ConfigPatch(followSymlinks: $0) })
@@ -201,6 +232,16 @@ private struct IndexSettings: View {
         Binding(
             get: { model.config?[keyPath: path] ?? false },
             set: { model.updateConfig(patch($0), reindex: true) }
+        )
+    }
+
+    private var ocr: Binding<Bool> {
+        Binding(
+            get: { model.config?.content.ocr ?? false },
+            set: { on in
+                guard let content = model.config?.content else { return }
+                model.updateConfig(ConfigPatch(content: ContentConfig(enabled: content.enabled, ocr: on)), reindex: true)
+            }
         )
     }
 

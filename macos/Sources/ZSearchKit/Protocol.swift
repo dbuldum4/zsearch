@@ -105,9 +105,13 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
 
 public struct ContentConfig: Codable, Hashable, Sendable {
     public var enabled: Bool
+    /// Read the text in images and scanned PDF pages. Nil from engines older than OCR, and in
+    /// patches that leave it as it is.
+    public var ocr: Bool?
 
-    public init(enabled: Bool) {
+    public init(enabled: Bool, ocr: Bool? = nil) {
         self.enabled = enabled
+        self.ocr = ocr
     }
 }
 

@@ -1,7 +1,7 @@
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, type ExtractReply, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
-import { DOCUMENT_EXTS } from "../kinds.ts"
+import { DOCUMENT_EXTS, OCR_EXTS } from "../kinds.ts"
 
 /** Messages to an extraction worker: its options once, then batches of jobs. */
 export type ExtractWorkerIn = { opts: ExtractOptions; backgroundDisk: boolean } | { jobs: ExtractJob[] }
@@ -92,7 +92,7 @@ export class ExtractPool {
     this.owner.delete(reply.id)
     if (owner) {
       const job = this.assigned.get(owner)?.get(reply.id)
-      if (job && DOCUMENT_EXTS.has(job.ext)) this.docs.set(owner, this.docs.get(owner)! - 1)
+      if (job && slow(job.ext)) this.docs.set(owner, this.docs.get(owner)! - 1)
       this.assigned.get(owner)?.delete(reply.id)
     }
     cb(reply)
@@ -145,7 +145,7 @@ export class ExtractPool {
     const load = (w: Worker) => this.assigned.get(w)!.size + (this.free(w) ? 0 : 1 << 20)
     let best = this.workers[0]!
     for (const w of this.workers) if (load(w) < load(best)) best = w
-    const doc = DOCUMENT_EXTS.has(job.ext)
+    const doc = slow(job.ext)
     if (doc) {
       const w = this.affinity.get(job.ext)
       if (w && this.free(w)) best = w
@@ -186,4 +186,9 @@ export class ExtractPool {
     this.outbox.clear()
     for (const id of [...this.waiting.keys()]) this.finish(null, { id, status: "error", error: "cancelled" })
   }
+}
+
+/** Documents and images (read with OCR) can take seconds each, against microseconds for text. */
+function slow(ext: string): boolean {
+  return DOCUMENT_EXTS.has(ext) || OCR_EXTS.has(ext)
 }

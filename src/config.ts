@@ -11,6 +11,8 @@ export interface ContentConfig {
   maxTextMB: number
   /** Extracted text kept per file, in characters. */
   maxChars: number
+  /** Read the text in images and scanned PDF pages, where the OCR helper is available (Mac app). */
+  ocr: boolean
 }
 
 export interface Config {
@@ -61,7 +63,7 @@ export function defaultConfig(): Config {
     followSymlinks: false,
     oneFileSystem: false,
     cloudContent: false,
-    content: { enabled: true, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000 },
+    content: { enabled: true, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000, ocr: true },
     autoRefreshMinutes: 60,
     workers: 0,
     indexLoad: 70,

@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import PDFKit
+import Quartz
 import SwiftUI
 import ZSearchKit
 
@@ -157,6 +158,40 @@ struct PDFPreviewView: NSViewRepresentable {
         } else {
             view.go(to: page)
         }
+    }
+}
+/// Any other file, as Quick Look shows it: images, video, audio, fonts, and files without text.
+struct QuickLookView: NSViewRepresentable {
+    let url: URL
+
+    final class Coordinator {
+        var preview: QLPreviewView?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    // QLPreviewView's initializers can fail, so it sits in a plain container view.
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: .zero)
+        if let view = QLPreviewView(frame: .zero, style: .normal) {
+            view.autostarts = true
+            view.shouldCloseWithWindow = false
+            view.autoresizingMask = [.width, .height]
+            container.addSubview(view)
+            context.coordinator.preview = view
+        }
+        return container
+    }
+
+    func updateNSView(_ container: NSView, context: Context) {
+        guard let view = context.coordinator.preview else { return }
+        view.frame = container.bounds
+        if (view.previewItem as? NSURL) as URL? != url { view.previewItem = url as NSURL }
+    }
+
+    static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
+        coordinator.preview?.close()
+        coordinator.preview = nil
     }
 }
 #endif
