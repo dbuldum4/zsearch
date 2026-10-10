@@ -9,7 +9,9 @@ export type ExtractWorkerIn = { opts: ExtractOptions } | { jobs: ExtractJob[] }
 
 /**
  * A small pool of extraction workers with at most `perWorker` jobs queued each. Jobs go out in
- * batches: a message costs about as much as the extraction of a small text file.
+ * batches: a message costs about as much as the extraction of a small text file. A worker with a
+ * document queued takes only as many jobs as it runs at once: a document can take seconds, and
+ * the jobs queued behind it could not go to another worker.
  */
 export class ExtractPool {
   private workers: Worker[] = []
@@ -18,6 +20,8 @@ export class ExtractPool {
   private waiting = new Map<number, (r: ExtractReply) => void>()
   private owner = new Map<number, Worker>()
   private outbox = new Map<Worker, ExtractJob[]>()
+  /** Documents among each worker's unfinished jobs. */
+  private docs = new Map<Worker, number>()
   /** The worker documents of each type go to while it has room: their parsers warm up once. */
   private affinity = new Map<string, Worker>()
   private flushQueued = false
@@ -61,6 +65,7 @@ export class ExtractPool {
     w.postMessage(init)
     this.workers.push(w)
     this.assigned.set(w, new Map())
+    this.docs.set(w, 0)
     return w
   }
 
@@ -69,6 +74,7 @@ export class ExtractPool {
     w.terminate()
     this.workers = this.workers.filter((x) => x !== w)
     this.assigned.delete(w)
+    this.docs.delete(w)
     for (const [ext, x] of this.affinity) if (x === w) this.affinity.delete(ext)
     this.outbox.delete(w)
     this.spawn()
@@ -88,21 +94,37 @@ export class ExtractPool {
     if (!cb) return
     this.waiting.delete(reply.id)
     this.owner.delete(reply.id)
-    if (owner) this.assigned.get(owner)?.delete(reply.id)
+    if (owner) {
+      const job = this.assigned.get(owner)?.get(reply.id)
+      if (job && DOCUMENT_EXTS.has(job.ext)) this.docs.set(owner, this.docs.get(owner)! - 1)
+      this.assigned.get(owner)?.delete(reply.id)
+    }
     cb(reply)
     if (this.waiting.size === 0) for (const r of this.idleResolvers.splice(0)) r()
   }
 
-  /** Jobs the pool takes at once. */
+  /** Jobs a worker takes. */
+  private limit(w: Worker): number {
+    return this.docs.get(w) ? Math.min(this.perWorker, JOBS_AT_ONCE) : this.perWorker
+  }
+
+  private free(w: Worker): number {
+    return Math.max(0, this.limit(w) - this.assigned.get(w)!.size)
+  }
+
+  /** Jobs the pool takes at once, as things stand. */
   get slots(): number {
-    return this.inProcess ? this.size : this.size * this.perWorker
+    if (this.inProcess) return this.size
+    let n = 0
+    for (const w of this.workers) n += this.limit(w)
+    return n
   }
 
   /** Free capacity across all workers. */
   get capacity(): number {
     if (this.inProcess) return this.size - this.waiting.size
     let free = 0
-    for (const jobs of this.assigned.values()) free += Math.max(0, this.perWorker - jobs.size)
+    for (const w of this.workers) free += this.free(w)
     return free
   }
 
@@ -119,16 +141,20 @@ export class ExtractPool {
   }
 
   /**
-   * Queue a job on the least busy worker, or a document on the worker that took the last of its
-   * type if that one has room. What is queued in one turn of the event loop goes out together.
+   * Queue a job on the least busy worker with room, or a document on the worker that took the
+   * last of its type if that one has room. What is queued in one turn of the event loop goes out
+   * together.
    */
   private send(job: ExtractJob) {
+    const load = (w: Worker) => this.assigned.get(w)!.size + (this.free(w) ? 0 : 1 << 20)
     let best = this.workers[0]!
-    for (const w of this.workers) if (this.assigned.get(w)!.size < this.assigned.get(best)!.size) best = w
-    if (DOCUMENT_EXTS.has(job.ext)) {
+    for (const w of this.workers) if (load(w) < load(best)) best = w
+    const doc = DOCUMENT_EXTS.has(job.ext)
+    if (doc) {
       const w = this.affinity.get(job.ext)
-      if (w && this.assigned.get(w)!.size < this.perWorker) best = w
+      if (w && this.free(w)) best = w
       else this.affinity.set(job.ext, best)
+      this.docs.set(best, this.docs.get(best)! + 1)
     }
     this.assigned.get(best)!.set(job.id, job)
     this.owner.set(job.id, best)
@@ -160,6 +186,7 @@ export class ExtractPool {
     for (const w of this.workers) w.terminate()
     this.workers = []
     this.assigned.clear()
+    this.docs.clear()
     this.outbox.clear()
     for (const id of [...this.waiting.keys()]) this.finish(null, { id, status: "error", error: "cancelled" })
   }

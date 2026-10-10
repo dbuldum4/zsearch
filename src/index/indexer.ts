@@ -519,13 +519,13 @@ export class Indexer {
     for (const p of started) launch(this.early.get(p.id)!)
     this.early.clear()
     this.earlyBytes = 0
-    // The workers are topped up once half their queue is done, so jobs go out in batches.
-    const refill = Math.max(1, pool.slots >> 1)
     let ok = false
     try {
       while ((next < pending.length || active) && !sink.failed) {
         // No new jobs while the writer has much to catch up on.
         const behind = sink.backlog > MAX_INFLIGHT_BYTES
+        // The workers are topped up once half their queue is done, so jobs go out in batches.
+        const refill = Math.max(1, pool.slots >> 1)
         if (!behind && pool.capacity >= Math.min(refill, pending.length - next)) {
           while (next < pending.length && pool.capacity > 0 && !this.aborted) {
             const job = pending[next]!
