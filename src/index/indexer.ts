@@ -51,7 +51,7 @@ interface Pending {
 
 /** Extraction jobs queued per worker: a deep queue keeps them busy while this thread is not. */
 const JOBS_PER_WORKER = 64
-/** At most this much (file size, text files) in flight at once. */
+/** At most this much (file size, text files) in flight at once, or started during the scan in all. */
 const MAX_INFLIGHT_BYTES = 64 * 1024 * 1024
 /** Files whose contents are written in rowid order (see `content`). */
 const WRITE_RUN = 4096
@@ -59,7 +59,10 @@ const WRITE_RUN = 4096
 const SKIP_AFTER = 256
 /** Results held back behind slow files, at most: beyond this they are written anyway. */
 const MAX_HELD_BYTES = 64 * 1024 * 1024
-/** Extraction jobs started while the scan is still going, at most. */
+/**
+ * Extraction jobs started while the scan is still going, at most, in all: their results are
+ * held until the content phase, so this and MAX_INFLIGHT_BYTES bound the memory they take.
+ */
 const EARLY_JOBS = 2048
 
 interface Existing {
