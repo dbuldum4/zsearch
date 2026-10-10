@@ -23,6 +23,8 @@ enum AppSettings {
     static let hotKey = "hotKey"
     /// Set when the chosen shortcut could not be registered (another app has it).
     static let hotKeyTaken = "hotKeyTaken"
+    /// PDFs preview as their extracted text instead of their pages. The switch above the preview changes it too.
+    static let pdfShowsText = "pdfShowsText"
 }
 
 private struct GeneralSettings: View {
@@ -30,6 +32,7 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.showMenuBarItem) private var showMenuBarItem = true
     @AppStorage(AppSettings.hotKey) private var hotKey = HotKeyChoice.optionSpace.rawValue
     @AppStorage(AppSettings.hotKeyTaken) private var hotKeyTaken = false
+    @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
@@ -38,6 +41,10 @@ private struct GeneralSettings: View {
             Picker("Search mode at start", selection: defaultMode) {
                 Text("Find (exact text, /regex/)").tag(Mode.find)
                 Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
+            }
+            Picker("Preview PDFs as", selection: $pdfShowsText) {
+                Text("Pages").tag(false)
+                Text("Text").tag(true)
             }
             Picker("Shortcut to show zsearch", selection: $hotKey) {
                 ForEach(HotKeyChoice.allCases) { Text($0.label).tag($0.rawValue) }
