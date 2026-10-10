@@ -10,15 +10,16 @@ import type { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import { progressLine } from "../cli.ts"
 import { type Config, defaultConfig, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
-import { type IndexStats, openDb, readContent } from "../index/db.ts"
+import { type IndexStats, openDb } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import { lockHolder } from "../index/lock.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 import { pdftotextPath } from "../platform.ts"
 import { SearchClient } from "../search/client.ts"
-import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
+import type { SearchHit, SearchResponse } from "../search/engine.ts"
 import type { Mode } from "../search/query.ts"
+import type { ReadOptions, ReadResult } from "../search/read.ts"
 import { formatBytes, formatCount, formatDate, formatDuration } from "../util/text.ts"
 import {
   type JsonSchema,
@@ -42,11 +43,18 @@ export const INSTRUCTIONS = `zsearch searches the user's indexed files on this c
 - \`read_file\` reads the text zsearch extracted, so it works for PDFs and Office files too. Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
 - Everything stays on this computer.`
 
-/** Lines of text a read_file call returns at most. */
+/** Lines, and characters, of text a read_file call returns at most. */
 const MAX_READ_LINES = 2000
+const MAX_READ_CHARS = 100_000
+/** Matching line numbers a read_file result lists. */
+const MATCH_LINES_SHOWN = 2000
 /** Characters of a file's text a resource read or a prompt carries at most. */
 const MAX_RESOURCE_CHARS = 1_000_000
 const PROMPT_CHARS = 200_000
+/** Results a search ranks, whatever page is asked for (the most `offset` + `limit` can reach). */
+const SEARCH_POOL = 1000
+/** How long later pages of a search reuse the results of its first page. */
+const POOL_TTL_MS = 10 * 60_000
 /** How often the server checks whether the index is due for its automatic update. */
 const AUTO_CHECK_MS = 60_000
 
@@ -73,6 +81,9 @@ export class Host {
     this.config = loadConfig()
     this.client = new SearchClient(this.paths.db, this.config)
     this.client.onRestart = (reason) => this.log("warning", reason)
+    this.client.onRefreshed = (_files, changed) => {
+      if (changed) this.pools.clear()
+    }
   }
 
   /** Start the automatic index updates the `autoRefreshMinutes` setting asks for. */
@@ -121,8 +132,32 @@ export class Host {
     return this.exclusive(() => this.client.search(query, mode, limit))
   }
 
-  preview(id: number, query: string, mode: Mode, focusLine?: number, window?: number): Promise<Preview> {
-    return this.exclusive(() => this.client.preview(id, query, mode, focusLine, window))
+  private pools = new Map<string, { res: SearchResponse; at: number }>()
+
+  /**
+   * Results for paging through: always the best SEARCH_POOL, since the engine ranks a different
+   * candidate pool for a different limit. A first page runs the search; later pages reuse its
+   * results (for a while, and while the index is unchanged), so pages never overlap or skip.
+   */
+  async searchPool(query: string, mode: Mode, firstPage: boolean): Promise<SearchResponse> {
+    const key = `${mode}\0${query}`
+    const cached = this.pools.get(key)
+    if (!firstPage && cached && Date.now() - cached.at < POOL_TTL_MS) return cached.res
+    const res = await this.search(query, mode, SEARCH_POOL)
+    this.pools.delete(key)
+    if (!res.error) this.pools.set(key, { res, at: Date.now() })
+    for (const k of this.pools.keys()) if (this.pools.size > 8) this.pools.delete(k)
+    return res
+  }
+
+  /**
+   * Read the indexed file at `path` (absolute or `~/…`). Null if it is not in the index. The
+   * worker finds and reads it in one step, so an index rebuilt meanwhile cannot swap the file.
+   */
+  async read(path: string, query: string, mode: Mode, opts: ReadOptions): Promise<ReadResult | null> {
+    const reply = await this.exclusive(() => this.client.read(resolvePath(path.trim()), query, mode, opts))
+    if (reply.error) throw new ToolError(reply.error)
+    return reply.result
   }
 
   stats(): Promise<{ stats: IndexStats }> {
@@ -133,22 +168,6 @@ export class Host {
   private database(): Database {
     this.db ??= openDb(this.paths.db, { readonly: true })
     return this.db
-  }
-
-  /** The indexed file at `path` (absolute or `~/…`), ignoring case only when nothing matches exactly. */
-  async findFile(path: string): Promise<{ id: number; path: string; kind: Kind } | null> {
-    // The worker creates the index on its first start.
-    await this.client.waitReady()
-    const abs = resolvePath(path.trim())
-    const db = this.database()
-    const exact = db.query("SELECT id, path, kind FROM files WHERE path = ?").get(abs) as { id: number; path: string; kind: Kind } | null
-    if (exact) return exact
-    const loose = db.query("SELECT id, path, kind FROM files WHERE path = ? COLLATE NOCASE LIMIT 2").all(abs) as { id: number; path: string; kind: Kind }[]
-    return loose.length === 1 ? loose[0]! : null
-  }
-
-  storedText(id: number): string | null {
-    return readContent(this.database(), id)
   }
 
   async unreadable(limit: number): Promise<{ path: string; reason: string }[]> {
@@ -560,7 +579,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
       const limit = args.limit as number
       const offset = args.offset as number
       const perFile = args.lines_per_file as number
-      const res = await host.search(query, mode, offset + limit)
+      const res = await host.searchPool(query, mode, offset === 0)
       if (res.error) throw new ToolError(`search failed: ${res.error}`)
       const hits = res.hits.slice(offset, offset + limit)
       const structured = {
@@ -612,14 +631,15 @@ Each result gives the file's absolute path, kind, size, modification time and it
     title: "Read a file's text",
     description: `Read the text of an indexed file, with line numbers. For PDFs, Office documents, e-books, e-mail and notebooks this is the text zsearch extracted (with page, slide or sheet numbers); for code and text files it is the file itself. For a folder it lists the entries.
 
-Give query (the same text or regex as in search) to mark the matching lines and start at the first match, or matches_only to get just the matching lines with some context. Use line and lines to read a particular part; long files take several calls. Only files in the index can be read.`,
+Give query (the same text or regex as in search) to mark the matching lines and start at the first match, or matches_only to get just the matching lines with some context. Use line and lines to read a particular part. Long files and very long lines take several calls: each result says where to continue (next: line and column). Only files in the index can be read.`,
     inputSchema: obj(
       {
         path: str("Absolute path of the file (or ~/…), as search returned it"),
         query: str("Text or regex (/…/ or with regex: true) whose matches to mark and jump to"),
         regex: bool("Treat query as a regular expression", false),
         mode: str('How query matches: "find" (exact text, default) or "fuzzy" (its words, typo-tolerant)', { enum: ["find", "fuzzy"], default: "find" }),
-        line: int("First line to return (default: the first match, or line 1)", 1, 100_000_000),
+        line: int("First line to return (default: a little above the first match, or line 1). With matches_only, the first line to look for matches from", 1, 100_000_000),
+        column: int("Character of the first line to start at, to continue a line that was cut short", 1, 100_000_000, 1),
         lines: int("Lines to return", 1, MAX_READ_LINES, 200),
         matches_only: bool("Return only the lines matching query, each with context lines around it", false),
         context: int("Context lines around each match with matches_only", 0, 20, 2),
@@ -636,99 +656,111 @@ Give query (the same text or regex as in search) to mark the matching lines and 
         source: str("Where the text came from: index (extracted text), disk (read now) or none"),
         totalLines: { type: "integer" },
         pages: { type: "integer", description: "Pages, slides or sheets, for paged documents" },
-        matchLines: { type: "array", items: { type: "integer" }, description: "Lines matching the query (up to 2000)" },
-        lines: { type: "array", items: loose({ line: { type: "integer" }, page: { type: "integer" }, text: { type: "string" }, match: { type: "boolean" } }, ["line", "text"]) },
+        matchCount: { type: "integer", description: "Lines matching the query (at least, if matchesCapped)" },
+        matchesCapped: bool("More lines match than were counted"),
+        matchLines: { type: "array", items: { type: "integer" }, description: `The first ${MATCH_LINES_SHOWN} lines matching the query` },
+        lines: {
+          type: "array",
+          items: loose({ line: { type: "integer" }, page: { type: "integer" }, text: { type: "string" }, match: { type: "boolean" }, column: { type: "integer", description: "The character of the line text starts at, when not the first" }, cut: bool("The line goes on past text") }, ["line", "text"]),
+        },
         message: str("Why there is no text, when there is none"),
-        more: bool("More lines follow the last one returned"),
+        more: bool("There is more to read: see next"),
+        next: { type: ["object", "null"], description: "Where to continue: call again with these line and column", properties: { line: { type: "integer" }, column: { type: "integer" } } },
       },
-      ["path", "kind", "totalLines", "lines"],
+      ["path", "kind", "totalLines", "lines", "more", "next"],
     ),
     annotations: { readOnlyHint: true, openWorldHint: false },
     async run(args) {
       host.reloadConfig()
-      const found = await host.findFile(String(args.path))
-      if (!found) {
-        const abs = resolvePath(String(args.path).trim())
-        const isDir = existsSync(abs) && statSync(abs).isDirectory()
-        throw new ToolError(
-          isDir && host.config.roots.some((r) => resolvePath(r) === abs)
-            ? `${abs} is an indexed folder itself: use search with folder: ["${tildify(abs)}"] (and an empty query) to list what is in it.`
-            : existsSync(abs)
-            ? `${abs} is not in the index. zsearch reads only indexed files (folders: ${host.config.roots.join(", ")}); it may be excluded, hidden, or new since the last update_index.`
-            : `${abs} does not exist and is not in the index. Use search to find the file's path.`,
-        )
-      }
       let raw = String(args.query ?? "").trim()
       if (raw && args.regex === true) raw = `re:${raw.replace(/^\/(.*)\/$/, "$1")}`
       const mode = args.mode as Mode
-      const count = args.lines as number
       const matchesOnly = args.matches_only === true
       if (matchesOnly && !raw) throw new ToolError("matches_only needs a query")
-      // A preview of `count` lines starts a quarter of them above its focus line.
       const start = args.line as number | undefined
-      const pv = matchesOnly
-        ? await host.preview(found.id, raw, mode, 1, 1_000_000)
-        : await host.preview(found.id, raw, mode, start !== undefined ? start + Math.floor(count / 4) : undefined, count)
-      const matchSet = new Set(pv.matchLines)
-      let lines = pv.lines
-      let more = lines.length > 0 && lines.at(-1)!.n < pv.totalLines
-      if (matchesOnly) {
-        const ctx = args.context as number
-        const keep = new Set<number>()
-        for (const m of pv.matchLines) for (let n = Math.max(1, m - ctx); n <= m + ctx; n++) keep.add(n)
-        const kept = pv.lines.filter((l) => keep.has(l.n))
-        lines = kept.slice(0, count)
-        more = kept.length > count
-      } else if (start !== undefined && start > pv.totalLines && pv.totalLines > 0) {
-        throw new ToolError(`line ${start} is past the end: the file has ${formatCount(pv.totalLines)} lines`)
+      const r = await host.read(String(args.path), raw, mode, {
+        line: start,
+        column: args.column as number,
+        lines: args.lines as number,
+        maxChars: MAX_READ_CHARS,
+        matchesOnly,
+        context: args.context as number,
+      })
+      if (!r) {
+        const abs = resolvePath(String(args.path).trim())
+        const isDir = existsSync(abs) && statSync(abs).isDirectory()
+        throw new ToolError(
+          isDir && host.config.roots.some((root) => resolvePath(root) === abs)
+            ? `${abs} is an indexed folder itself: use search with folder: ["${tildify(abs)}"] (and an empty query) to list what is in it.`
+            : existsSync(abs)
+              ? `${abs} is not in the index. zsearch reads only indexed files (folders: ${host.config.roots.join(", ")}); it may be excluded, hidden, or new since the last update_index.`
+              : `${abs} does not exist and is not in the index. Use search to find the file's path.`,
+        )
       }
-      const paged = pv.pageStarts.length > 1
+      if (!matchesOnly && start !== undefined && start > r.totalLines && !r.message) {
+        throw new ToolError(`line ${start} is past the end: ${r.isDir ? "the folder has" : "the file has"} ${formatCount(r.totalLines)} ${r.isDir ? "entries" : "lines"}`)
+      }
+      const matchSet = new Set(r.matchLines)
+      const paged = r.pageStarts.length > 1
       const structured = {
-        path: pv.path,
-        kind: pv.kind,
-        isDir: pv.isDir,
-        size: pv.size,
-        modified: iso(pv.mtime)!,
-        source: pv.source,
-        totalLines: pv.totalLines,
-        ...(paged ? { pages: pv.pageStarts.length } : {}),
-        ...(raw ? { matchLines: pv.matchLines } : {}),
-        lines: lines.map((l) => ({ line: l.n, ...(paged ? { page: pageOf(pv.pageStarts, l.n) } : {}), text: l.text, ...(matchSet.has(l.n) ? { match: true } : {}) })),
-        ...(pv.message ? { message: pv.message } : {}),
-        more,
+        path: r.path,
+        kind: r.kind,
+        isDir: r.isDir,
+        size: r.size,
+        modified: iso(r.mtime)!,
+        source: r.source,
+        totalLines: r.totalLines,
+        ...(paged ? { pages: r.pageStarts.length } : {}),
+        ...(raw ? { matchCount: r.matchLines.length, matchesCapped: r.matchesCapped, matchLines: r.matchLines.slice(0, MATCH_LINES_SHOWN) } : {}),
+        lines: r.lines.map((l) => ({
+          line: l.n,
+          ...(paged ? { page: pageOf(r.pageStarts, l.n) } : {}),
+          text: l.text,
+          ...(matchSet.has(l.n) ? { match: true } : {}),
+          ...(l.column ? { column: l.column } : {}),
+          ...(l.cut ? { cut: true } : {}),
+        })),
+        ...(r.message ? { message: r.message } : {}),
+        more: r.next !== null,
+        next: r.next,
       }
-      const head = `${pv.path}${pv.isDir ? "/" : ""} — ${pv.isDir ? "folder" : `${pv.kind} · ${formatBytes(pv.size)}`} · modified ${formatDate(pv.mtime)}`
+      const head = `${r.path}${r.isDir ? "/" : ""} — ${r.isDir ? "folder" : `${r.kind} · ${formatBytes(r.size)}`} · modified ${formatDate(r.mtime)}`
       const out = [head]
-      if (pv.message && !lines.length) {
-        out.push(pv.message[0]!.toUpperCase() + pv.message.slice(1) + ".")
+      if (r.message && !r.lines.length) {
+        out.push(r.message[0]!.toUpperCase() + r.message.slice(1) + ".")
         return { text: out.join("\n"), structured }
       }
-      if (pv.isDir) out.push(`${formatCount(pv.totalLines)} entries${lines.length < pv.totalLines ? `, the first ${formatCount(lines.length)}` : ""}:`)
+      if (r.isDir) out.push(`${formatCount(r.totalLines)} entries.`)
       else {
-        const what = paged ? `${formatCount(pv.totalLines)} lines, ${pv.pageStarts.length} ${pageWord(pv.kind)}s` : `${formatCount(pv.totalLines)} lines`
-        out.push(`${what}${pv.source === "index" ? " (text extracted by zsearch)" : ""}.`)
+        const what = paged ? `${formatCount(r.totalLines)} lines, ${r.pageStarts.length} ${pageWord(r.kind)}s` : `${formatCount(r.totalLines)} lines`
+        out.push(`${what}${r.source === "index" ? " (text extracted by zsearch)" : ""}.`)
       }
       if (raw) {
-        const shown = pv.matchLines.slice(0, 30).join(", ")
-        out.push(pv.matchLines.length ? `${formatCount(pv.matchLines.length)} matching ${pv.matchLines.length === 1 ? "line" : "lines"} for ${JSON.stringify(raw)}: ${shown}${pv.matchLines.length > 30 ? ", …" : ""}` : `No lines match ${JSON.stringify(raw)}.`)
+        const n = r.matchLines.length
+        const shown = r.matchLines.slice(0, 30).join(", ")
+        out.push(n ? `${formatCount(n)}${r.matchesCapped ? "+" : ""} matching ${n === 1 ? "line" : "lines"} for ${JSON.stringify(raw)}: ${shown}${n > 30 ? ", …" : ""}` : `No lines match ${JSON.stringify(raw)}.`)
       }
-      if (lines.length) {
-        const width = String(lines.at(-1)!.n).length
-        out.push(matchesOnly ? "" : `Lines ${lines[0]!.n}–${lines.at(-1)!.n}${pv.isDir ? "" : " (> marks a match)"}:`)
+      if (r.lines.length) {
+        const width = String(r.lines.at(-1)!.n).length
+        const first = r.lines[0]!
+        const last = r.lines.at(-1)!
+        if (!matchesOnly) out.push(`${r.isDir ? "Entries" : "Lines"} ${first.n}–${last.n}${r.isDir ? "" : " (> marks a match)"}:`)
         let prev = 0
         let page = 0
-        for (const l of lines) {
-          const pg = paged ? pageOf(pv.pageStarts, l.n)! : 0
+        for (const l of r.lines) {
+          const pg = paged ? pageOf(r.pageStarts, l.n)! : 0
           if (paged && pg !== page) {
-            out.push(`--- ${pageWord(pv.kind)} ${pg} ---`)
+            out.push(`--- ${pageWord(r.kind)} ${pg} ---`)
             page = pg
           } else if (matchesOnly && prev && l.n > prev + 1) out.push("…")
           prev = l.n
-          out.push(pv.isDir ? l.text : `${matchSet.has(l.n) ? ">" : " "}${String(l.n).padStart(width)}  ${l.text}`)
+          const text = `${l.column ? `[from character ${l.column}] ` : ""}${l.text}${l.cut ? " [line continues]" : ""}`
+          out.push(r.isDir ? text : `${matchSet.has(l.n) ? ">" : " "}${String(l.n).padStart(width)}  ${text}`)
         }
-        const last = lines.at(-1)!.n
-        if (!matchesOnly && last < pv.totalLines) out.push(`… ${formatCount(pv.totalLines - last)} more lines: call again with line ${last + 1}.`)
-        if (matchesOnly && more) out.push(`… more matches: call again with a larger lines, or read from line ${last + 1}.`)
+      }
+      if (r.next) {
+        const where = r.next.column > 1 ? `line ${r.next.line} and column ${r.next.column}` : `line ${r.next.line}`
+        out.push(matchesOnly ? `… more matches: call again with ${where}.` : `… more to read: call again with ${where}.`)
       }
       return { text: out.join("\n"), structured }
     },
@@ -911,23 +943,21 @@ function fileUri(path: string): string {
   return "file://" + path.split("/").map(encodeURIComponent).join("/")
 }
 
-/** A file's text for a resource read or a prompt: the extracted text, with page breaks marked. */
+/** A file's text for a resource read or a prompt, with page breaks marked, up to `maxChars`. */
 async function fileContents(host: Host, path: string, maxChars: number): Promise<ResourceContents> {
-  const found = await host.findFile(path)
-  if (!found) throw new RpcError(ErrorCode.ResourceNotFound, `not in the zsearch index: ${path}`)
-  let text = host.storedText(found.id)
-  if (text === null) {
-    // No stored text: a small text file read from disk, a folder listing, or why there is none.
-    const pv = await host.preview(found.id, "", "find", 1, 1_000_000)
-    text = pv.lines.length ? pv.lines.map((l) => l.text).join("\n") : `(${pv.message ?? "no text"})`
+  const r = await host.read(path, "", "find", { line: 1, lines: Number.MAX_SAFE_INTEGER, maxChars })
+  if (!r) throw new RpcError(ErrorCode.ResourceNotFound, `not in the zsearch index: ${path}`)
+  const starts = new Set(r.pageStarts)
+  const word = pageWord(r.kind)
+  const parts: string[] = []
+  let page = 0
+  for (const l of r.lines) {
+    if (starts.has(l.n)) parts.push(`${page++ ? "\n" : ""}[${word} ${page}]`)
+    parts.push(l.text)
   }
-  if (text.includes("\f")) {
-    const word = pageWord(found.kind)
-    let page = 1
-    text = `[${word} 1]\n` + text.replace(/\f/g, () => `\n\n[${word} ${++page}]\n`)
-  }
-  if (text.length > maxChars) text = text.slice(0, maxChars) + `\n\n[… truncated: ${formatCount(text.length - maxChars)} more characters; use read_file to read the rest]`
-  return { uri: fileUri(found.path), mimeType: "text/plain", text }
+  let text = r.lines.length ? parts.join("\n") : `(${r.message ?? "no text"})`
+  if (r.next) text += `\n\n[… truncated at line ${r.next.line}; use read_file with line ${r.next.line}${r.next.column > 1 ? ` and column ${r.next.column}` : ""} to read the rest]`
+  return { uri: fileUri(r.path), mimeType: "text/plain", text }
 }
 
 /** Indexed file paths for completing `value`, best first. */

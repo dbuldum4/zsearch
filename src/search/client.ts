@@ -3,6 +3,7 @@ import type { IndexStats } from "../index/db.ts"
 import type { Preview, SearchResponse } from "./engine.ts"
 import type { SearchIn, SearchOut } from "./protocol.ts"
 import type { Mode } from "./query.ts"
+import type { ReadOptions, ReadResult } from "./read.ts"
 import { workerUrl } from "../util/workers.ts"
 
 export interface StatsReply {
@@ -78,11 +79,12 @@ export class SearchClient {
       case "results":
       case "preview":
       case "previews":
-      case "stats": {
+      case "stats":
+      case "read": {
         const p = this.pending.get(m.qid)
         if (!p) break
         this.pending.delete(m.qid)
-        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : m.type === "previews" ? m.previews : { stats: m.stats })
+        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : m.type === "previews" ? m.previews : m.type === "read" ? { result: m.result, error: m.error } : { stats: m.stats })
         break
       }
       case "refreshed":
@@ -122,9 +124,8 @@ export class SearchClient {
     return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit }))
   }
 
-  /** `window` is how many lines to return (default 400), starting a quarter of it above the focus. */
-  preview(id: number, query: string, mode: Mode, focusLine?: number, window?: number): Promise<Preview | null> {
-    return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine, window }))
+  preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null> {
+    return this.request<Preview>("preview", (qid) => ({ type: "preview", qid, id, query, mode, focusLine }))
   }
 
   /**
@@ -133,6 +134,11 @@ export class SearchClient {
    */
   previews(ids: number[], query: string, mode: Mode, focusLines?: (number | null)[]): Promise<Preview[] | null> {
     return this.request<Preview[]>("previews", (qid) => ({ type: "previews", qid, ids, query, mode, focusLines }))
+  }
+
+  /** A file's text by line range (see read.ts); `result` is null when the file is not in the index, or with `error`. */
+  read(path: string, query: string, mode: Mode, opts: ReadOptions): Promise<{ result: ReadResult | null; error?: string } | null> {
+    return this.request<{ result: ReadResult | null; error?: string }>("read", (qid) => ({ type: "read", qid, path, query, mode, opts }))
   }
 
   stats(): Promise<StatsReply | null> {

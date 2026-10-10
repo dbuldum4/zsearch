@@ -154,17 +154,17 @@ export function foldWithMap(s: string): { folded: string; map: number[] } {
  * Lines of `text` that contain keyword hits. Matching runs on folded text so that
  * "cafe" highlights "Café"; ranges are mapped back to the original characters.
  */
-export function keywordLines(text: string, pattern: string, maxLines = 50): { lines: LineMatch[]; count: number } {
-  if (!/[^\x00-\x7f]/.test(text)) return findLines(text, new RegExp(pattern, "giu"), maxLines)
+export function keywordLines(text: string, pattern: string, maxLines = 50, clip = true, maxMatches = 10_000): { lines: LineMatch[]; count: number } {
+  if (!/[^\x00-\x7f]/.test(text)) return findLines(text, new RegExp(pattern, "giu"), maxLines, maxMatches, Infinity, clip)
   const { folded, map } = foldWithMap(text)
-  const r = findLines(folded, new RegExp(pattern, "gu"), maxLines, 10_000, Infinity, false)
+  const r = findLines(folded, new RegExp(pattern, "gu"), maxLines, maxMatches, Infinity, false)
   const lines = r.lines.map((l) => {
     const off = l.offset ?? 0
     const origStart = map[off] ?? 0
     let origEnd = origStart
     while (origEnd < text.length && text.charCodeAt(origEnd) !== 10 && text.charCodeAt(origEnd) !== 12) origEnd++
     const ranges = l.ranges.map(([a, b]) => [(map[off + a] ?? origStart) - origStart, (map[off + b] ?? origEnd) - origStart] as [number, number])
-    const c = clipLine(text.slice(origStart, origEnd), ranges)
+    const c = clip ? clipLine(text.slice(origStart, origEnd), ranges) : { text: text.slice(origStart, origEnd), ranges }
     return { line: l.line, page: l.page, text: c.text, ranges: c.ranges }
   })
   return { lines, count: r.count }

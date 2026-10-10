@@ -1,9 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
 import { checkArgs, McpServer, type Tool, ToolError } from "../src/mcp/rpc.ts"
 import { buildQuery, CONFIG_KEYS, withSetting } from "../src/mcp/server.ts"
-import { makeCorpus } from "./helpers/corpus.ts"
+import { clearIndex, openDb } from "../src/index/db.ts"
+import { Indexer } from "../src/index/indexer.ts"
+import { SearchEngine } from "../src/search/engine.ts"
+import { readIndexed } from "../src/search/read.ts"
+import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
 type Msg = Record<string, any>
 
@@ -144,6 +150,37 @@ describe("MCP tool helpers", () => {
   })
 })
 
+/* ------------------------------------------------------------- reading -- */
+
+test("read_file finds the file when it reads it, so a rebuilt index cannot swap in another", async () => {
+  const home = mkdtempSync(join(tmpdir(), "zsearch-read-"))
+  const prevHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    writeFileSync(join(home, "old.txt"), "the old file\n")
+    const db = openDb(join(home, "index.db"))
+    const config = homeConfig()
+    await new Indexer(db, config, { inProcess: true }).run()
+    const engine = new SearchEngine(db, config)
+    const opts = { lines: 10, maxChars: 1000 }
+    const before = readIndexed(engine, join(home, "old.txt"), "", "find", opts)!
+    expect(before.lines[0]!.text).toBe("the old file")
+    // A rebuild hands the old file's id to a new one.
+    rmSync(join(home, "old.txt"))
+    writeFileSync(join(home, "new.txt"), "an unrelated new file\n")
+    clearIndex(db)
+    await new Indexer(db, config, { inProcess: true }).run()
+    const after = readIndexed(engine, join(home, "new.txt"), "", "find", opts)!
+    expect(after.id).toBe(before.id)
+    expect(after.lines[0]!.text).toBe("an unrelated new file")
+    expect(readIndexed(engine, join(home, "old.txt"), "", "find", opts)).toBeNull()
+    db.close()
+  } finally {
+    process.env.HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 /* ---------------------------------------------------------- end to end -- */
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -231,6 +268,16 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(empty.text).toContain("update_index")
   expect((await c.call("index_status")).data.lastIndexedAt).toBeNull()
 
+  // Files for paging and long reads: match counts that run against modification order, a line
+  // longer than one read returns, a big folder, and more matching lines than one read returns.
+  for (let i = 1; i <= 10; i++) {
+    const p = corpus.write(`paging/zebrafish-${i}.txt`, "zebrafish ".repeat(i))
+    utimesSync(p, new Date(2020, 0, 20 - i), new Date(2020, 0, 20 - i))
+  }
+  corpus.write("long/one-line.txt", "a".repeat(2_500) + "TAIL\n" + "b".repeat(150_000) + "END\nlast line\n")
+  for (let i = 1; i <= 600; i++) corpus.write(`many/entry-${String(i).padStart(3, "0")}.txt`, "")
+  corpus.write("long/matches.txt", Array.from({ length: 3000 }, (_, i) => `match me ${i + 1}`).join("\n") + "\n")
+
   // Index the whole (test) home folder, waiting for it, with progress notifications.
   const indexed = await c.call("update_index", { roots: ["~"], wait_seconds: 60 }, { progressToken: "idx" })
   expect(indexed.data.status).toBe("done")
@@ -287,6 +334,48 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(missing.isError).toBe(true)
   expect(missing.text).toContain("not in the index")
   expect((await c.call("read_file", { path: "~/notes/todo.md", matches_only: true })).isError).toBe(true)
+
+  // Pages of a search never overlap or skip, however the ranking pools change with the limit.
+  const paged: string[] = []
+  for (let offset = 0; offset < 10; offset += 2) paged.push(...(await c.call("search", { query: "zebrafish", limit: 2, offset })).data.hits.map((h: Msg) => h.path))
+  expect(new Set(paged).size).toBe(10)
+  expect(paged.every((p) => p.includes("/paging/zebrafish-"))).toBe(true)
+
+  // Long lines come back whole, or cut with a column to continue from.
+  const long = join(corpus.home, "long/one-line.txt")
+  const first = await c.call("read_file", { path: long, lines: 1 })
+  expect(first.data.lines[0].text).toBe("a".repeat(2_500) + "TAIL")
+  expect(first.data.next).toEqual({ line: 2, column: 1 })
+  const huge = await c.call("read_file", { path: long, line: 2 })
+  expect(huge.data.lines).toHaveLength(1)
+  expect(huge.data.lines[0].cut).toBe(true)
+  expect(huge.data.next.line).toBe(2)
+  expect(huge.text).toContain(`call again with line 2 and column ${huge.data.next.column}`)
+  const rest = await c.call("read_file", { path: long, line: 2, column: huge.data.next.column })
+  expect(huge.data.lines[0].text + rest.data.lines[0].text).toBe("b".repeat(150_000) + "END")
+  expect(rest.data.lines[0].column).toBe(huge.data.next.column)
+  expect(rest.data.lines.map((l: Msg) => l.text)).toContain("last line")
+  expect(rest.data.next).toBeNull()
+
+  // Folders read by range.
+  const folder = await c.call("read_file", { path: "~/many", line: 501, lines: 2 })
+  expect(folder.data.totalLines).toBe(600)
+  expect(folder.data.lines.map((l: Msg) => [l.line, l.text])).toEqual([
+    [501, "entry-501.txt"],
+    [502, "entry-502.txt"],
+  ])
+  expect(folder.data.next).toEqual({ line: 503, column: 1 })
+
+  // Matching lines read on past what one call returns.
+  const matches = join(corpus.home, "long/matches.txt")
+  const m1 = await c.call("read_file", { path: matches, query: "match me", matches_only: true, context: 0, lines: 2000 })
+  expect(m1.data.matchCount).toBe(3000)
+  expect(m1.data.lines).toHaveLength(2000)
+  expect(m1.data.next).toEqual({ line: 2001, column: 1 })
+  const m2 = await c.call("read_file", { path: matches, query: "match me", matches_only: true, context: 0, lines: 2000, line: 2001 })
+  expect(m2.data.lines.map((l: Msg) => l.line)).toEqual(Array.from({ length: 1000 }, (_, i) => i + 2001))
+  expect(m2.data.next).toBeNull()
+  expect((await c.call("read_file", { path: matches, query: "/match (/", regex: true })).text).toContain("invalid regex")
 
   // Status and settings.
   const status = await c.call("index_status", { errors: true })
