@@ -94,15 +94,8 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       if (a) {
         if (!a.body.length && blank(raw.bytes)) return { id: job.id, status: "skip", reason: "empty" }
         const text = lineFeeds(raw.bytes)
-        return {
-          id: job.id,
-          status: "ok",
-          chars: text.length,
-          body: a.body,
-          compressed: compressBytes(text),
-          terms: a.fresh,
-          truncated: false,
-        }
+        const compressed = compressBytes(text)
+        return { id: job.id, status: "ok", chars: text.length, body: a.body, compressed, terms: a.report(), truncated: false }
       }
     }
     const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw

@@ -37,8 +37,11 @@ const latin1 = new TextDecoder("latin1")
 export interface AsciiTerms {
   /** The distinct words, lower-cased, separated by spaces: the FTS body, in UTF-8. */
   body: Uint8Array
-  /** Words of at most 64 characters not reported before during `run`. */
-  fresh: string[]
+  /**
+   * Words of at most 64 characters not reported before during `run`, which they now count as.
+   * Called once the result is sure to reach the indexer, and before the next `asciiTerms`.
+   */
+  report(): string[]
 }
 
 /** Null when the text is not plain ASCII (or holds NUL bytes, which extraction drops). */
@@ -102,16 +105,20 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
     if (at) out[at - 1] = 0x20
     outLen = o
   }
-  // Only now that the whole text is known to be plain: a word reported for a text that then
-  // takes the other path (where it may be part of a longer word) would never be reported again.
-  const fresh: string[] = []
-  for (let k = 0, at = 0; k < words; k++) {
-    const end = k === words - 1 ? outLen : out.indexOf(0x20, at)
-    const len = end - at
-    if (len <= 64 && report(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
-    at = end + 1
+  // Only once the text is known to be plain, and its result sure to be sent: a word reported for
+  // a text that then takes the other path (where it may be part of a longer word), or fails,
+  // would never be reported again.
+  const report = () => {
+    const fresh: string[] = []
+    for (let k = 0, at = 0; k < words; k++) {
+      const end = k === words - 1 ? outLen : out.indexOf(0x20, at)
+      const len = end - at
+      if (len <= 64 && markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
+      at = end + 1
+    }
+    return fresh
   }
-  return { body: out.slice(0, outLen), fresh }
+  return { body: out.slice(0, outLen), report }
 }
 
 function same(a: Uint8Array, i: number, b: Uint8Array, j: number, len: number): boolean {
@@ -120,7 +127,7 @@ function same(a: Uint8Array, i: number, b: Uint8Array, j: number, len: number): 
 }
 
 /** Record a lower-cased word as reported; false if it was already. */
-function report(word: Uint8Array, at: number, len: number, h: number): boolean {
+function markReported(word: Uint8Array, at: number, len: number, h: number): boolean {
   let mask = (done.length >> 2) - 1
   let j = h & mask
   while (done[j << 2]) {

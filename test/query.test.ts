@@ -191,6 +191,13 @@ describe("vocabulary and FTS mapping", () => {
     expect(v.similar("rename")).not.toContain("rename")
   })
 
+  test("similar terms that tie go by term, whatever order they were indexed in", () => {
+    const ties = [..."abcdefghijklmnopqrstuvwxy"].map((c) => `zor${c}`)
+    addChunk([...ties].reverse())
+    v.load(db, true)
+    expect(v.similar("zorz")).toEqual(ties.slice(0, 24))
+  })
+
   test("literal to FTS expression", () => {
     expect(literalToFts("foo bar", v)).toBe('"foo"* AND "bar"*'.replace('"foo"*', `("foo")`).replace("(", "").replace(")", "") === "" ? "" : literalToFts("foo bar", v))
     // whole token in the middle, prefix at the end
@@ -277,14 +284,17 @@ describe("text utilities", () => {
       expect(new TextDecoder().decode(a.body)).toBe(indexTerms(text).body)
       const fresh = [...indexTerms(text).terms].filter((t) => !seen.has(t))
       for (const t of fresh) seen.add(t)
-      expect(a.fresh).toEqual(fresh)
+      expect(a.report()).toEqual(fresh)
     }
-    expect(asciiTerms(enc("plan zeta"), "run 2")!.fresh).toEqual(["plan", "zeta"])
+    expect(asciiTerms(enc("plan zeta"), "run 2")!.report()).toEqual(["plan", "zeta"])
     expect(asciiTerms(enc("café"), "run 2")).toBeNull()
     expect(asciiTerms(enc("a\0b"), "run 2")).toBeNull()
     // A text that turns out not to be plain reports nothing: there the word may be longer.
     expect(asciiTerms(enc("early xcfd\u03e1000"), "run 3")).toBeNull()
-    expect(asciiTerms(enc("early xcfd"), "run 3")!.fresh).toEqual(["early", "xcfd"])
+    expect(asciiTerms(enc("early xcfd"), "run 3")!.report()).toEqual(["early", "xcfd"])
+    // Nor does one whose result is not sent (its compression failed).
+    expect(asciiTerms(enc("kiwi early"), "run 3")).not.toBeNull()
+    expect(asciiTerms(enc("kiwi"), "run 3")!.report()).toEqual(["kiwi"])
   })
   test("plain ASCII files are stored and indexed as from their decoded text", async () => {
     const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs")
