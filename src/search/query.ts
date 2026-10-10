@@ -109,12 +109,14 @@ interface Token {
   quoted: boolean
 }
 
+/** Words, `"quoted phrases"`, and filters whose value is quoted (`in:"~/My Folder"`, read as one token). */
 function tokenize(s: string): Token[] {
   const out: Token[] = []
-  const re = /"([^"]*)"?|\S+/g
+  const re = new RegExp(`(-?(?:${[...FILTER_KEYS].join("|")}):)"([^"]*)"?|"([^"]*)"?|\\S+`, "gi")
   let m: RegExpExecArray | null
   while ((m = re.exec(s))) {
-    out.push({ text: m[1] !== undefined ? m[1] : m[0], start: m.index, end: m.index + m[0].length, quoted: m[1] !== undefined })
+    const text = m[1] !== undefined ? m[1] + m[2] : m[3] !== undefined ? m[3] : m[0]
+    out.push({ text, start: m.index, end: m.index + m[0].length, quoted: m[3] !== undefined })
   }
   return out
 }

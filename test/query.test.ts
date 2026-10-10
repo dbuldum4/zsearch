@@ -34,6 +34,14 @@ describe("query parsing", () => {
     expect(q.filters.limit).toBe(7)
   })
 
+  test("a quoted filter value can hold spaces", () => {
+    const q = parseQuery('in:"~/My Folder" type:pdf budget "next year"', now)
+    expect(q.filters.inPaths).toEqual([`${home()}/My Folder`])
+    expect([...q.filters.kinds!]).toEqual(["pdf"])
+    expect(q.words).toEqual(["budget"])
+    expect(q.phrases).toEqual(["next year"])
+  })
+
   test("type aliases and negated types", () => {
     const q = parseQuery("type:docs -type:pdf notes", now)
     expect(q.filters.kinds!.has("doc")).toBe(true)
