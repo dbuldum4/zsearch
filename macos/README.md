@@ -6,6 +6,7 @@ A native SwiftUI front end for zsearch. The search engine is the same `zsearch` 
 zsearch.app/Contents/
   MacOS/ZSearch        the SwiftUI app (this package)
   Helpers/zsearch      the engine (bun run build)
+  Helpers/zsearch-ocr  reads text in images and scanned PDFs with Vision (Sources/ZSearchOCR)
   Info.plist           from macos/Info.plist
 ```
 
@@ -13,10 +14,12 @@ zsearch.app/Contents/
 
 - **Search** as you type, in names and contents (Find, ⌘1) or forgiving names (Fuzzy, ⌘2). ↑/↓ or ⌘J/⌘K move through results, Return opens, ⇧⌘R shows in Finder, ⇧⌘C copies the path, ⌘L returns to the search field.
 - **Filter** with the row under the search field: type, extension, folder, modified date, size and regex. Each control writes the same filter you could type (`type:pdf`, `in:~/Documents`, `re:`…), so the row and the query always agree.
-- **Preview** of the selected file with matches highlighted and the first match centered. Previews of the results around the selection are prefetched, so moving through the list doesn't wait on the engine. PDFs show their rendered pages, opened at the page of the match with the matching words highlighted; a Pages/Text switch at the top right of the preview, or "Preview PDFs as" in Settings, shows the extracted text instead.
+- **Open** with Return, in your code editor with ⌘E (VS Code, Cursor, Zed, Sublime Text, Windsurf, VSCodium or Xcode, at the matching line; pick one in Settings), or in **Quick Look** with Space or ⌘Y. Results show their Finder icons and can be dragged into other apps.
+- **Preview** of the selected file with matches highlighted and the first match centered. ⌘G and ⇧⌘G jump to the next and previous match. Previews of the results around the selection are prefetched, so moving through the list doesn't wait on the engine. PDFs show their rendered pages, opened at the page of the match with the matching words highlighted; a Pages/Text switch at the top right of the preview, or "Preview PDFs as" in Settings, shows the extracted text instead. Images, video, audio and fonts show as Quick Look shows them; an Image/Text switch shows an image's recognized text instead.
+- **Text in images and scans.** `zsearch-ocr` reads images and the PDF pages that have no text with the Vision framework, so a photographed receipt or a scanned letter can be found by its words. A setting turns it off.
 - **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
 - **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
-- **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It uses `RegisterEventHotKey`, which needs no accessibility permission.
+- **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It opens a floating search panel on the screen with the pointer, which goes away when you open a file, press Esc or click elsewhere; "The shortcut opens" in Settings switches it to the main window. It uses `RegisterEventHotKey`, which needs no accessibility permission.
 - **Dock menu** to update or stop indexing, and **open at login**.
 
 ## Building without Xcode
