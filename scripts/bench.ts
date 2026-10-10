@@ -13,7 +13,7 @@
  * with a few planted words and patterns for the searches to find.
  */
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { availableParallelism, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
@@ -238,7 +238,18 @@ async function bench(): Promise<BenchResult> {
     const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads")] }
     let db = openDb(dbPath)
     t = performance.now()
-    const first = await new Indexer(db, config).run()
+    // How long each phase took, for the log.
+    const phases: string[] = []
+    let phase = ""
+    let phaseStart = t
+    const onProgress = (p: { phase: string }) => {
+      if (p.phase === phase) return
+      const now = performance.now()
+      if (phase) phases.push(`${phase} ${((now - phaseStart) / 1000).toFixed(2)}s`)
+      phase = p.phase
+      phaseStart = now
+    }
+    const first = await new Indexer(db, config, { onProgress }).run()
     const indexSeconds = (performance.now() - t) / 1000
     if (first.phase !== "done") throw new Error(`indexing ended with ${first.phase}: ${first.error ?? ""}`)
     t = performance.now()
@@ -251,7 +262,7 @@ async function bench(): Promise<BenchResult> {
     }
     db.close()
     const dbMB = +(statSync(dbPath).size / 1e6).toFixed(2)
-    console.error(`index: ${indexSeconds.toFixed(1)}s, re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
+    console.error(`index: ${indexSeconds.toFixed(1)}s (${phases.join(", ")}; ${availableParallelism()} CPUs), re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
 
     db = openDb(dbPath)
     const engine = new SearchEngine(db, config)
