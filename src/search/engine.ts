@@ -165,6 +165,7 @@ export class SearchEngine {
     this.vocab.load(this.db, !full)
     this.frecency.clear()
     for (const r of this.db.query("SELECT path, count, last FROM frecency").all() as { path: string; count: number; last: number }[]) this.frecency.set(r.path, r)
+    for (const o of this.unsaved) this.countOpen(o.path, o.at)
     return true
   }
 
@@ -818,11 +819,55 @@ export class SearchEngine {
 
   recordOpen(path: string) {
     const now = Date.now()
-    this.db.query("INSERT INTO frecency(path, count, last) VALUES (?, 1, ?) ON CONFLICT(path) DO UPDATE SET count = count + 1, last = excluded.last").run(path, now)
+    this.countOpen(path, now)
+    this.unsaved.push({ path, at: now })
+    this.saveOpens()
+  }
+
+  private countOpen(path: string, at: number) {
     const f = this.frecency.get(path)
-    this.frecency.set(path, { count: (f?.count ?? 0) + 1, last: now })
+    this.frecency.set(path, { count: (f?.count ?? 0) + 1, last: Math.max(at, f?.last ?? 0) })
+  }
+
+  /** Opens counted but not stored yet (see `saveOpens`). */
+  private unsaved: { path: string; at: number }[] = []
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Store the opens counted so far. While an index run writes contents, the database can stay
+   * locked for a second or more: rather than hold up searches that long, the opens wait here
+   * and are tried again shortly.
+   */
+  private saveOpens() {
+    if (this.saveTimer || !this.unsaved.length) return
+    const opens = this.unsaved
+    const timeout = (this.db.query("PRAGMA busy_timeout").get() as { timeout: number }).timeout
+    try {
+      this.db.exec(`PRAGMA busy_timeout = ${OPEN_WAIT_MS}`)
+      const put = this.db.query("INSERT INTO frecency(path, count, last) VALUES (?, 1, ?) ON CONFLICT(path) DO UPDATE SET count = count + 1, last = excluded.last")
+      this.db.transaction(() => {
+        for (const o of opens) put.run(o.path, o.at)
+      })()
+      this.unsaved = []
+    } catch (err) {
+      if (!String((err as { code?: string }).code).startsWith("SQLITE_BUSY")) {
+        this.unsaved = []
+        throw err
+      }
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null
+        this.saveOpens()
+      }, OPEN_RETRY_MS)
+      this.saveTimer.unref?.()
+    } finally {
+      this.db.exec(`PRAGMA busy_timeout = ${timeout}`)
+    }
   }
 }
+
+/** How long recording an open waits for the database, and when it tries again if that was not enough. */
+const OPEN_WAIT_MS = 20
+const OPEN_RETRY_MS = 250
 
 /** The query text for name matching, with negations as fzf `!` terms. */
 function fuzzyQueryText(q: ParsedQuery): string {
