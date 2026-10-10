@@ -398,3 +398,11 @@ describe("result list layout", () => {
     expect(clampScroll([], 3, 2, 10)).toBe(0)
   })
 })
+
+test("the Mac app knows the same type names as the engine", async () => {
+  const { KIND_ALIASES } = await import("../src/kinds.ts")
+  const swift = await Bun.file(new URL("../macos/Sources/ZSearchKit/QueryFilters.swift", import.meta.url)).text()
+  const list = /kindAliases: Set<String> = \[([\s\S]*?)\]/.exec(swift)![1]!
+  const names = [...list.matchAll(/"(\w+)"/g)].map((m) => m[1])
+  expect(names.sort()).toEqual(Object.keys(KIND_ALIASES).sort())
+})

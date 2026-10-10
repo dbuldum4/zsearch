@@ -5,12 +5,22 @@ import Foundation
 /// split the way the engine splits them (src/search/query.ts).
 public enum QueryFilters {
     /// Filter keys the engine understands, and the groups of them that mean the same thing.
-    public static let typeKeys = ["type", "kind"]
+    public static let typeKeys = ["type", "kind", "is"]
     public static let extKeys = ["ext"]
     public static let folderKeys = ["in", "dir"]
     public static let sizeKeys = ["size"]
     public static let modifiedKeys = ["modified", "mtime", "changed", "after", "since", "before"]
-    static let allKeys: Set<String> = Set(typeKeys + extKeys + folderKeys + sizeKeys + modifiedKeys + ["path", "limit", "is"])
+    static let allKeys: Set<String> = Set(typeKeys + extKeys + folderKeys + sizeKeys + modifiedKeys + ["path", "limit"])
+
+    /// Type names the engine accepts (KIND_ALIASES in src/kinds.ts). `is:` is only a filter when
+    /// one of its values is among them; otherwise the engine keeps it as text (`is:open`).
+    static let kindAliases: Set<String> = [
+        "dir", "dirs", "folder", "folders", "directory", "code", "source", "src", "text", "txt", "md", "markdown",
+        "note", "notes", "data", "config", "web", "html", "pdf", "doc", "docs", "document", "documents", "word",
+        "sheet", "sheets", "spreadsheet", "excel", "xls", "slides", "slide", "presentation", "powerpoint", "ppt",
+        "ebook", "book", "email", "mail", "image", "images", "img", "photo", "photos", "picture", "audio", "music",
+        "sound", "video", "videos", "movie", "archive", "zip", "app", "binary", "other",
+    ]
 
     static let regexPrefixes = ["re:", "regex:"]
     static let modePrefixes = ["re:", "regex:", "find:", "exact:", "grep:", "fuzzy:", "f:"]
@@ -155,7 +165,9 @@ public enum QueryFilters {
             value.removeFirst()
             if value.hasSuffix("\"") { value.removeLast() }
         }
-        guard !value.isEmpty, allKeys.contains(key.lowercased()) else {
+        let isKnownIs = key.lowercased() != "is"
+            || value.lowercased().split(separator: ",").contains { kindAliases.contains(String($0)) }
+        guard !value.isEmpty, allKeys.contains(key.lowercased()), isKnownIs else {
             return Token(range: range, key: nil, value: "", negated: false)
         }
         return Token(range: range, key: key.lowercased(), value: value, negated: negated)

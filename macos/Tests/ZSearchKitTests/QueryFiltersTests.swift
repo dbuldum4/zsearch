@@ -32,6 +32,17 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.setting(Q.modifiedKeys, to: "today", in: "after:2024 x"), "x modified:today")
     }
 
+    func testIsTypeAliases() {
+        // `is:pdf` is a type filter, so picking another type replaces it.
+        XCTAssertEqual(Q.value(Q.typeKeys, in: "is:pdf budget"), "pdf")
+        XCTAssertEqual(Q.setting(Q.typeKeys, to: "image", in: "is:pdf budget"), "budget type:image")
+        XCTAssertEqual(Q.setting(Q.typeKeys, to: nil, in: "budget is:pdf"), "budget")
+        // An `is:` the engine doesn't know stays as text.
+        XCTAssertNil(Q.value(Q.typeKeys, in: "is:open"))
+        XCTAssertFalse(Q.hasFilters("is:open"))
+        XCTAssertEqual(Q.setting(Q.typeKeys, to: "pdf", in: "is:open"), "is:open type:pdf")
+    }
+
     func testQuotesValuesWithSpaces() {
         let q = Q.setting(Q.folderKeys, to: "~/My Folder", in: "notes")
         XCTAssertEqual(q, "notes in:\"~/My Folder\"")
