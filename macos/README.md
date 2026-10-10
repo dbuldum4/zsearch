@@ -12,6 +12,7 @@ zsearch.app/Contents/
 ## What it does
 
 - **Search** as you type, in names and contents (Find, ⌘1) or forgiving names (Fuzzy, ⌘2). ↑/↓ or ⌘J/⌘K move through results, Return opens, ⇧⌘R shows in Finder, ⇧⌘C copies the path, ⌘L returns to the search field.
+- **Filter** with the row under the search field: type, extension, folder, modified date, size and regex. Each control writes the same filter you could type (`type:pdf`, `in:~/Documents`, `re:`…), so the row and the query always agree.
 - **Preview** of the selected file with matches highlighted and the first match centered. Previews of the results around the selection are prefetched, so moving through the list doesn't wait on the engine.
 - **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
 - **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
