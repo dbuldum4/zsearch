@@ -184,6 +184,7 @@ export class ThreadSink implements ContentSink {
   private commits = 0
   private error: string | null = null
   private waiters: (() => void)[] = []
+  private checkpointed: (() => void) | null = null
 
   onProgress?: () => void
 
@@ -214,8 +215,11 @@ export class ThreadSink implements ContentSink {
     // Its failures do not matter: the writer's connection and the indexer's last checkpoint
     // do the copying anyway.
     this.checkpointer = new Worker(workerUrl("index/write-worker.ts"))
-    this.checkpointer.onerror = (ev) => ev.preventDefault?.()
-    this.checkpointer.onmessage = () => this.checkpointer.terminate()
+    this.checkpointer.onerror = (ev) => {
+      ev.preventDefault?.()
+      this.checkpointed?.()
+    }
+    this.checkpointer.onmessage = () => this.checkpointed?.()
     this.checkpointer.postMessage({ type: "open", path, role: "checkpointer" } satisfies WriteWorkerIn)
   }
 
@@ -254,10 +258,12 @@ export class ThreadSink implements ContentSink {
       this.checkpointer.terminate()
       throw new Error(this.error)
     }
-    // The last copy into the database goes on without holding up the end of the run (the
-    // indexer's own checkpoint skips what this one is doing). It is safe to cut short.
-    this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
-    this.checkpointer.unref()
+    // The last copy into the database: little is left by now, as the checkpointer kept up.
+    await new Promise<void>((resolve) => {
+      this.checkpointed = resolve
+      this.checkpointer.postMessage({ type: "checkpoint", last: true } satisfies WriteWorkerIn)
+    })
+    this.checkpointer.terminate()
   }
 
   abandon() {
