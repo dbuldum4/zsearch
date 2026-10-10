@@ -19,10 +19,10 @@ export interface ContentItem {
 
 /**
  * FTS5 writes out what it gathers whenever that passes `hashsize` (1 MB by default), and merges
- * the small segments as it goes: with 8 MB, building the index costs about a third less. A
- * transaction rarely gathers more, as the indexer commits about once a second.
+ * the small segments as it goes: with 4 MB, building the index costs about a third less.
+ * Larger sizes gain little more, and leave more free pages behind once segments are merged.
  */
-const FTS_HASH_SIZE = 8 << 20
+const FTS_HASH_SIZE = 4 << 20
 
 /**
  * Stores extracted contents: the file's FTS row, its compressed text and its state, plus the
