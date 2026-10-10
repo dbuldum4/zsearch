@@ -2,6 +2,7 @@ import { cpus } from "node:os"
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, type ExtractReply, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
+import { DOCUMENT_EXTS } from "../kinds.ts"
 
 /** Messages to an extraction worker: its options once, then batches of jobs. */
 export type ExtractWorkerIn = { opts: ExtractOptions } | { jobs: ExtractJob[] }
@@ -17,6 +18,8 @@ export class ExtractPool {
   private waiting = new Map<number, (r: ExtractReply) => void>()
   private owner = new Map<number, Worker>()
   private outbox = new Map<Worker, ExtractJob[]>()
+  /** The worker documents of each type go to while it has room: their parsers warm up once. */
+  private affinity = new Map<string, Worker>()
   private flushQueued = false
   private idleResolvers: (() => void)[] = []
   readonly size: number
@@ -56,6 +59,7 @@ export class ExtractPool {
     w.terminate()
     this.workers = this.workers.filter((x) => x !== w)
     this.assigned.delete(w)
+    for (const [ext, x] of this.affinity) if (x === w) this.affinity.delete(ext)
     this.outbox.delete(w)
     this.spawn()
     // The worker takes its jobs on in order, a few at a time: the first ones were running and
@@ -104,10 +108,18 @@ export class ExtractPool {
     })
   }
 
-  /** Queue a job on the least busy worker. What is queued in one turn of the event loop goes out together. */
+  /**
+   * Queue a job on the least busy worker, or a document on the worker that took the last of its
+   * type if that one has room. What is queued in one turn of the event loop goes out together.
+   */
   private send(job: ExtractJob) {
     let best = this.workers[0]!
     for (const w of this.workers) if (this.assigned.get(w)!.size < this.assigned.get(best)!.size) best = w
+    if (DOCUMENT_EXTS.has(job.ext)) {
+      const w = this.affinity.get(job.ext)
+      if (w && this.assigned.get(w)!.size < this.perWorker) best = w
+      else this.affinity.set(job.ext, best)
+    }
     this.assigned.get(best)!.set(job.id, job)
     this.owner.set(job.id, best)
     const box = this.outbox.get(best)
