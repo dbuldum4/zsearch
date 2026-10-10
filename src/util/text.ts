@@ -135,12 +135,16 @@ export function splitIdentifier(s: string): string[] {
     .filter(Boolean)
 }
 
+const PLAIN_PART = /^(?:[a-z]+|[0-9]+)$/
+
 /** Tokens for the FTS `name` column: words of the file name, including camelCase parts. */
 export function nameTokens(name: string): string {
   const words = new Set<string>()
   for (const part of name.split(/[^\p{L}\p{N}]+/u)) {
     if (!part) continue
     words.add(part)
+    // Most parts are plain lower-case words or numbers, which do not split.
+    if (PLAIN_PART.test(part)) continue
     const pieces = splitIdentifier(part)
     if (pieces.length > 1) for (const p of pieces) words.add(p)
   }

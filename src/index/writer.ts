@@ -32,6 +32,7 @@ export class ContentWriter {
   private manualDelete: boolean
   private inTx = false
   private tuned = false
+  /** New terms, a line each, in parts. */
   private fresh: string[] = []
   private st: Record<"setState" | "ftsInsert" | "ftsDeleteRow" | "ftsDeleteManual" | "contentGet" | "contentPut" | "contentDel" | "vocabPut", Statement>
 
@@ -62,7 +63,7 @@ export class ContentWriter {
         this.tuned = true
       }
     }
-    for (const t of fresh) this.fresh.push(t)
+    if (fresh.length) this.fresh.push(fresh.join("\n"))
     for (const item of items) this.store(item)
   }
 
@@ -158,7 +159,7 @@ export class InlineSink implements ContentSink {
 
 export type WriteWorkerIn =
   | { type: "open"; path: string; role: "writer" | "checkpointer" }
-  | { type: "write"; items: ContentItem[]; fresh: string[]; bytes: number }
+  | { type: "write"; items: ContentItem[]; fresh: string; bytes: number }
   | { type: "commit" }
   | { type: "checkpoint"; last?: boolean }
 export type WriteWorkerOut = { type: "written"; bytes: number } | { type: "committed" } | { type: "checkpointed" } | { type: "error"; error: string }
@@ -236,7 +237,8 @@ export class ThreadSink implements ContentSink {
     this.sent += bytes
     const transfer: ArrayBuffer[] = []
     for (const { reply: r } of items) if (r.status === "ok") transfer.push(r.body.buffer as ArrayBuffer, r.compressed.buffer as ArrayBuffer)
-    this.post({ type: "write", items, fresh, bytes }, transfer)
+    // One string: thousands of short ones cost much more to copy over.
+    this.post({ type: "write", items, fresh: fresh.join("\n"), bytes }, transfer)
   }
 
   commit() {

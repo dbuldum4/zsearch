@@ -1,4 +1,4 @@
-import { cpus } from "node:os"
+import { availableParallelism } from "node:os"
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, type ExtractReply, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
@@ -35,8 +35,9 @@ export class ExtractPool {
     for (let i = 0; i < this.size; i++) this.spawn()
   }
 
+  /** The cores this process may use, less the indexer's thread and the writer's, which keep one each busy. */
   static defaultSize(): number {
-    return Math.max(1, Math.min(8, cpus().length - 1))
+    return Math.max(1, Math.min(8, availableParallelism() - 2))
   }
 
   private spawn(): Worker {

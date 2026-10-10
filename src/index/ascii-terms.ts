@@ -4,18 +4,25 @@
  * extraction. The result is what `indexTerms` gives for the decoded text (see there).
  */
 
-/** Distinct words of a text, by where they first occur in it: a table started over for each text. */
-let seenHash = new Int32Array(4096)
-let seenStart = new Int32Array(4096)
-let seenLen = new Int32Array(4096)
-let seenGen = new Int32Array(4096)
+/** Per byte: 0 between words, BAD for bytes that are not plain text, else the lower-cased byte. */
+const BAD = 1
+const CLASS = new Uint8Array(256)
+for (let b = 0; b < 256; b++) {
+  if (b === 0 || b >= 0x80) CLASS[b] = BAD
+  else if ((b >= 97 && b <= 122) || (b >= 48 && b <= 57)) CLASS[b] = b
+  else if (b >= 65 && b <= 90) CLASS[b] = b | 0x20
+}
+
+/**
+ * Distinct words of a text, by where they first occur in it: a table started over for each
+ * text. Each slot is four numbers side by side (generation, hash, start, length), so that a
+ * lookup reads one cache line.
+ */
+let seen = new Int32Array(4096 * 4)
 let gen = 0
 
-/** Words already reported this run, kept in `arena`. */
-let doneHash = new Int32Array(1 << 16)
-let doneStart = new Int32Array(1 << 16)
-let doneLen = new Int32Array(1 << 16)
-let doneUsed = new Uint8Array(1 << 16)
+/** Words already reported this run, kept in `arena`: slots of (used, hash, start, length). */
+let done = new Int32Array((1 << 16) * 4)
 let doneCount = 0
 let arena = new Uint8Array(1 << 20)
 let arenaLen = 0
@@ -39,7 +46,7 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
     doneRun = run
   }
   if (++gen === 0x7fffffff) {
-    seenGen.fill(0)
+    seen.fill(0)
     gen = 1
   }
   const out = new Uint8Array(buf.length)
@@ -49,64 +56,66 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
   const n = buf.length
   let i = 0
   while (i < n) {
-    let b = buf[i]!
-    if (b >= 0x80 || b === 0) return null
-    if (!isWordByte(b)) {
+    let c = CLASS[buf[i]!]!
+    if (c <= BAD) {
+      if (c === BAD) return null
       i++
       continue
     }
+    // Written out as it goes, and taken back if it was seen already.
+    const at = outLen === 0 ? 0 : outLen + 1
+    let o = at
     const start = i
-    // FNV-1a of the lower-cased word. Letters and digits all have 0x20 set once lower-cased.
+    // FNV-1a of the lower-cased word.
     let h = 0x811c9dc5 | 0
     do {
-      h = Math.imul(h ^ (b | 0x20), 0x01000193)
-      b = ++i < n ? buf[i]! : 0x20
-    } while (isWordByte(b))
+      h = Math.imul(h ^ c, 0x01000193)
+      out[o++] = c
+      c = ++i < n ? CLASS[buf[i]!]! : 0
+    } while (c > BAD)
     const len = i - start
-    let mask = seenGen.length - 1
+    let mask = (seen.length >> 2) - 1
     let j = h & mask
-    let seen = false
-    while (seenGen[j] === gen) {
-      if (seenHash[j] === h && seenLen[j] === len && sameLower(buf, seenStart[j]!, buf, start, len)) {
-        seen = true
+    let dup = false
+    while (seen[j << 2] === gen) {
+      const s = j << 2
+      if (seen[s + 1] === h && seen[s + 3] === len && same(out, seen[s + 2]!, out, at, len)) {
+        dup = true
         break
       }
       j = (j + 1) & mask
     }
-    if (seen) continue
-    seenGen[j] = gen
-    seenHash[j] = h
-    seenStart[j] = start
-    seenLen[j] = len
-    if (++words * 2 > seenGen.length) growSeen()
-    if (outLen) out[outLen++] = 0x20
-    const at = outLen
-    for (let k = start; k < i; k++) out[outLen++] = buf[k]! | 0x20
-    if (len <= 64 && report(out, at, len, h)) fresh.push(latin1.decode(out.subarray(at, at + len)))
+    if (dup) continue
+    const s = j << 2
+    seen[s] = gen
+    seen[s + 1] = h
+    seen[s + 2] = at
+    seen[s + 3] = len
+    if (++words * 2 > mask + 1) growSeen()
+    if (at) out[at - 1] = 0x20
+    outLen = o
+    if (len <= 64 && report(out, at, len, h)) fresh.push(latin1.decode(out.subarray(at, o)))
   }
   return { body: out.slice(0, outLen), fresh }
 }
 
-function isWordByte(b: number): boolean {
-  return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57)
-}
-
-function sameLower(a: Uint8Array, i: number, b: Uint8Array, j: number, len: number): boolean {
-  for (let k = 0; k < len; k++) if ((a[i + k]! | 0x20) !== (b[j + k]! | 0x20)) return false
+function same(a: Uint8Array, i: number, b: Uint8Array, j: number, len: number): boolean {
+  for (let k = 0; k < len; k++) if (a[i + k] !== b[j + k]) return false
   return true
 }
 
 /** Record a lower-cased word as reported; false if it was already. */
 function report(word: Uint8Array, at: number, len: number, h: number): boolean {
-  let mask = doneUsed.length - 1
+  let mask = (done.length >> 2) - 1
   let j = h & mask
-  while (doneUsed[j]) {
-    if (doneHash[j] === h && doneLen[j] === len && sameLower(arena, doneStart[j]!, word, at, len)) return false
+  while (done[j << 2]) {
+    const s = j << 2
+    if (done[s + 1] === h && done[s + 3] === len && same(arena, done[s + 2]!, word, at, len)) return false
     j = (j + 1) & mask
   }
   if (doneCount >= MAX_DONE) {
     clearDone()
-    mask = doneUsed.length - 1
+    mask = (done.length >> 2) - 1
     j = h & mask
   }
   if (arenaLen + len > arena.length) {
@@ -115,60 +124,40 @@ function report(word: Uint8Array, at: number, len: number, h: number): boolean {
     arena = bigger
   }
   arena.set(word.subarray(at, at + len), arenaLen)
-  doneUsed[j] = 1
-  doneHash[j] = h
-  doneStart[j] = arenaLen
-  doneLen[j] = len
+  const s = j << 2
+  done[s] = 1
+  done[s + 1] = h
+  done[s + 2] = arenaLen
+  done[s + 3] = len
   arenaLen += len
-  if (++doneCount * 2 > doneUsed.length) growDone()
+  if (++doneCount * 2 > mask + 1) growDone()
   return true
 }
 
 function clearDone() {
-  doneUsed.fill(0)
+  done.fill(0)
   doneCount = 0
   arenaLen = 0
 }
 
-/** Double the table of the current text's words. */
-function growSeen() {
-  const size = seenGen.length * 2
-  const hash = new Int32Array(size)
-  const start = new Int32Array(size)
-  const len = new Int32Array(size)
-  const g = new Int32Array(size)
-  for (let i = 0; i < seenGen.length; i++) {
-    if (seenGen[i] !== gen) continue
-    let j = seenHash[i]! & (size - 1)
-    while (g[j] === gen) j = (j + 1) & (size - 1)
-    g[j] = gen
-    hash[j] = seenHash[i]!
-    start[j] = seenStart[i]!
-    len[j] = seenLen[i]!
+/** Double a table of (marker, hash, start, length) slots, keeping the slots marked `mark`. */
+function grow(table: Int32Array<ArrayBuffer>, mark: number): Int32Array<ArrayBuffer> {
+  const size = table.length >> 2
+  const bigger = new Int32Array(table.length * 2)
+  const mask = size * 2 - 1
+  for (let i = 0; i < table.length; i += 4) {
+    if (table[i] !== mark) continue
+    let j = table[i + 1]! & mask
+    while (bigger[j << 2] === mark) j = (j + 1) & mask
+    bigger.set(table.subarray(i, i + 4), j << 2)
   }
-  seenHash = hash
-  seenStart = start
-  seenLen = len
-  seenGen = g
+  return bigger
+}
+
+function growSeen() {
+  seen = grow(seen, gen)
 }
 
 function growDone() {
-  const size = doneUsed.length * 2
-  const hash = new Int32Array(size)
-  const start = new Int32Array(size)
-  const len = new Int32Array(size)
-  const used = new Uint8Array(size)
-  for (let i = 0; i < doneUsed.length; i++) {
-    if (!doneUsed[i]) continue
-    let j = doneHash[i]! & (size - 1)
-    while (used[j]) j = (j + 1) & (size - 1)
-    used[j] = 1
-    hash[j] = doneHash[i]!
-    start[j] = doneStart[i]!
-    len[j] = doneLen[i]!
-  }
-  doneHash = hash
-  doneStart = start
-  doneLen = len
-  doneUsed = used
+  done = grow(done, 1)
 }

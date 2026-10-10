@@ -27,7 +27,7 @@ self.onmessage = (ev: MessageEvent<WriteWorkerIn>) => {
   try {
     if (msg.type === "open") writer = openWriter(msg.path)
     else if (msg.type === "write") {
-      writer!.write(msg.items, msg.fresh)
+      writer!.write(msg.items, msg.fresh ? [msg.fresh] : [])
       send({ type: "written", bytes: msg.bytes })
     } else {
       writer!.commit()
