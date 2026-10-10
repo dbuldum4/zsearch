@@ -121,14 +121,18 @@ export function tidyCells(s: string): string {
   return s.replace(/\n+\t/g, "\t").replace(/\t+\n/g, "\n")
 }
 
-/** Collapse runs of blank lines and trailing whitespace. */
+/**
+ * Collapse runs of blank lines and trailing whitespace. Page breaks (form feeds) before text are
+ * kept, including those of pages without text, so the Nth break still starts the (N+1)th page.
+ * Breaks at the end start no page with text and are dropped.
+ */
 export function tidy(s: string): string {
   return s
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t\n]*\f\s*/g, "\f")
-    .replace(/^\s+|\s+$/g, "")
+    .replace(/[ \t\n]*\f[^\S\f]*/g, "\f")
+    .replace(/^[^\S\f]+|\s+$/g, "")
 }
 
 const HTML_BLOCK = new Set(

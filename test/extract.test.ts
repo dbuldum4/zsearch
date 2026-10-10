@@ -70,6 +70,20 @@ describe("document extractors", () => {
     }
   })
 
+  test("pdf: pages without text keep their place", async () => {
+    const pages = ["", "Calvin cycle on the second page", "", "Krebs cycle on the fourth page"]
+    expect((await ext("pages/blank-pages.pdf")).split("\f")).toEqual(pages)
+    process.env.ZSEARCH_NO_PDFTOTEXT = "1"
+    try {
+      const { extractPdf } = await import("../src/index/extract/pdf.ts")
+      const p = join(FIXTURES, "pages/blank-pages.pdf")
+      const t = await extractPdf(p, async () => new Uint8Array(await Bun.file(p).arrayBuffer()))
+      expect(t.split("\f")).toEqual(pages)
+    } finally {
+      delete process.env.ZSEARCH_NO_PDFTOTEXT
+    }
+  })
+
   test("OpenDocument text, spreadsheet and presentation", async () => {
     expect(await ext("docs/notes.odt")).toBe("Garden journal\nPlanted tomatoes\tand basil  today.\nRain expected & wind.")
     expect(await ext("docs/sheet.ods")).toBe("Apples\t17")

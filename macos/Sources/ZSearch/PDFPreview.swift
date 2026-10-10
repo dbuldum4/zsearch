@@ -65,34 +65,62 @@ struct PDFPreviewView: NSViewRepresentable {
 
         let sameFile = view.document === document
         if !sameFile { view.document = document }
-        let highlights = Self.highlights(for: preview, in: document)
-        view.highlightedSelections = highlights.isEmpty ? nil : highlights
+        let focus = Self.focus(of: preview, in: document)
+        let highlights = Self.highlights(for: preview, focus: focus, in: document)
+        view.highlightedSelections = highlights.isEmpty ? nil : highlights.map(\.selection)
         // A refresh of the same file keeps the reader's place; anything else goes to the match.
         if sameFile, previous?.id == preview.id, previous?.focusLine == preview.focusLine { return }
-        Self.reveal(preview, highlights: highlights, in: view)
+        Self.reveal(focus, highlights: highlights, in: view)
         // Layout may not be final on the first pass (a newly shown pane has no size yet).
-        DispatchQueue.main.async { Self.reveal(preview, highlights: highlights, in: view) }
+        DispatchQueue.main.async { Self.reveal(focus, highlights: highlights, in: view) }
     }
 
-    /// The 0-based page the preview is focused on, as far as the document has pages.
-    static func focusPage(of p: FilePreview, in document: PDFDocument) -> Int {
-        min(PageMap.page(ofLine: p.focusLine, pageStarts: p.pageStarts), document.pageCount - 1)
+    /// Where the focused match is: its page, how far that is from the page the indexed text's page
+    /// breaks point to, and its place on the page when it could be found there.
+    struct Focus {
+        var page: Int
+        var shift: Int
+        var range: NSRange?
+    }
+
+    struct Highlight {
+        var page: Int
+        var range: NSRange
+        var selection: PDFSelection
+    }
+
+    /// The page of the focus line. Its indexed text counts pages by their form feeds, which can
+    /// miss pages without text (a blank or scanned cover, say; older indexes dropped those), so
+    /// the line is looked for on that page and then on the pages after it, the way it can only
+    /// have moved, and on a few pages before it in case PDFKit splits the pages differently.
+    static func focus(of p: FilePreview, in document: PDFDocument) -> Focus {
+        let count = document.pageCount
+        let estimate = min(PageMap.page(ofLine: p.focusLine, pageStarts: p.pageStarts), count - 1)
+        let candidates = Array(estimate..<min(count, estimate + 40)) + Array(max(0, estimate - 3)..<estimate).reversed()
+        for index in candidates {
+            guard let text = document.page(at: index)?.string else { continue }
+            if let range = PageMap.locate(focusOf: p, in: text) {
+                return Focus(page: index, shift: index - estimate, range: range)
+            }
+        }
+        return Focus(page: estimate, shift: 0, range: nil)
     }
 
     /// The matched words on the pages that have matches (the focus page first). Only those pages
     /// are searched, so a long document doesn't stall the switch to it.
-    static func highlights(for p: FilePreview, in document: PDFDocument) -> [PDFSelection] {
+    static func highlights(for p: FilePreview, focus: Focus, in document: PDFDocument) -> [Highlight] {
         let terms = PageMap.matchedTerms(p)
         guard !terms.isEmpty else { return [] }
-        let focus = focusPage(of: p, in: document)
-        var pages = [focus]
-        for page in PageMap.pages(ofLines: p.matchLines, pageStarts: p.pageStarts).prefix(200)
-        where page != focus && page < document.pageCount {
-            pages.append(page)
+        var pages = [focus.page]
+        for mapped in PageMap.pages(ofLines: p.matchLines, pageStarts: p.pageStarts).prefix(200) {
+            // Pages missing before the focus line are missing before the later matches too.
+            for page in Set([mapped, mapped + focus.shift]) where page >= 0 && page < document.pageCount && !pages.contains(page) {
+                pages.append(page)
+            }
         }
 
         let color = NSColor.systemYellow.withAlphaComponent(0.5)
-        var out: [PDFSelection] = []
+        var out: [Highlight] = []
         for index in pages {
             guard let page = document.page(at: index), let string = page.string else { continue }
             let text = string as NSString
@@ -108,20 +136,22 @@ struct PDFPreviewView: NSViewRepresentable {
                     taken.append(found)
                     guard let selection = page.selection(for: found) else { continue }
                     selection.color = color
-                    out.append(selection)
+                    out.append(Highlight(page: index, range: found, selection: selection))
                 }
             }
         }
         return out
     }
 
-    /// Scroll to the first highlight on the focus page, or to the top of that page if it has none.
-    static func reveal(_ p: FilePreview, highlights: [PDFSelection], in view: PDFView) {
-        guard let document = view.document, document.pageCount > 0,
-              let page = document.page(at: focusPage(of: p, in: document)) else { return }
-        if let first = highlights.first(where: { $0.pages.contains(page) }) {
+    /// Scroll to the focused match; if it couldn't be placed on the page, to the earliest
+    /// highlight there in reading order, or else to the top of the page.
+    static func reveal(_ focus: Focus, highlights: [Highlight], in view: PDFView) {
+        guard let document = view.document, let page = document.page(at: focus.page) else { return }
+        let earliest = highlights.filter { $0.page == focus.page }.min { $0.range.location < $1.range.location }
+        let range = focus.range ?? earliest?.range
+        if let range, let selection = page.selection(for: range) {
             // Leave some room above the match rather than pinning it to the top edge.
-            var rect = first.bounds(for: page)
+            var rect = selection.bounds(for: page)
             rect.origin.y += 120
             view.go(to: rect, on: page)
         } else {
