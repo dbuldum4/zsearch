@@ -130,6 +130,8 @@ struct PreviewTextView: NSViewRepresentable {
         let highlight: [NSAttributedString.Key: Any] = [.backgroundColor: NSColor.systemYellow.withAlphaComponent(0.35)]
         let digits = String(p.lines.last?.n ?? 1).count
         let matches = Set(p.matchLines)
+        // Code is colored by its file type; plain text, PDFs and other documents stay plain.
+        var syntax = p.isDir ? nil : SyntaxLanguage.forPath(p.path).map { SyntaxHighlighter(language: $0) }
 
         let out = NSMutableAttributedString()
         var focus: NSRange?
@@ -140,8 +142,12 @@ struct PreviewTextView: NSViewRepresentable {
             out.append(NSAttributedString(string: pad + number + "  ", attributes: matches.contains(line.n) ? matchGutter : gutter))
             let textStart = out.length
             out.append(NSAttributedString(string: line.text, attributes: body))
-            // Engine ranges are UTF-16 offsets, the same unit NSString uses.
+            // Syntax tokens and engine ranges are UTF-16 offsets, the same unit NSString uses.
             let length = (line.text as NSString).length
+            for t in syntax?.tokens(line.text) ?? [] where t.start < t.end && t.end <= length {
+                out.addAttribute(.foregroundColor, value: syntaxColor(t.kind), range: NSRange(location: textStart + t.start, length: t.end - t.start))
+            }
+            // Matches are a background, so highlighted code keeps its colors.
             for r in line.ranges where r.count == 2 {
                 let a = max(0, r[0]), b = min(r[1], length)
                 if a < b { out.addAttributes(highlight, range: NSRange(location: textStart + a, length: b - a)) }
@@ -150,6 +156,17 @@ struct PreviewTextView: NSViewRepresentable {
             if line.n == p.focusLine { focus = NSRange(location: start, length: out.length - start) }
         }
         return (out, focus)
+    }
+
+    static func syntaxColor(_ kind: SyntaxKind) -> NSColor {
+        switch kind {
+        case .keyword: return .systemPink
+        case .type: return .systemPurple
+        case .string: return .systemRed
+        case .number: return .systemBlue
+        case .comment: return .secondaryLabelColor
+        case .meta: return .systemOrange
+        }
     }
 
     static func center(_ range: NSRange?, in textView: NSTextView, scroll: NSScrollView) {
