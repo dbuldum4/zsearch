@@ -158,8 +158,8 @@ struct KindBadge: View {
 
 struct PreviewPane: View {
     @Environment(SearchModel.self) private var model
-    /// PDFs show their pages unless the reader picked the extracted text instead.
-    @AppStorage("pdfShowsText") private var pdfShowsText = false
+    /// PDFs show their pages unless the reader picked the extracted text instead, here or in Settings.
+    @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
 
     var body: some View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
