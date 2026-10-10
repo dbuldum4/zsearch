@@ -110,6 +110,7 @@ describe("MCP protocol", () => {
   test("argument checking", () => {
     const schema = { type: "object", properties: { tags: { type: "array", items: { type: "string" } }, on: { type: "boolean" }, n: { type: "number" }, v: { type: ["string", "number"] } }, additionalProperties: false }
     expect(checkArgs(schema, { tags: "a", on: "true", n: "1.5", v: 3 })).toEqual({ value: { tags: ["a"], on: true, n: 1.5, v: 3 }, errors: [] })
+    expect(checkArgs({ type: "object", properties: { s: { type: "string" }, t: { type: "string" }, u: { type: "string" } } }, { s: 3, t: true, u: ["a", "b"] }).value).toEqual({ s: "3", t: "true", u: '["a","b"]' })
     expect(checkArgs(schema, { on: "maybe", n: "x", v: false }).errors).toEqual(["on should be boolean, not string", "n should be number, not string", "v should be string or number, not boolean"])
   })
 })
@@ -133,6 +134,8 @@ describe("MCP tool helpers", () => {
     expect(withSetting(c, "content.maxTextMB", 4).content.maxTextMB).toBe(4)
     expect(withSetting(c, "roots", "~/a, ~/b").roots).toEqual(["~/a", "~/b"])
     expect(withSetting(c, "exclude", ["*.log"]).exclude).toEqual(["*.log"])
+    expect(withSetting(c, "roots", '["~/My, Folder", "~/b"]').roots).toEqual(["~/My, Folder", "~/b"])
+    expect(() => withSetting(c, "roots", "[oops")).toThrow("expects a list of strings")
     expect(c.includeHidden).toBe(false)
     expect(() => withSetting(c, "indexLoad", 150)).toThrow("indexLoad must be a whole number from 10 to 100")
     expect(() => withSetting(c, "defaultMode", "regex")).toThrow('must be "find" or "fuzzy"')
@@ -297,6 +300,8 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect((await c.call("get_config", { key: "exclude" })).data.value).toEqual(["*.md"])
   expect((await c.call("get_config")).data.config.roots).toEqual(["~"])
   expect((await c.call("set_config", { key: "indexLoad", value: 5 })).isError).toBe(true)
+  expect((await c.call("set_config", { key: "autoRefreshMinutes", value: "0" })).data.value).toBe(0)
+  expect((await c.call("set_config", { key: "includeHidden", value: false })).data.value).toBe(false)
   // The excluded files leave the index at the next update.
   expect((await c.call("update_index", { wait_seconds: 60 })).data.status).toBe("done")
   expect((await c.call("search", { query: "renew passport" })).data.hits).toEqual([])

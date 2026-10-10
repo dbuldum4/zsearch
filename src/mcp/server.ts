@@ -35,11 +35,12 @@ import {
   ToolError,
 } from "./rpc.ts"
 
-export const INSTRUCTIONS = `zsearch searches the files on this computer that the user chose to index: their names and folders, and the text inside PDFs, Word, Excel, PowerPoint and OpenDocument files, EPUB, e-mail, Jupyter notebooks, code, Markdown and plain text. Everything stays on this computer.
+// Some clients (Codex) weigh the first 512 characters most, so the first paragraph stands alone.
+export const INSTRUCTIONS = `zsearch searches the user's indexed files on this computer, by name and by the text inside them (PDF, Office, EPUB, e-mail, notebooks, code, text). Use \`search\` to find files, then \`read_file\` to read a file's text around the matches. Only indexed folders are searched: \`index_status\` shows which, and \`update_index\` refreshes the index or indexes other folders.
 
-- Use \`search\` to find files. By default it finds the exact text you give in file names and contents (case-insensitive unless the query has a capital letter); set \`regex\` for a regular expression, or mode "fuzzy" for a file name you only half remember. Narrow results with \`type\` (doc, pdf, sheet, slides, code, image, folder…), \`ext\`, \`folder\`, \`modified\` and \`size\`. An empty query lists recently opened and modified files.
-- Use \`read_file\` to read a file's text (the text zsearch extracted, so it works for PDFs and Office files too). Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
-- Only indexed folders are searched. \`index_status\` shows which folders are indexed and how fresh the index is; \`update_index\` refreshes it or indexes other folders.`
+- \`search\` finds the exact text you give in file names and contents by default (case-insensitive unless the query has a capital letter); set \`regex\` for a regular expression, or mode "fuzzy" for a file name you only half remember. Narrow results with \`type\` (doc, pdf, sheet, slides, code, image, folder…), \`ext\`, \`folder\`, \`modified\` and \`size\`. An empty query lists recently opened and modified files.
+- \`read_file\` reads the text zsearch extracted, so it works for PDFs and Office files too. Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
+- Everything stays on this computer.`
 
 /** Lines of text a read_file call returns at most. */
 const MAX_READ_LINES = 2000
@@ -468,7 +469,13 @@ export function withSetting(config: Config, key: string, raw: unknown): Config {
   const cur = getKey(config, key)
   let value: unknown = raw
   if (Array.isArray(cur)) {
-    if (typeof raw === "string") value = raw.split(",").map((s) => s.trim()).filter(Boolean)
+    if (typeof raw === "string") {
+      try {
+        value = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",")
+      } catch {
+        throw new ToolError(`${key} expects a list of strings: a JSON array or comma-separated items`)
+      }
+    }
     if (!Array.isArray(value) || value.some((x) => typeof x !== "string")) throw new ToolError(`${key} expects a list of strings`)
     value = (value as string[]).map((s) => s.trim()).filter(Boolean)
   } else if (typeof cur === "boolean") {
@@ -750,7 +757,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
     inputSchema: obj({
       roots: strList('Folders to index from now on, e.g. ["~/Documents", "~/code"] or ["~"] for the whole home folder'),
       rebuild: bool("Throw away the index and build it again from scratch", false),
-      wait_seconds: int("Wait this long for indexing to finish (0: return at once)", 0, 600, 0),
+      wait_seconds: int("Wait this long for indexing to finish (0: return at once). Many apps stop waiting for a tool after about 60 seconds, so for a long run return at once and follow it with index_status", 0, 600, 0),
     }),
     outputSchema: loose({ status: str("started, running (already), busy (another process is indexing), done, cancelled or error"), ...STATE_SCHEMA.properties }, ["status", "files", "indexing"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -846,7 +853,8 @@ Settings that change what is indexed apply at the next update_index.`,
     inputSchema: obj(
       {
         key: str("The setting, dotted (e.g. includeHidden, content.maxTextMB)", { enum: CONFIG_KEYS }),
-        value: { type: ["string", "number", "boolean", "array"], items: { type: "string" }, description: "The new value: a string, number, boolean, or list of strings" },
+        // A string, not a union of types: some model providers reject unions in tool schemas.
+        value: str('The new value as text: true or false, a number, a string, or for a list a JSON array (["~/Documents", "~/code"]) or comma-separated items'),
       },
       ["key", "value"],
     ),

@@ -191,7 +191,7 @@ The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application
 
 ## Use it from Claude and other AI apps (MCP)
 
-`zsearch mcp` runs zsearch as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop and other MCP clients can search your files and read what is in them. It uses the same index and settings as the terminal app and the Mac app, and everything still stays on your machine: the assistant only sees the results and file text it asks for, and only from the folders you indexed.
+`zsearch mcp` runs zsearch as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop, Codex, OpenCode and other MCP clients can search your files and read what is in them. It uses the same index and settings as the terminal app and the Mac app, and everything still stays on your machine: the assistant only sees the results and file text it asks for, and only from the folders you indexed.
 
 **Claude Code**
 
@@ -211,7 +211,33 @@ claude mcp add --scope user zsearch -- zsearch mcp
 
 Desktop apps don't see your shell's `PATH`, so give the full path. For a standalone binary (`bun run build`) it's where you copied it (`command -v zsearch` shows it). With `bun link` from a clone, run it with Bun: `"command": "/Users/you/.bun/bin/bun", "args": ["/path/to/zsearch/src/main.ts", "mcp"]`. If you have the Mac app, its engine works too: `"command": "/Users/you/Applications/zsearch.app/Contents/Helpers/zsearch"`.
 
-Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mcp`.
+**Codex**
+
+```sh
+codex mcp add zsearch -- zsearch mcp
+```
+
+This writes the server to `~/.codex/config.toml`, which you can also edit by hand:
+
+```toml
+[mcp_servers.zsearch]
+command = "zsearch"
+args = ["mcp"]
+tool_timeout_sec = 300   # optional: Codex stops waiting for a tool after 60 s by default, which cuts short a long `update_index` wait
+```
+
+**OpenCode.** Add zsearch under `mcp` in `~/.config/opencode/opencode.json` (or a project's `opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "zsearch": { "type": "local", "command": ["zsearch", "mcp"] }
+  }
+}
+```
+
+Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mcp`. Every client gets the tools below. The resources and prompts show up only in clients that support them.
 
 | Tool | What it does |
 | --- | --- |

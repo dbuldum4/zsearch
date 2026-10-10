@@ -394,7 +394,8 @@ function typeMatches(want: string, v: unknown): boolean {
 /**
  * Check tool arguments against the subset of JSON Schema the tools use, filling in defaults.
  * It forgives what models commonly get slightly wrong: a number or boolean sent as a string,
- * or a single string where a list of strings is expected.
+ * a single string where a list of strings is expected, and a number, boolean or list of
+ * strings where a string is expected (a list becomes its JSON text).
  */
 export function checkArgs(schema: JsonSchema, value: unknown, path = ""): { value: Record<string, unknown>; errors: string[] } {
   const errors: string[] = []
@@ -408,6 +409,8 @@ function coerce(schema: JsonSchema, v: unknown, path: string, errors: string[]):
     if (typeof v === "string" && (types.includes("integer") || types.includes("number")) && v.trim() !== "" && Number.isFinite(Number(v))) v = Number(v)
     else if (typeof v === "string" && types.includes("boolean") && /^(true|false)$/i.test(v)) v = v.toLowerCase() === "true"
     else if (typeof v === "string" && types.includes("array") && (schema.items?.type ?? "string") === "string") v = [v]
+    else if (types.length === 1 && types[0] === "string" && (typeof v === "number" || typeof v === "boolean")) v = String(v)
+    else if (types.length === 1 && types[0] === "string" && Array.isArray(v) && v.every((x) => typeof x === "string")) v = JSON.stringify(v)
     if (!types.some((t) => typeMatches(t, v))) {
       errors.push(`${path} should be ${types.join(" or ")}, not ${typeOf(v)}`)
       return v
