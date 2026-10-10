@@ -1,11 +1,10 @@
-import { availableParallelism } from "node:os"
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, type ExtractReply, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
 import { DOCUMENT_EXTS } from "../kinds.ts"
 
 /** Messages to an extraction worker: its options once, then batches of jobs. */
-export type ExtractWorkerIn = { opts: ExtractOptions } | { jobs: ExtractJob[] }
+export type ExtractWorkerIn = { opts: ExtractOptions; backgroundDisk: boolean } | { jobs: ExtractJob[] }
 
 /**
  * A small pool of extraction workers with at most `perWorker` jobs queued each. Jobs go out in
@@ -34,6 +33,8 @@ export class ExtractPool {
     private opts: ExtractOptions,
     private perWorker = 2,
     private inProcess = false,
+    /** The workers read files at a low disk priority (see `backgroundDisk`). */
+    private backgroundDisk = false,
   ) {
     this.size = Math.max(1, size)
     if (inProcess) return
@@ -48,11 +49,6 @@ export class ExtractPool {
     }
   }
 
-  /** The cores this process may use, less the indexer's thread and the writer's, which keep one each busy. */
-  static defaultSize(): number {
-    return Math.max(1, Math.min(8, availableParallelism() - 2))
-  }
-
   private spawn(): Worker {
     const w = new Worker(workerUrl("index/extract-worker.ts"))
     w.onmessage = (ev: MessageEvent<ExtractReply>) => this.finish(w, ev.data)
@@ -61,7 +57,7 @@ export class ExtractPool {
       ev.preventDefault?.()
       this.replace(w, (ev as ErrorEvent).message || "extraction worker crashed")
     }
-    const init: ExtractWorkerIn = { opts: this.opts }
+    const init: ExtractWorkerIn = { opts: this.opts, backgroundDisk: this.backgroundDisk }
     w.postMessage(init)
     this.workers.push(w)
     this.assigned.set(w, new Map())

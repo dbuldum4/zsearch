@@ -1,15 +1,22 @@
 /**
- * The index terms of plain ASCII text, straight from its bytes: most files are, and decoding
- * them, lower-casing them and making a string of every word costs more than the rest of their
- * extraction. The result is what `indexTerms` gives for the decoded text (see there).
+ * The index terms of a UTF-8 text, straight from its bytes: most files are plain ASCII or
+ * nearly so, and decoding them, lower-casing them and making a string of every word costs more
+ * than the rest of their extraction. The result is what `indexTerms` gives for the decoded text
+ * (see there).
  */
+import { isUtf8 } from "node:buffer"
+import { uniqueTerms } from "../util/text.ts"
 
-/** Per byte: 0 between words, BAD for bytes that are not plain text, else the lower-cased byte. */
+/**
+ * Per byte: 0 between words, BAD for NUL (which extraction drops), else the byte the word holds:
+ * ASCII letters lower-cased, and bytes of other characters as they are. Only ASCII characters
+ * other than letters and digits separate words, as in `indexTerms`.
+ */
 const BAD = 1
 const CLASS = new Uint8Array(256)
 for (let b = 0; b < 256; b++) {
-  if (b === 0 || b >= 0x80) CLASS[b] = BAD
-  else if ((b >= 97 && b <= 122) || (b >= 48 && b <= 57)) CLASS[b] = b
+  if (b === 0) CLASS[b] = BAD
+  else if ((b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b >= 0x80) CLASS[b] = b
   else if (b >= 65 && b <= 90) CLASS[b] = b | 0x20
 }
 
@@ -29,23 +36,33 @@ let doneCount = 0
 let arena = new Uint8Array(1 << 20)
 let arenaLen = 0
 let doneRun = ""
+/** Reported terms of words with other characters than ASCII ones, as strings: they are few. */
+const doneWide = new Set<string>()
+const NO_WORDS = new Int32Array(0)
 /** As for the other texts' terms (see extract-job.ts): reporting a few twice does no harm. */
 const MAX_DONE = 250_000
 
 const latin1 = new TextDecoder("latin1")
+const utf8 = new TextDecoder()
 
-export interface AsciiTerms {
-  /** The distinct words, lower-cased, separated by spaces: the FTS body, in UTF-8. */
+export interface ByteTerms {
+  /** The distinct words, ASCII letters lower-cased, separated by spaces: the FTS body, in UTF-8. */
   body: Uint8Array
+  /** How many more bytes the text has than UTF-16 code units: its length is the bytes' less this. */
+  wide: number
   /**
-   * Words of at most 64 characters not reported before during `run`, which they now count as.
-   * Called once the result is sure to reach the indexer, and before the next `asciiTerms`.
+   * Terms not reported before during `run`, which they now count as (see `uniqueTerms`).
+   * Called once the result is sure to reach the indexer, and before the next `byteTerms`.
    */
   report(): string[]
 }
 
-/** Null when the text is not plain ASCII (or holds NUL bytes, which extraction drops). */
-export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
+/**
+ * Null when the bytes are not plain UTF-8 text that `indexTerms` would read the same: NUL bytes
+ * (extraction drops them), a byte order mark, invalid UTF-8, or no ASCII word at all (the text
+ * may be only white space other than ASCII, which extraction takes as empty).
+ */
+export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
   if (run !== doneRun) {
     clearDone()
     doneRun = run
@@ -57,6 +74,14 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
   const out = new Uint8Array(buf.length)
   let outLen = 0
   let words = 0
+  /** Distinct words with other bytes than ASCII ones, by number, and their count. */
+  let wideWords = NO_WORDS
+  let wideCount = 0
+  /** Bytes other than ASCII ones: UTF-8 continuation bytes, and the lead bytes of 4-byte characters. */
+  let cont = 0
+  let lead4 = 0
+  let asciiWord = false
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return null
   const n = buf.length
   let i = 0
   while (i < n) {
@@ -72,11 +97,18 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
     const start = i
     // FNV-1a of the lower-cased word.
     let h = 0x811c9dc5 | 0
+    let wide = false
     do {
       h = Math.imul(h ^ c, 0x01000193)
       out[o++] = c
+      if (c >= 0x80) {
+        wide = true
+        if (c < 0xc0) cont++
+        else if (c >= 0xf0) lead4++
+      }
       c = ++i < n ? CLASS[buf[i]!]! : 0
     } while (c > BAD)
+    if (!wide) asciiWord = true
     const len = i - start
     let mask = (seen.length >> 2) - 1
     let j = h & mask
@@ -101,24 +133,61 @@ export function asciiTerms(buf: Uint8Array, run: string): AsciiTerms | null {
       wordHash = bigger
     }
     wordHash[words] = h
+    if (wide) {
+      if (wideCount === wideWords.length) {
+        const bigger = new Int32Array(Math.max(64, wideCount * 2))
+        bigger.set(wideWords)
+        wideWords = bigger
+      }
+      wideWords[wideCount++] = words
+    }
     if (++words * 2 > mask + 1) growSeen()
     if (at) out[at - 1] = 0x20
     outLen = o
   }
+  if (wideCount && (!asciiWord || !isUtf8(buf))) return null
   // Only once the text is known to be plain, and its result sure to be sent: a word reported for
   // a text that then takes the other path (where it may be part of a longer word), or fails,
   // would never be reported again.
   const report = () => {
     const fresh: string[] = []
-    for (let k = 0, at = 0; k < words; k++) {
+    for (let k = 0, at = 0, w = 0; k < words; k++) {
       const end = k === words - 1 ? outLen : out.indexOf(0x20, at)
       const len = end - at
-      if (len <= 64 && markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
+      if (w < wideCount && wideWords[w] === k) {
+        // Characters other than ASCII ones may still separate words, or fold: as `indexTerms` does.
+        w++
+        for (const t of uniqueTerms(utf8.decode(out.subarray(at, end)))) {
+          if (ASCII_TERM.test(t)) {
+            if (markAscii(t)) fresh.push(t)
+            continue
+          }
+          if (doneWide.has(t)) continue
+          if (doneWide.size >= MAX_DONE) doneWide.clear()
+          doneWide.add(t)
+          fresh.push(t)
+        }
+      } else if (len <= 64 && markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
       at = end + 1
     }
     return fresh
   }
-  return { body: out.slice(0, outLen), report }
+  return { body: out.slice(0, outLen), wide: cont - lead4, report }
+}
+
+const ASCII_TERM = /^[a-z0-9]+$/
+let scratch = new Uint8Array(64)
+
+/** `markReported` for an ASCII term given as a string. */
+function markAscii(t: string): boolean {
+  if (scratch.length < t.length) scratch = new Uint8Array(t.length)
+  let h = 0x811c9dc5 | 0
+  for (let k = 0; k < t.length; k++) {
+    const c = t.charCodeAt(k)
+    scratch[k] = c
+    h = Math.imul(h ^ c, 0x01000193)
+  }
+  return markReported(scratch, 0, t.length, h)
 }
 
 function same(a: Uint8Array, i: number, b: Uint8Array, j: number, len: number): boolean {
@@ -157,6 +226,7 @@ function markReported(word: Uint8Array, at: number, len: number, h: number): boo
 }
 
 function clearDone() {
+  doneWide.clear()
   done.fill(0)
   doneCount = 0
   arenaLen = 0

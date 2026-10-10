@@ -146,6 +146,7 @@ const decoder = new TextDecoder()
  * Searches decompress every candidate, and both codecs cost tens of microseconds per call, so
  * small texts stay raw, mid-sized ones use deflate (cheapest per call) and large ones zstd
  * (fastest per byte). On a mixed corpus this stores about half the bytes of raw text.
+ * Deflate's level 1 compresses about twice as fast as level 4, for texts about a fifth larger.
  */
 const RAW_BELOW = 1024
 const ZSTD_FROM = 16 * 1024
@@ -164,7 +165,7 @@ export function compressText(text: string): Uint8Array {
 /** `compressText` of the text these UTF-8 bytes hold. */
 export function compressBytes(raw: Uint8Array<ArrayBuffer>): Uint8Array {
   if (raw.length >= RAW_BELOW) {
-    const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 3 }) : Bun.deflateSync(raw, { level: 4 })
+    const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 3 }) : Bun.deflateSync(raw, { level: 1 })
     if (z.length < raw.length) return withHeader(raw.length >= ZSTD_FROM ? 1 : 2, z)
   }
   return withHeader(0, raw)

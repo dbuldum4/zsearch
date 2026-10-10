@@ -1,6 +1,7 @@
 /** Worker entry: writes extracted contents to the index, or checkpoints its log (see ThreadSink). */
 import type { Database } from "bun:sqlite"
 import { openDb } from "./db.ts"
+import { backgroundDisk } from "./load.ts"
 import { type ContentWriter, openWriter, type WriteWorkerIn, type WriteWorkerOut } from "./writer.ts"
 
 declare const self: Worker
@@ -13,6 +14,7 @@ const send = (m: WriteWorkerOut) => postMessage(m)
 self.onmessage = (ev: MessageEvent<WriteWorkerIn>) => {
   const msg = ev.data
   if (failed) return
+  if (msg.type === "open" && msg.backgroundDisk) backgroundDisk()
   if (msg.type === "checkpoint" || (msg.type === "open" && msg.role === "checkpointer")) {
     try {
       if (msg.type === "open") checkpointDb = openDb(msg.path)

@@ -8,7 +8,7 @@ import { literalToFts, reqToFts, Vocab } from "../src/search/vocab.ts"
 import { editDistance, foldTerm, indexTerms, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
 import { Database } from "bun:sqlite"
 import { compressText } from "../src/index/db.ts"
-import { asciiTerms } from "../src/index/ascii-terms.ts"
+import { byteTerms } from "../src/index/byte-terms.ts"
 
 describe("query parsing", () => {
   const now = new Date("2024-06-15T12:00:00").getTime()
@@ -275,26 +275,47 @@ describe("text utilities", () => {
     expect(vocab("once")).toEqual(vocab("full"))
     expect(indexTerms("Plan plan PLAN 2 2").body).toBe("plan 2")
   })
+  test("index terms from UTF-8 bytes: as from the text, new terms once per run", () => {
+    const enc = (s: string) => new TextEncoder().encode(s)
+    const texts = [
+      "Crème brûlée, CRÈME Brulee! naïve façade Ångström e\u0301cole Don’t DON’T don't",
+      "東京都の検索 Привет мир, Straße STRASSE ﬁnance İstanbul 🎉 tab\tnbsp\u00a0em\u2003zero\u200bwidth x",
+      "Long " + "é".repeat(70) + " and " + "a".repeat(60) + "é ok",
+      "crème again, and Привет",
+    ]
+    const seen = new Set<string>()
+    for (const text of texts) {
+      const a = byteTerms(enc(text), "run 1")!
+      expect(new TextDecoder().decode(a.body)).toBe(indexTerms(text).body)
+      expect(enc(text).length - a.wide).toBe(text.length)
+      const fresh = [...indexTerms(text).terms].filter((t) => !seen.has(t))
+      for (const t of fresh) seen.add(t)
+      expect(a.report().sort()).toEqual(fresh.sort())
+    }
+    // Not read the way extraction would read them: these take the decoding path.
+    expect(byteTerms(new Uint8Array([0x61, 0x20, 0xc3, 0x28]), "run 2")).toBeNull()
+    expect(byteTerms(enc("\ufeffhello"), "run 2")).toBeNull()
+    expect(byteTerms(enc("\u00a0\u3000 —"), "run 2")).toBeNull()
+  })
   test("index terms from ASCII bytes: as from the text, new terms once per run", () => {
     const enc = (s: string) => new TextEncoder().encode(s)
     const texts = ["The the THE; plan-B: 42 x42 x_42 " + "y".repeat(80) + " " + "Y".repeat(80), "Plan plan PLAN 2 2 zeta", "", " -- "]
     const seen = new Set<string>()
     for (const text of texts) {
-      const a = asciiTerms(enc(text), "run 1")!
+      const a = byteTerms(enc(text), "run 1")!
       expect(new TextDecoder().decode(a.body)).toBe(indexTerms(text).body)
       const fresh = [...indexTerms(text).terms].filter((t) => !seen.has(t))
       for (const t of fresh) seen.add(t)
       expect(a.report()).toEqual(fresh)
     }
-    expect(asciiTerms(enc("plan zeta"), "run 2")!.report()).toEqual(["plan", "zeta"])
-    expect(asciiTerms(enc("café"), "run 2")).toBeNull()
-    expect(asciiTerms(enc("a\0b"), "run 2")).toBeNull()
+    expect(byteTerms(enc("plan zeta"), "run 2")!.report()).toEqual(["plan", "zeta"])
+    expect(byteTerms(enc("a\0b"), "run 2")).toBeNull()
     // A text that turns out not to be plain reports nothing: there the word may be longer.
-    expect(asciiTerms(enc("early xcfd\u03e1000"), "run 3")).toBeNull()
-    expect(asciiTerms(enc("early xcfd"), "run 3")!.report()).toEqual(["early", "xcfd"])
+    expect(byteTerms(enc("early xcfd\0"), "run 3")).toBeNull()
+    expect(byteTerms(enc("early xcfd"), "run 3")!.report()).toEqual(["early", "xcfd"])
     // Nor does one whose result is not sent (its compression failed).
-    expect(asciiTerms(enc("kiwi early"), "run 3")).not.toBeNull()
-    expect(asciiTerms(enc("kiwi"), "run 3")!.report()).toEqual(["kiwi"])
+    expect(byteTerms(enc("kiwi early"), "run 3")).not.toBeNull()
+    expect(byteTerms(enc("kiwi"), "run 3")!.report()).toEqual(["kiwi"])
   })
   test("plain ASCII files are stored and indexed as from their decoded text", async () => {
     const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs")

@@ -178,7 +178,8 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `content.maxTextMB` | `8` | Largest plain-text file to read |
 | `content.maxChars` | `2000000` | Text kept per file |
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
-| `workers` | `0` | Extraction threads (`0` = number of CPUs − 1, at most 8) |
+| `workers` | `0` | Extraction threads (`0` = automatic: the CPUs less two, at most 8, within `indexLoad`) |
+| `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
 | `editor` | `""` | Editor command (defaults to `$VISUAL` / `$EDITOR`) |
 | `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
 | `preview` | `true` | Show the preview pane |

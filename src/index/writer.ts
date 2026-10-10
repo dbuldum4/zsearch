@@ -164,7 +164,7 @@ export class InlineSink implements ContentSink {
 }
 
 export type WriteWorkerIn =
-  | { type: "open"; path: string; role: "writer" | "checkpointer" }
+  | { type: "open"; path: string; role: "writer" | "checkpointer"; backgroundDisk: boolean }
   | { type: "write"; items: ContentItem[]; fresh: string; bytes: number }
   | { type: "commit" }
   | { type: "checkpoint"; last?: boolean }
@@ -205,6 +205,8 @@ export class ThreadSink implements ContentSink {
   constructor(
     path: string,
     private onCommit?: () => void,
+    /** Both threads write at a low disk priority (see `backgroundDisk`). */
+    backgroundDisk = false,
   ) {
     this.worker = new Worker(workerUrl("index/write-worker.ts"))
     this.worker.onmessage = (ev: MessageEvent<WriteWorkerOut>) => {
@@ -226,7 +228,7 @@ export class ThreadSink implements ContentSink {
       this.onProgress?.()
       for (const w of this.waiters.splice(0)) w()
     }
-    this.post({ type: "open", path, role: "writer" })
+    this.post({ type: "open", path, role: "writer", backgroundDisk })
     // Its failures do not matter: the writer's connection and the indexer's last checkpoint
     // do the copying anyway.
     this.checkpointer = new Worker(workerUrl("index/write-worker.ts"))
@@ -236,7 +238,7 @@ export class ThreadSink implements ContentSink {
       this.checkpointed?.()
     }
     this.checkpointer.onmessage = () => this.checkpointed?.()
-    this.checkpointer.postMessage({ type: "open", path, role: "checkpointer" } satisfies WriteWorkerIn)
+    this.checkpointer.postMessage({ type: "open", path, role: "checkpointer", backgroundDisk } satisfies WriteWorkerIn)
   }
 
   private post(msg: WriteWorkerIn, transfer: ArrayBuffer[] = []) {
