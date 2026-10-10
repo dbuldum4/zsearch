@@ -154,11 +154,13 @@ describe("MCP tool helpers", () => {
 
 test("read_file finds the file when it reads it, so a rebuilt index cannot swap in another", async () => {
   const home = mkdtempSync(join(tmpdir(), "zsearch-read-"))
+  // The index lives outside home, so home holds one file each time and the rebuild reuses its id.
+  const dbDir = mkdtempSync(join(tmpdir(), "zsearch-read-db-"))
   const prevHome = process.env.HOME
   process.env.HOME = home
   try {
     writeFileSync(join(home, "old.txt"), "the old file\n")
-    const db = openDb(join(home, "index.db"))
+    const db = openDb(join(dbDir, "index.db"))
     const config = homeConfig()
     await new Indexer(db, config, { inProcess: true }).run()
     const engine = new SearchEngine(db, config)
@@ -178,6 +180,7 @@ test("read_file finds the file when it reads it, so a rebuilt index cannot swap 
   } finally {
     process.env.HOME = prevHome
     rmSync(home, { recursive: true, force: true })
+    rmSync(dbDir, { recursive: true, force: true })
   }
 })
 
