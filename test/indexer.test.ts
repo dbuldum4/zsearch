@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite"
 import { mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
-import { clearIndex, ContentState, decompressText, indexStats, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
+import { clearIndex, ContentState, decompressText, indexStats, loadVocabTerms, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
@@ -213,6 +213,58 @@ describe("indexer", () => {
   })
 
   afterAll(() => db.close())
+})
+
+/** Everything an index holds, by path: entries, stored texts, full-text rows and vocabulary. */
+function dump(db: Database) {
+  db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts_terms USING fts5vocab(main, fts, instance)")
+  return {
+    files: db.query("SELECT path, is_dir, kind, size, content_state, content_len, note, in_fts FROM files ORDER BY path").all(),
+    texts: (db.query("SELECT f.path, c.data FROM content c JOIN files f ON f.id = c.id ORDER BY f.path").all() as { path: string; data: Uint8Array }[]).map((r) => [r.path, decompressText(r.data)]),
+    fts: db.query("SELECT f.path, t.term, t.col FROM temp.fts_terms t JOIN files f ON f.id = t.doc ORDER BY f.path, t.term, t.col").all(),
+    vocab: [...loadVocabTerms(db)].sort(),
+  }
+}
+
+describe("threaded indexing (extraction workers, writer thread, extraction during the scan)", () => {
+  const fresh = (name: string) => {
+    const path = join(corpus.home, ".zsearch-data", name)
+    for (const f of [path, `${path}-wal`, `${path}-shm`]) rmSync(f, { force: true })
+    return openDb(path)
+  }
+
+  test("gives exactly the index of the in-process run", async () => {
+    const inline = fresh("inline.db")
+    const threaded = fresh("threaded.db")
+    expect((await index(inline)).phase).toBe("done")
+    expect((await new Indexer(threaded, homeConfig(), { inProcess: false }).run()).phase).toBe("done")
+    const want = dump(inline)
+    expect(want.texts.length).toBeGreaterThanOrEqual(20)
+    expect(dump(threaded)).toEqual(want)
+    inline.close()
+    threaded.close()
+  })
+
+  test("a run cancelled while storing contents is completed by the next one", async () => {
+    const clean = fresh("clean.db")
+    await index(clean)
+    const db = fresh("resumed.db")
+    const controller = new AbortController()
+    const r = await new Indexer(db, homeConfig(), {
+      signal: controller.signal,
+      onProgress: (p) => {
+        // Extractions started during the scan are in flight by then.
+        if (p.phase === "content") controller.abort()
+      },
+    }).run()
+    expect(r.phase).toBe("cancelled")
+    expect(indexStats(db).pending).toBeGreaterThan(0)
+    expect((await new Indexer(db, homeConfig()).run()).phase).toBe("done")
+    expect(dump(db)).toEqual(dump(clean))
+    expect(() => db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
+    clean.close()
+    db.close()
+  })
 })
 
 describe("classic FTS delete protocol (older SQLite)", () => {
