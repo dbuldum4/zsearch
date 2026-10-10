@@ -41,6 +41,12 @@ struct ZSearchApp: App {
                 Button("Show in Finder") { model.revealSelected() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(model.selectedHit == nil)
+                Button("Open in Editor") { model.openSelectedInEditor() }
+                    .keyboardShortcut("e")
+                    .disabled(model.selectedHit == nil)
+                Button(model.quickLookURL == nil ? "Quick Look" : "Close Quick Look") { model.toggleQuickLook() }
+                    .keyboardShortcut("y")
+                    .disabled(model.selectedHit == nil)
             }
             CommandMenu("Search") {
                 Button("Find in Names and Contents") { model.mode = .find; model.requestSearchFocus() }
@@ -54,6 +60,11 @@ struct ZSearchApp: App {
                     .keyboardShortcut("j")
                 Button("Previous Result") { model.moveSelection(by: -1) }
                     .keyboardShortcut("k")
+                Divider()
+                Button("Next Match in Preview") { model.jumpToMatch(by: 1) }
+                    .keyboardShortcut("g")
+                Button("Previous Match in Preview") { model.jumpToMatch(by: -1) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
 

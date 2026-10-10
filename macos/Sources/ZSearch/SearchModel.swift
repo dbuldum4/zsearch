@@ -24,8 +24,15 @@ final class SearchModel {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
     var selection: SearchHit.ID? {
-        didSet { if selection != oldValue { loadPreview() } }
+        didSet {
+            guard selection != oldValue else { return }
+            loadPreview()
+            // Quick Look follows the selection while it is open, as in Finder.
+            if quickLookURL != nil { quickLookURL = selectedHit.map { URL(fileURLWithPath: $0.path) } }
+        }
     }
+    /// The file shown in Quick Look, or nil when it is closed.
+    var quickLookURL: URL?
     var showSetup = false
     /// Bumped to ask the search field to take focus.
     private(set) var focusRequest = 0
@@ -439,6 +446,67 @@ final class SearchModel {
 
     func copySelectedPath() {
         if let hit = selectedHit { copyPath(hit) }
+    }
+
+    /// Open or close Quick Look on the selected file (Space in the list, ⌘Y).
+    func toggleQuickLook() {
+        quickLookURL = quickLookURL == nil ? selectedHit.map { URL(fileURLWithPath: $0.path) } : nil
+    }
+
+    /// The editor ⌘E uses: the one picked in Settings if it is installed, else the first installed one.
+    static func editor() -> (app: EditorApp, bundle: URL)? {
+        let picked = UserDefaults.standard.string(forKey: AppSettings.editor) ?? ""
+        let installed = EditorApp.known.compactMap { app in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID).map { (app: app, bundle: $0) }
+        }
+        return installed.first { $0.app.bundleID == picked } ?? installed.first
+    }
+
+    /// Open a file in the code editor at its match: the line the preview shows, or the hit's
+    /// first matching line. Documents and media open in their default app instead.
+    func openInEditor(_ hit: SearchHit) {
+        guard EditorApp.edits(kind: hit.kind, isDir: hit.isDir) else { return open(hit) }
+        guard let editor = Self.editor() else {
+            show("No code editor found (Visual Studio Code, Cursor, Zed, Sublime Text or Xcode)")
+            return open(hit)
+        }
+        let app = editor.app
+        let line = preview?.id == hit.id && !hit.isDir ? preview?.focusLine : hit.lines.first?.line
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: app.toolPath(bundle: editor.bundle))
+        process.arguments = app.arguments(path: hit.path, line: line)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
+        } catch {
+            show("Could not open \(app.name): \(error.localizedDescription)")
+        }
+    }
+
+    func openSelectedInEditor() {
+        if let hit = selectedHit { openInEditor(hit) }
+    }
+
+    /// Show the next (`delta` 1) or previous (-1) match in the preview, going round at the ends.
+    func jumpToMatch(by delta: Int) {
+        guard let p = preview, let engine, p.id == selection, let key = previewKey else { return }
+        let lines = Array(Set(p.matchLines)).sorted()
+        guard !lines.isEmpty else { return }
+        let target = delta > 0 ? (lines.first { $0 > p.focusLine } ?? lines[0]) : (lines.last { $0 < p.focusLine } ?? lines[lines.count - 1])
+        guard target != p.focusLine else { return }
+        // The preview holds the lines around its focus only: ask for the ones around the target.
+        let request = Request.preview(file: p.id, query: key.query, mode: key.mode, focusLine: target)
+        let epoch = previewEpoch
+        previewTask?.cancel()
+        previewTask = Task { [weak self] in
+            let reply = try? await engine.request(request)
+            guard !Task.isCancelled, let self, self.previewKey == key, self.previewEpoch == epoch else { return }
+            self.previewTask = nil
+            if case let .preview(next)? = reply { self.preview = next }
+        }
     }
 
     /// Bring the search window forward (hotkey, menu bar, Dock), opening it if it was closed.

@@ -1,5 +1,8 @@
 #if os(macOS)
+import AppKit
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 import ZSearchKit
 
 struct ContentView: View {
@@ -36,6 +39,7 @@ struct ContentView: View {
             model.openMainWindow = { open(id: "main") }
         }
         .onChange(of: model.focusRequest) { searchFocused = true }
+        .quickLookPreview($model.quickLookURL)
     }
 }
 
@@ -93,6 +97,13 @@ struct ResultsList: View {
             .contextMenu(forSelectionType: SearchHit.ID.self) { ids in
                 if let hit = model.hits.first(where: { ids.contains($0.id) }) {
                     Button("Open") { model.open(hit) }
+                    if EditorApp.edits(kind: hit.kind, isDir: hit.isDir) {
+                        Button("Open in Editor") { model.openInEditor(hit) }
+                    }
+                    Button("Quick Look") {
+                        model.selection = hit.id
+                        model.toggleQuickLook()
+                    }
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
                 }
@@ -101,6 +112,10 @@ struct ResultsList: View {
             }
             .onChange(of: model.selection) { _, id in
                 if let id { proxy.scrollTo(id) }
+            }
+            .onKeyPress(.space) {
+                model.toggleQuickLook()
+                return .handled
             }
             .overlay {
                 if model.hits.isEmpty, model.response != nil {
@@ -118,7 +133,7 @@ struct ResultRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                KindBadge(kind: hit.kind)
+                FileIcon(hit: hit)
                 Text(hit.name + (hit.isDir ? "/" : ""))
                     .fontWeight(.medium)
                     .lineLimit(1)
@@ -141,19 +156,42 @@ struct ResultRow: View {
             }
         }
         .padding(.vertical, 2)
+        // Drag a result into Mail, Slack, Finder or any app that takes files.
+        .onDrag { NSItemProvider(object: URL(fileURLWithPath: hit.path) as NSURL) }
     }
 }
 
-struct KindBadge: View {
-    let kind: String
+/// The file's icon as Finder shows it: by file type for files (no disk access), the folder's or
+/// app's own icon for folders and apps.
+struct FileIcon: View {
+    let hit: SearchHit
 
     var body: some View {
-        Text(kindBadge(kind))
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .frame(minWidth: 34)
-            .background(RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.15)))
+        Image(nsImage: FileIcons.icon(path: hit.path, isDir: hit.isDir))
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 16, height: 16)
+            .help(kindBadge(hit.kind))
+    }
+}
+
+@MainActor
+enum FileIcons {
+    private static var byType: [String: NSImage] = [:]
+    private static let byPath = NSCache<NSString, NSImage>()
+
+    static func icon(path: String, isDir: Bool) -> NSImage {
+        if isDir {
+            if let cached = byPath.object(forKey: path as NSString) { return cached }
+            let image = NSWorkspace.shared.icon(forFile: path)
+            byPath.setObject(image, forKey: path as NSString)
+            return image
+        }
+        let ext = (path as NSString).pathExtension.lowercased()
+        if let cached = byType[ext] { return cached }
+        let image = NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
+        byType[ext] = image
+        return image
     }
 }
 
@@ -161,12 +199,19 @@ struct PreviewPane: View {
     @Environment(SearchModel.self) private var model
     /// PDFs show their pages unless the reader picked the extracted text instead, here or in Settings.
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
+    /// Images show themselves unless the reader picked the text OCR read from them.
+    @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
+
+    /// Kinds Quick Look shows better than any text could.
+    private static let visualKinds: Set<String> = ["image", "video", "audio", "font"]
 
     var body: some View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
         // files swaps the content in place instead of flashing an empty pane.
         if let p = model.preview, !model.hits.isEmpty {
             let pdf = p.kind == "pdf" ? PDFDocuments.shared.document(for: p) : nil
+            // Images, video and audio, and other files without text: Quick Look shows them.
+            let visual = pdf == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -190,6 +235,16 @@ struct PreviewPane: View {
                         .controlSize(.small)
                         .fixedSize()
                         .help("Show the PDF's pages, or the text zsearch read from it")
+                    } else if visual, p.message == nil {
+                        Picker("Show", selection: $imageShowsText) {
+                            Text(p.kind == "image" ? "Image" : "File").tag(false)
+                            Text("Text").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Show the file, or the text zsearch read from it")
                     }
                 }
                 .padding(10)
@@ -197,6 +252,8 @@ struct PreviewPane: View {
                 // A PDF without indexed text (a scan, say) still shows its pages.
                 if let pdf, !pdfShowsText || p.message != nil {
                     PDFPreviewView(preview: p, document: pdf)
+                } else if visual, !imageShowsText || p.message != nil {
+                    QuickLookView(url: URL(fileURLWithPath: p.path))
                 } else if let message = p.message {
                     Text(message)
                         .foregroundStyle(.secondary)
@@ -214,7 +271,11 @@ struct PreviewPane: View {
         var parts: [String] = []
         if !p.isDir { parts.append(ByteCountFormatter.string(fromByteCount: Int64(p.size), countStyle: .file)) }
         parts.append("modified " + Date(timeIntervalSince1970: p.mtime / 1000).formatted(date: .abbreviated, time: .shortened))
-        if !p.matchLines.isEmpty { parts.append(p.matchLines.count == 1 ? "1 match" : "\(p.matchLines.count) matches") }
+        if let at = p.matchLines.firstIndex(of: p.focusLine), p.matchLines.count > 1 {
+            parts.append("match \(at + 1) of \(p.matchLines.count) (⌘G)")
+        } else if !p.matchLines.isEmpty {
+            parts.append(p.matchLines.count == 1 ? "1 match" : "\(p.matchLines.count) matches")
+        }
         if let note = p.note, !note.isEmpty { parts.append(note) }
         return parts.joined(separator: " · ")
     }
