@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
-import { clearIndex, ContentState, decompressText, indexStats, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
+import { clearIndex, ContentState, decompressText, indexStats, loadVocabTerms, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
-import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
+import { FIXTURES, makeCorpus, homeConfig } from "./helpers/corpus.ts"
+import { ExtractPool } from "../src/index/pool.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
@@ -213,6 +214,120 @@ describe("indexer", () => {
   })
 
   afterAll(() => db.close())
+})
+
+/** Everything an index holds, by path: entries, stored texts, full-text rows and vocabulary. */
+function dump(db: Database) {
+  db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts_terms USING fts5vocab(main, fts, instance)")
+  return {
+    files: db.query("SELECT path, is_dir, kind, size, content_state, content_len, note, in_fts FROM files ORDER BY path").all(),
+    texts: (db.query("SELECT f.path, c.data FROM content c JOIN files f ON f.id = c.id ORDER BY f.path").all() as { path: string; data: Uint8Array }[]).map((r) => [r.path, decompressText(r.data)]),
+    fts: db.query("SELECT f.path, t.term, t.col FROM temp.fts_terms t JOIN files f ON f.id = t.doc ORDER BY f.path, t.term, t.col").all(),
+    vocab: [...loadVocabTerms(db)].sort(),
+  }
+}
+
+describe("threaded indexing (extraction workers, writer thread, extraction during the scan)", () => {
+  const fresh = (name: string) => {
+    const path = join(corpus.home, ".zsearch-data", name)
+    for (const f of [path, `${path}-wal`, `${path}-shm`]) rmSync(f, { force: true })
+    return openDb(path)
+  }
+
+  test("gives exactly the index of the in-process run", async () => {
+    const inline = fresh("inline.db")
+    const threaded = fresh("threaded.db")
+    expect((await index(inline)).phase).toBe("done")
+    expect((await new Indexer(threaded, homeConfig(), { inProcess: false }).run()).phase).toBe("done")
+    const want = dump(inline)
+    expect(want.texts.length).toBeGreaterThanOrEqual(20)
+    expect(dump(threaded)).toEqual(want)
+    inline.close()
+    threaded.close()
+  })
+
+  test("a run cancelled while storing contents is completed by the next one", async () => {
+    const clean = fresh("clean.db")
+    await index(clean)
+    const db = fresh("resumed.db")
+    const controller = new AbortController()
+    const r = await new Indexer(db, homeConfig(), {
+      signal: controller.signal,
+      onProgress: (p) => {
+        // Extractions started during the scan are in flight by then.
+        if (p.phase === "content") controller.abort()
+      },
+    }).run()
+    expect(r.phase).toBe("cancelled")
+    expect(indexStats(db).pending).toBeGreaterThan(0)
+    expect((await new Indexer(db, homeConfig()).run()).phase).toBe("done")
+    expect(dump(db)).toEqual(dump(clean))
+    expect(() => db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
+    clean.close()
+    db.close()
+  })
+
+  test("extraction during the scan queues no more than the workers have room for", async () => {
+    // One worker with a document queued takes two jobs: more would wait behind it.
+    const dir = join(corpus.home, "Documents", "papers")
+    mkdirSync(dir, { recursive: true })
+    for (let i = 0; i < 6; i++) copyFileSync(join(FIXTURES, "docs", "paper.pdf"), join(dir, `paper${i}.pdf`))
+    const run = ExtractPool.prototype.run
+    let overfull = 0
+    let jobs = 0
+    ExtractPool.prototype.run = function (this: ExtractPool, job) {
+      jobs++
+      if (!this.capacity) overfull++
+      return run.call(this, job)
+    }
+    try {
+      const db = fresh("room.db")
+      const config = { ...homeConfig(), workers: 1 }
+      expect((await new Indexer(db, config, { inProcess: false }).run()).phase).toBe("done")
+      expect(jobs).toBeGreaterThan(6)
+      expect(overfull).toBe(0)
+      expect(ftsCount(db, "paper0")).toBe(1)
+      db.close()
+    } finally {
+      ExtractPool.prototype.run = run
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("re-indexing added, changed and removed files gives the in-process index", async () => {
+    const inline = fresh("churn-inline.db")
+    const threaded = fresh("churn-threaded.db")
+    const both = async () => {
+      expect((await index(inline)).phase).toBe("done")
+      // Removed files are deleted right after the writer thread closes, on the indexer's own connection.
+      expect((await new Indexer(threaded, homeConfig(), { inProcess: false }).run()).phase).toBe("done")
+      expect(dump(threaded)).toEqual(dump(inline))
+    }
+    const later = new Date(Date.now() + 10_000)
+    try {
+      for (let i = 0; i < 40; i++) corpus.write(`churn/f${i}.txt`, `churn file ${i} gecko${i}\n`)
+      await both()
+      for (let round = 1; round <= 5; round++) {
+        for (let i = round * 8 - 8; i < round * 8; i++) {
+          if (i % 2) rmSync(join(corpus.home, "churn", `f${i}.txt`))
+          else {
+            corpus.write(`churn/f${i}.txt`, `changed in round ${round} newt${i}\n`)
+            utimesSync(join(corpus.home, "churn", `f${i}.txt`), later, new Date(later.getTime() + round * 1000))
+          }
+        }
+        for (let i = 0; i < 4; i++) corpus.write(`churn/r${round}-${i}.txt`, `added in round ${round} axolotl\n`)
+        await both()
+      }
+      expect(ftsCount(threaded, "gecko1")).toBe(0)
+      expect(ftsCount(threaded, "newt0")).toBe(1)
+      expect(ftsCount(threaded, "axolotl")).toBe(20)
+      expect(() => threaded.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
+    } finally {
+      rmSync(join(corpus.home, "churn"), { recursive: true, force: true })
+      inline.close()
+      threaded.close()
+    }
+  })
 })
 
 describe("classic FTS delete protocol (older SQLite)", () => {

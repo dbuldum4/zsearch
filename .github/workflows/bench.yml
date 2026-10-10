@@ -2,7 +2,8 @@ name: Benchmark
 
 # Index and search benchmark (scripts/bench.ts) for the pull request and its base, on the same
 # runner, with the comparison in the job summary. Informational: shared runners are noisy, so
-# it never fails the build.
+# it never fails the build. The corpus mixes generated files with real projects
+# (scripts/bench-projects.json), fetched once at pinned commits and cached between runs.
 
 on:
   pull_request:
@@ -33,14 +34,18 @@ jobs:
         working-directory: head
       - run: bun install --frozen-lockfile
         working-directory: base
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zsearch-bench
+          key: zsearch-bench-${{ hashFiles('head/scripts/bench-projects.json') }}
       - name: Benchmark the base
         # The base may predate the benchmark script: use this change's copy against the base's engine.
         run: |
-          cp head/scripts/bench.ts base/scripts/bench.ts
-          cd base && bun scripts/bench.ts --files=10000 --reps=5 --json=../base.json > /dev/null
+          cp head/scripts/bench.ts head/scripts/bench-projects.json base/scripts/
+          cd base && bun scripts/bench.ts --corpus=real --reps=5 --json=../base.json > /dev/null
       - name: Benchmark this change
         run: |
-          cd head && bun scripts/bench.ts --files=10000 --reps=5 --json=../head.json --compare=../base.json > ../report.md
+          cd head && bun scripts/bench.ts --corpus=real --reps=5 --json=../head.json --compare=../base.json > ../report.md
           cat ../report.md
           {
             cat ../report.md

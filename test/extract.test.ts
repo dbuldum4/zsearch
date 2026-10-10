@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { extract, wantsContent } from "../src/index/extract/index.ts"
+import { DEFAULT_EXTRACT, extract, wantsContent } from "../src/index/extract/index.ts"
+import { ExtractPool } from "../src/index/pool.ts"
 import { binaryStrings, extractRtf } from "../src/index/extract/legacy.ts"
 import { decodeText, extractEmail, looksBinary } from "../src/index/extract/text.ts"
 import { decodeEntities, htmlText, xmlText } from "../src/index/extract/xml.ts"
@@ -234,5 +235,28 @@ describe("helpers", () => {
     expect(kindOf(".bashrc")).toBe("data")
     expect(extOf(".bashrc")).toBe("")
     expect(extOf("archive.tar.gz")).toBe("gz")
+  })
+})
+
+describe("extraction pool", () => {
+  test("a worker with a document queued takes no more than it runs at once", async () => {
+    const pool = new ExtractPool(1, DEFAULT_EXTRACT, 64)
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-pool-"))
+    writeFileSync(join(dir, "note.txt"), "a plain note")
+    const job = (id: number, path: string) => {
+      const name = path.split("/").pop()!
+      return { run: "pool test", id, path, size: statSync(path).size, ext: extOf(name), kind: kindOf(name) }
+    }
+    const replies = [pool.run(job(1, join(dir, "note.txt")))]
+    expect(pool.capacity).toBe(63)
+    replies.push(pool.run(job(2, join(FIXTURES, "docs/paper.pdf"))))
+    // Jobs queued behind the document could not move to another worker while it runs.
+    expect(pool.capacity).toBe(0)
+    expect(pool.slots).toBe(2)
+    const done = await Promise.all(replies)
+    expect(done.map((r) => r.status)).toEqual(["ok", "ok"])
+    expect(pool.capacity).toBe(64)
+    pool.close()
+    rmSync(dir, { recursive: true, force: true })
   })
 })

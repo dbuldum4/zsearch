@@ -7,13 +7,20 @@
  *   bun run bench --json=out.json          # also write the results as JSON
  *   bun run bench --compare=base.json      # show the change against an earlier run
  *   bun run bench --keep                   # keep the corpus and index (path is printed)
+ *   bun run bench --corpus=real            # add real projects to 5,000 generated files
  *
  * The corpus is the same for the same --files and --seed: a home folder with Documents and
  * Downloads holding prose, code, data files, office documents from test/fixtures and binaries,
  * with a few planted words and patterns for the searches to find.
+ *
+ * With --corpus=real, the home folder also holds open-source projects, fetched once at a fixed
+ * commit into a cache (--cache, $ZSEARCH_BENCH_CACHE, or ~/.cache/zsearch-bench) and linked in
+ * from there: documentation prose (MDN) and a large code base (Kubernetes). They are only read
+ * locally, never stored or published with the results.
  */
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { spawnSync } from "node:child_process"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs"
+import { availableParallelism, homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
@@ -27,7 +34,8 @@ const args = new Map(
     return [k!, v ?? "true"] as const
   }),
 )
-const FILES = Number(args.get("files") ?? 20_000)
+const REAL = args.get("corpus") === "real"
+const FILES = Number(args.get("files") ?? (REAL ? 5_000 : 20_000))
 const SEED = Number(args.get("seed") ?? 1)
 const REPS = Number(args.get("reps") ?? 7)
 
@@ -80,6 +88,63 @@ function zipf(words: string[], rand: () => number) {
     }
     return words[lo]!
   }
+}
+
+/**
+ * Projects added with --corpus=real (scripts/bench-projects.json), pinned so that every run
+ * indexes the same files: MDN's docs (about 16,000 files, mostly Markdown) and Kubernetes (about
+ * 31,000 files of Go, YAML, JSON and docs). Both are openly licensed, and fetched from GitHub
+ * the usual way, a shallow git fetch, once per cache.
+ */
+const REAL_PROJECTS = JSON.parse(readFileSync(join(import.meta.dir, "bench-projects.json"), "utf8")) as { repo: string; commit: string; into: string }[]
+
+/** The project's files at its commit, from the cache or fetched into it. */
+function fetchProject(cache: string, p: { repo: string; commit: string }): string {
+  const dir = join(cache, `${p.repo.replace("/", "-")}-${p.commit.slice(0, 12)}`)
+  if (existsSync(dir)) return dir
+  const tmp = `${dir}.part`
+  rmSync(tmp, { recursive: true, force: true })
+  mkdirSync(tmp, { recursive: true })
+  const git = (...a: string[]) => {
+    const r = spawnSync("git", a, { cwd: tmp, stdio: ["ignore", "ignore", "inherit"] })
+    if (r.status !== 0) throw new Error(`git ${a.join(" ")} failed for ${p.repo}`)
+  }
+  console.error(`fetching ${p.repo} at ${p.commit.slice(0, 12)} into ${cache}`)
+  git("init", "-q")
+  git("fetch", "-q", "--depth", "1", `https://github.com/${p.repo}`, p.commit)
+  git("-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD")
+  rmSync(join(tmp, ".git"), { recursive: true, force: true })
+  renameSync(tmp, dir)
+  return dir
+}
+
+/** Put a copy of `src` at `dest`, with its times: hard links where the file system allows, so it is quick. */
+function linkTree(src: string, dest: string) {
+  mkdirSync(dirname(dest), { recursive: true })
+  for (const flags of [["-al"], ["-cpR"], ["-pR"]]) {
+    if (spawnSync("cp", [...flags, src, dest], { stdio: "ignore" }).status === 0) return
+    rmSync(dest, { recursive: true, force: true })
+  }
+  throw new Error(`could not copy ${src}`)
+}
+
+/** Files and bytes under a folder, hidden ones aside (the indexer skips them too). */
+function measure(dir: string): { files: number; bytes: number } {
+  let files = 0
+  let bytes = 0
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name.startsWith(".")) continue
+    const p = join(dir, e.name)
+    if (e.isDirectory()) {
+      const m = measure(p)
+      files += m.files
+      bytes += m.bytes
+    } else if (e.isFile()) {
+      files++
+      bytes += statSync(p).size
+    }
+  }
+  return { files, bytes }
 }
 
 const NEEDLE = "zanzibarite"
@@ -225,6 +290,7 @@ function stats(xs: number[]) {
 
 async function bench(): Promise<BenchResult> {
   const keep = args.get("keep") === "true"
+  const cache = args.get("cache") ?? process.env.ZSEARCH_BENCH_CACHE ?? join(homedir(), ".cache", "zsearch-bench")
   const work = mkdtempSync(join(process.env.ZSEARCH_BENCH_TMP || tmpdir(), "zsearch-bench-"))
   const home = join(work, "home")
   process.env.HOME = home
@@ -232,13 +298,36 @@ async function bench(): Promise<BenchResult> {
   const dbPath = join(work, "data", "index.db")
   try {
     let t = performance.now()
+    // Fetched first: their files are then older than the generated ones on every run, so the
+    // searches that go newest-first meet the same files first.
+    const projects = REAL ? REAL_PROJECTS.map((p) => ({ ...p, dir: fetchProject(cache, p) })) : []
     const corpus = makeCorpus(home, FILES, SEED)
-    console.error(`corpus: ${FILES.toLocaleString()} files, ${(corpus.bytes / 1e6).toFixed(1)} MB in ${((performance.now() - t) / 1000).toFixed(1)}s (${work})`)
+    if (REAL) {
+      for (const p of projects) {
+        const dest = join(home, p.into)
+        linkTree(p.dir, dest)
+        const m = measure(dest)
+        corpus.files += m.files
+        corpus.bytes += m.bytes
+      }
+    }
+    console.error(`corpus: ${corpus.files.toLocaleString()} files, ${(corpus.bytes / 1e6).toFixed(1)} MB in ${((performance.now() - t) / 1000).toFixed(1)}s (${work})`)
 
     const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads")] }
     let db = openDb(dbPath)
     t = performance.now()
-    const first = await new Indexer(db, config).run()
+    // How long each phase took, for the log.
+    const phases: string[] = []
+    let phase = ""
+    let phaseStart = t
+    const onProgress = (p: { phase: string }) => {
+      if (p.phase === phase) return
+      const now = performance.now()
+      if (phase) phases.push(`${phase} ${((now - phaseStart) / 1000).toFixed(2)}s`)
+      phase = p.phase
+      phaseStart = now
+    }
+    const first = await new Indexer(db, config, { onProgress }).run()
     const indexSeconds = (performance.now() - t) / 1000
     if (first.phase !== "done") throw new Error(`indexing ended with ${first.phase}: ${first.error ?? ""}`)
     t = performance.now()
@@ -251,7 +340,7 @@ async function bench(): Promise<BenchResult> {
     }
     db.close()
     const dbMB = +(statSync(dbPath).size / 1e6).toFixed(2)
-    console.error(`index: ${indexSeconds.toFixed(1)}s, re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
+    console.error(`index: ${indexSeconds.toFixed(1)}s (${phases.join(", ")}; ${availableParallelism()} CPUs), re-index ${reindexSeconds.toFixed(2)}s, ${dbMB} MB`)
 
     db = openDb(dbPath)
     const engine = new SearchEngine(db, config)
@@ -291,7 +380,7 @@ async function bench(): Promise<BenchResult> {
     }
     db.close()
     return {
-      files: FILES,
+      files: corpus.files,
       corpusMB: +(corpus.bytes / 1e6).toFixed(1),
       indexSeconds: +indexSeconds.toFixed(2),
       reindexSeconds: +reindexSeconds.toFixed(2),

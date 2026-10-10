@@ -25,6 +25,105 @@ export function uniqueTerms(text: string, into: Set<string> = new Set()): Set<st
   return into
 }
 
+/** ASCII characters other than letters and digits: separators for unicode61, so no token spans one. */
+const ASCII_SEPARATORS = /[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/
+
+/**
+ * What the index keeps of a text: its distinct words for the FTS `body` column, and its
+ * vocabulary terms (as `uniqueTerms`). The index is contentless with detail=column, so it
+ * records which words a file holds but not where or how often: indexing each word once gives
+ * the same matches for a fraction of SQLite's work.
+ */
+export function indexTerms(text: string): { body: string; terms: Iterable<string> } {
+  if (!NON_ASCII.test(text)) {
+    // ASCII: the tokens are exactly the runs of letters and digits, lower-cased.
+    const words = asciiWords(text.toLowerCase())
+    const body = words.join(" ")
+    return { body, terms: words.some((w) => w.length > 64) ? words.filter((w) => w.length <= 64) : words }
+  }
+  // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer.
+  const body = [...new Set(text.split(ASCII_SEPARATORS))].join(" ")
+  return { body, terms: uniqueTerms(body) }
+}
+
+/**
+ * The distinct runs of [a-z0-9] in a lower-cased ASCII text, in order. A hash table of where
+ * each was first seen: only new words become strings, which takes about half the time of
+ * collecting every word and putting them in a Set.
+ */
+const words = { hash: new Int32Array(4096), start: new Int32Array(4096), len: new Int32Array(4096), gen: new Int32Array(4096), now: 0 }
+
+function asciiWords(s: string): string[] {
+  const t = words
+  if (++t.now === 0x7fffffff) {
+    t.gen.fill(0)
+    t.now = 1
+  }
+  const out: string[] = []
+  const n = s.length
+  let i = 0
+  while (i < n) {
+    let c = s.charCodeAt(i)
+    if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57))) {
+      i++
+      continue
+    }
+    const start = i
+    // FNV-1a
+    let h = 0x811c9dc5 | 0
+    do {
+      h = Math.imul(h ^ c, 0x01000193)
+      c = ++i < n ? s.charCodeAt(i) : 0
+    } while ((c >= 97 && c <= 122) || (c >= 48 && c <= 57))
+    const len = i - start
+    const mask = t.gen.length - 1
+    let j = h & mask
+    let seen = false
+    while (t.gen[j] === t.now) {
+      if (t.hash[j] === h && t.len[j] === len) {
+        const o = t.start[j]!
+        let k = 0
+        while (k < len && s.charCodeAt(o + k) === s.charCodeAt(start + k)) k++
+        if (k === len) {
+          seen = true
+          break
+        }
+      }
+      j = (j + 1) & mask
+    }
+    if (seen) continue
+    t.gen[j] = t.now
+    t.hash[j] = h
+    t.start[j] = start
+    t.len[j] = len
+    out.push(s.slice(start, i))
+    if (out.length * 2 > t.gen.length) growWords()
+  }
+  return out
+}
+
+/** Double the table, keeping the current text's words. */
+function growWords() {
+  const old = words
+  const size = old.gen.length * 2
+  const t = { hash: new Int32Array(size), start: new Int32Array(size), len: new Int32Array(size), gen: new Int32Array(size), now: old.now }
+  for (let i = 0; i < old.gen.length; i++) {
+    if (old.gen[i] !== old.now) continue
+    let j = old.hash[i]! & (size - 1)
+    while (t.gen[j] === t.now) j = (j + 1) & (size - 1)
+    t.gen[j] = t.now
+    t.hash[j] = old.hash[i]!
+    t.start[j] = old.start[i]!
+    t.len[j] = old.len[i]!
+  }
+  Object.assign(words, t)
+}
+
+/** The FTS `body` of a text (see `indexTerms`). */
+export function ftsBody(text: string): string {
+  return indexTerms(text).body
+}
+
 /** Split identifiers: "getHTTPResponse_v2" -> ["get", "HTTP", "Response", "v", "2"]. */
 export function splitIdentifier(s: string): string[] {
   return s
@@ -36,12 +135,16 @@ export function splitIdentifier(s: string): string[] {
     .filter(Boolean)
 }
 
+const PLAIN_PART = /^(?:[a-z]+|[0-9]+)$/
+
 /** Tokens for the FTS `name` column: words of the file name, including camelCase parts. */
 export function nameTokens(name: string): string {
   const words = new Set<string>()
   for (const part of name.split(/[^\p{L}\p{N}]+/u)) {
     if (!part) continue
     words.add(part)
+    // Most parts are plain lower-case words or numbers, which do not split.
+    if (PLAIN_PART.test(part)) continue
     const pieces = splitIdentifier(part)
     if (pieces.length > 1) for (const p of pieces) words.add(p)
   }

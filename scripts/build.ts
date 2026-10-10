@@ -16,7 +16,7 @@ import { join } from "node:path"
 const ROOT = join(import.meta.dir, "..")
 const ENTRY = "src/main.ts"
 // Workers are separate entry points so the compiled binary can start them.
-const WORKERS = ["src/index/index-worker.ts", "src/index/extract-worker.ts", "src/search/search-worker.ts"]
+const WORKERS = ["src/index/index-worker.ts", "src/index/extract-worker.ts", "src/index/write-worker.ts", "src/search/search-worker.ts"]
 const ALL = ["bun-darwin-arm64", "bun-darwin-x64", "bun-linux-x64", "bun-linux-arm64"]
 
 const args = process.argv.slice(2)

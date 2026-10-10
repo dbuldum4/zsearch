@@ -5,9 +5,10 @@ import { parseDuration, parseQuery, parseSize } from "../src/search/query.ts"
 import { regexRequirements, type Req } from "../src/search/regex-plan.ts"
 import { termsPattern, findLines, keywordLines, clipLine } from "../src/search/snippet.ts"
 import { literalToFts, reqToFts, Vocab } from "../src/search/vocab.ts"
-import { editDistance, foldTerm, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
+import { editDistance, foldTerm, indexTerms, nameTokens, splitIdentifier, uniqueTerms } from "../src/util/text.ts"
 import { Database } from "bun:sqlite"
 import { compressText } from "../src/index/db.ts"
+import { asciiTerms } from "../src/index/ascii-terms.ts"
 
 describe("query parsing", () => {
   const now = new Date("2024-06-15T12:00:00").getTime()
@@ -190,6 +191,13 @@ describe("vocabulary and FTS mapping", () => {
     expect(v.similar("rename")).not.toContain("rename")
   })
 
+  test("similar terms that tie go by term, whatever order they were indexed in", () => {
+    const ties = [..."abcdefghijklmnopqrstuvwxy"].map((c) => `zor${c}`)
+    addChunk([...ties].reverse())
+    v.load(db, true)
+    expect(v.similar("zorz")).toEqual(ties.slice(0, 24))
+  })
+
   test("literal to FTS expression", () => {
     expect(literalToFts("foo bar", v)).toBe('"foo"* AND "bar"*'.replace('"foo"*', `("foo")`).replace("(", "").replace(")", "") === "" ? "" : literalToFts("foo bar", v))
     // whole token in the middle, prefix at the end
@@ -244,6 +252,75 @@ describe("text utilities", () => {
   })
   test("unique terms", () => {
     expect([...uniqueTerms("Hello hello, WORLD_2 café")].sort()).toEqual(["2", "cafe", "hello", "world"])
+  })
+  test("index terms: the full text's words, once each", () => {
+    const db = new Database(":memory:")
+    const fts = (t: string) => db.exec(`CREATE VIRTUAL TABLE ${t} USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)`)
+    fts("full")
+    fts("once")
+    db.exec("CREATE VIRTUAL TABLE full_v USING fts5vocab(full, row)")
+    db.exec("CREATE VIRTUAL TABLE once_v USING fts5vocab(once, row)")
+    const texts = [
+      "The the THE; plan-B: 42 x42 x_42 " + "y".repeat(80),
+      "Crème brûlée, CRÈME Brulee! naïve façade Ångström e\u0301cole",
+      "東京都の検索 Привет мир, Straße STRASSE ﬁnance İstanbul 🎉 tab\tnbsp\u00a0em\u2003zero\u200bwidth",
+      "",
+    ]
+    texts.forEach((text, i) => {
+      db.query("INSERT INTO full(rowid, body) VALUES (?, ?)").run(i + 1, text)
+      db.query("INSERT INTO once(rowid, body) VALUES (?, ?)").run(i + 1, indexTerms(text).body)
+      expect([...indexTerms(text).terms].sort()).toEqual([...uniqueTerms(text)].sort())
+    })
+    const vocab = (t: string) => db.query(`SELECT term, doc FROM ${t}_v ORDER BY term`).all()
+    expect(vocab("once")).toEqual(vocab("full"))
+    expect(indexTerms("Plan plan PLAN 2 2").body).toBe("plan 2")
+  })
+  test("index terms from ASCII bytes: as from the text, new terms once per run", () => {
+    const enc = (s: string) => new TextEncoder().encode(s)
+    const texts = ["The the THE; plan-B: 42 x42 x_42 " + "y".repeat(80) + " " + "Y".repeat(80), "Plan plan PLAN 2 2 zeta", "", " -- "]
+    const seen = new Set<string>()
+    for (const text of texts) {
+      const a = asciiTerms(enc(text), "run 1")!
+      expect(new TextDecoder().decode(a.body)).toBe(indexTerms(text).body)
+      const fresh = [...indexTerms(text).terms].filter((t) => !seen.has(t))
+      for (const t of fresh) seen.add(t)
+      expect(a.report()).toEqual(fresh)
+    }
+    expect(asciiTerms(enc("plan zeta"), "run 2")!.report()).toEqual(["plan", "zeta"])
+    expect(asciiTerms(enc("café"), "run 2")).toBeNull()
+    expect(asciiTerms(enc("a\0b"), "run 2")).toBeNull()
+    // A text that turns out not to be plain reports nothing: there the word may be longer.
+    expect(asciiTerms(enc("early xcfd\u03e1000"), "run 3")).toBeNull()
+    expect(asciiTerms(enc("early xcfd"), "run 3")!.report()).toEqual(["early", "xcfd"])
+    // Nor does one whose result is not sent (its compression failed).
+    expect(asciiTerms(enc("kiwi early"), "run 3")).not.toBeNull()
+    expect(asciiTerms(enc("kiwi"), "run 3")!.report()).toEqual(["kiwi"])
+  })
+  test("plain ASCII files are stored and indexed as from their decoded text", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { processJob } = await import("../src/index/extract-job.ts")
+    const { extract, DEFAULT_EXTRACT } = await import("../src/index/extract/index.ts")
+    const { decompressText } = await import("../src/index/db.ts")
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-ascii-"))
+    try {
+      const texts = ["one two\r\nthree\r\n", "old\rmac\rlines", "end\r", "\r\n", "  \t\n\n ", " -- ", "plain words\n", "café\r\n"]
+      for (const [i, text] of texts.entries()) {
+        const path = join(dir, `f${i}.txt`)
+        writeFileSync(path, text)
+        const size = Buffer.byteLength(text)
+        const got = await processJob({ run: "r", id: i, path, size, ext: "txt", kind: "text" }, DEFAULT_EXTRACT)
+        const want = await extract(path, size, "txt", "text")
+        expect(got.status).toBe(want.status)
+        if (got.status !== "ok" || want.status !== "ok") continue
+        expect(got.chars).toBe(want.text.length)
+        expect(decompressText(got.compressed)).toBe(want.text)
+        expect(new TextDecoder().decode(got.body)).toBe(indexTerms(want.text).body)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
   test("identifier splitting and name tokens", () => {
     expect(splitIdentifier("getHTTPResponse_v2")).toEqual(["get", "HTTP", "Response", "v", "2"])

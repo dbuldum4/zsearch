@@ -257,6 +257,24 @@ describe("live updates and frecency", () => {
     expect(after.indexOf(target)).toBeLessThan(before.indexOf(target))
     expect(names(await search(""))[0]).toBe(target)
   })
+
+  test("an open recorded while an index run holds the database is counted at once and stored later", async () => {
+    const path = join(corpus.home, "notes/todo.md")
+    const stored = () => (db.query("SELECT count FROM frecency WHERE path = ?").get(path) as { count: number } | null)?.count ?? 0
+    const before = stored()
+    const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
+    writer.exec("BEGIN IMMEDIATE")
+    const t = performance.now()
+    engine.recordOpen(path)
+    expect(performance.now() - t).toBeLessThan(500)
+    expect(names(await search(""))[0]).toBe("notes/todo.md")
+    expect(stored()).toBe(before)
+    writer.exec("COMMIT")
+    writer.close()
+    await Bun.sleep(400)
+    expect(stored()).toBe(before + 1)
+    expect(names(await search(""))[0]).toBe("notes/todo.md")
+  })
 })
 
 describe("text cache and index changes", () => {

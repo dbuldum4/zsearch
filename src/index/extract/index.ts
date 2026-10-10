@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises"
+import { closeSync, openSync, readFileSync, readSync } from "node:fs"
 import { DOCUMENT_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
@@ -25,23 +25,29 @@ export type ExtractResult =
   | { status: "ok"; text: string; truncated: boolean }
   | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" }
 
+/** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
+export type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
+
 /** Does this file get its contents read at all? */
 export function wantsContent(ext: string, kind: Kind): boolean {
   return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox"
 }
 
+// Files are read synchronously: extraction runs on worker threads, where blocking is fine, and
+// an asynchronous read of a small file costs several times as much as the read itself.
 async function readFile(path: string): Promise<Uint8Array> {
-  return new Uint8Array(await Bun.file(path).arrayBuffer())
+  const b = readFileSync(path)
+  return new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
 }
 
 async function readHead(path: string, n: number): Promise<Uint8Array> {
-  const fh = await open(path, "r")
+  const fd = openSync(path, "r")
   try {
     const buf = new Uint8Array(n)
-    const { bytesRead } = await fh.read(buf, 0, n, 0)
+    const bytesRead = readSync(fd, buf, 0, n, 0)
     return buf.subarray(0, bytesRead)
   } finally {
-    await fh.close()
+    closeSync(fd)
   }
 }
 
@@ -55,6 +61,17 @@ function finish(text: string, maxChars: number): ExtractResult {
 
 /** Extract searchable text from a file. Throws on unreadable or corrupt documents. */
 export async function extract(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<ExtractResult> {
+  const r = await extractRaw(path, size, ext, kind, opts)
+  return r.status === "bytes" ? textOf(r.bytes, opts.maxChars) : r
+}
+
+/** The text of a plain text file's bytes. */
+export function textOf(bytes: Uint8Array, maxChars: number): ExtractResult {
+  return finish(decodeText(bytes), maxChars)
+}
+
+/** As `extract`, leaving plain text files undecoded. */
+export async function extractRaw(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<RawExtractResult> {
   if (DOCUMENT_EXTS.has(ext)) {
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
@@ -69,7 +86,7 @@ export async function extract(path: string, size: number, ext: string, kind: Kin
   }
   const buf = await readFile(path)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
-  return finish(decodeText(buf), opts.maxChars)
+  return { status: "bytes", bytes: buf }
 }
 
 async function extractDocument(path: string, ext: string, opts: ExtractOptions): Promise<string> {

@@ -235,6 +235,7 @@ bun test --timeout 60000        # unit, TUI and end-to-end tests (~30 s)
 bun run typecheck
 bun run build                   # dist/zsearch
 bun run bench                   # index and search benchmark on a generated corpus (--files=N, --compare=old.json)
+bun run bench --corpus=real     # the same, plus real projects (MDN docs, Kubernetes) fetched once into ~/.cache
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt)
 ```
 
