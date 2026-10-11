@@ -31,6 +31,24 @@ async function fixture(run: (dir: string, c: ReturnType<typeof defaultConfig>, e
 const readOpts = { lines: 100, maxChars: 10000 }
 
 describe("sweep regressions", () => {
+  test("explicit root aliases override canonical system exclusions but retain user exclusions", async () => fixture(async (dir, c, e) => {
+    // Like macOS /var -> /private/var: the selected alias is outside the automatic
+    // exclusion, but its actual target is beneath one (/tmp on Linux).
+    const scratch = mkdtempSync(join(import.meta.dir, ".root-alias-"))
+    const alias = join(scratch, "selected")
+    try {
+      symlinkSync(dir, alias)
+      c.roots = [alias]
+      const file = join(alias, "a.txt")
+      expect(pathPolicy(file, crawlOptionsFor(c)).content).toBe(true)
+      await new Indexer(e.db, c, { inProcess: true }).run()
+      e.refresh(true)
+      expect((await e.search("CANONICALROOTZEBRA")).hits.map((h) => h.path)).toEqual([file])
+      c.exclude = [dir]
+      expect(pathPolicy(file, crawlOptionsFor(c)).allowed).toBe(false)
+    } finally { rmSync(scratch, { recursive: true, force: true }) }
+  }, { "a.txt": "CANONICALROOTZEBRA" }))
+
   test("permission failures preserve a subtree while real deletions are removed", async () => fixture(async (dir, c, e) => {
     const sub = join(dir, "sub")
     chmodSync(sub, 0)

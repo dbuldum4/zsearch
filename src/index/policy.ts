@@ -15,13 +15,14 @@ function canonical(path: string): string {
 
 export function crawlOptionsFor(config: Config): CrawlOptions {
   const roots = [...new Set(config.roots.map(resolvePath))]
+  const realRoots = roots.map(canonical)
   const userAbs = config.exclude.filter((p) => p.startsWith("/") || p.startsWith("~")).map(resolvePath)
   return {
     roots, includeHidden: config.includeHidden, respectGitignore: config.respectGitignore,
     followSymlinks: config.followSymlinks, oneFileSystem: config.oneFileSystem,
     excludePatterns: config.exclude.filter((p) => !(p.startsWith("/") || p.startsWith("~"))),
     // User exclusions always win, even when they equal a configured root.
-    excludePaths: [...systemExcludes().filter((e) => !roots.some((r) => under(r, e))), ...userAbs],
+    excludePaths: [...systemExcludes().filter((e) => !roots.some((r) => under(r, e)) && !realRoots.some((r) => under(r, canonical(e)))), ...userAbs],
     onlyChildren: onlyChildren(),
     namesOnly: [...config.namesOnly.map(resolvePath), ...(roots.includes("/") ? systemNamesOnly() : []), ...(config.cloudContent ? [] : cloudFolders())],
   }
