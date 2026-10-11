@@ -1,7 +1,7 @@
 name: macOS app
 
 # Builds the Mac app (macos/) with the zsearch engine inside, on every push and pull request.
-# Pull requests and main also publish the DMG as a pre-release: preview-pr-<n> and preview-main.
+# Publishes GitHub-attested DMGs to versioned releases plus preview-pr-<n>/preview-main aliases.
 # Install one with: macos/scripts/install-preview.sh <n|main>
 
 on:
@@ -26,6 +26,8 @@ jobs:
     container: swift:6.2-noble
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - run: swift test --package-path macos
 
   app:
@@ -37,6 +39,7 @@ jobs:
         with:
           # Build the pull request's own commit, so the preview matches what was pushed.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
@@ -64,46 +67,139 @@ jobs:
           name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/zsearch.dmg
           retention-days: 14
-      - name: Checksum the DMG
-        run: shasum -a 256 dist/zsearch.dmg > dist/zsearch.dmg.sha256
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: checksum-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dist/zsearch.dmg.sha256
+          if-no-files-found: error
 
   publish:
     name: Publish preview artifact
     needs: app
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      github.repository == 'dbuldum4/zsearch' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
           path: preview
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: checksum-${{ github.event.pull_request.head.sha || github.sha }}
-          path: preview
       # This privileged job never checks out or executes pull-request code.
+      - name: Prepare release manifest
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = dbuldum4/zsearch
+          test "$GITHUB_REPOSITORY_ID" = 1410815604
+          test "$GITHUB_REPOSITORY_OWNER_ID" = 59258696
+          if [ -n "$PR_NUMBER" ]; then channel="pr-$PR_NUMBER"; else channel=main; fi
+          digest=$(shasum -a 256 preview/zsearch.dmg | awk '{print $1}')
+          printf '%s  zsearch.dmg\n' "$digest" > preview/zsearch.dmg.sha256
+          cat > preview/preview.manifest <<MANIFEST
+          format=1
+          repository=$GITHUB_REPOSITORY
+          owner_id=$GITHUB_REPOSITORY_OWNER_ID
+          repository_id=$GITHUB_REPOSITORY_ID
+          channel=$channel
+          source_commit=$SHA
+          workflow_commit=$GITHUB_SHA
+          source_ref=$GITHUB_REF
+          run_id=$GITHUB_RUN_ID
+          run_attempt=$GITHUB_RUN_ATTEMPT
+          run_number=$GITHUB_RUN_NUMBER
+          dmg_sha256=$digest
+          MANIFEST
+      - name: Attest DMG and manifest
+        id: provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: |
+            preview/zsearch.dmg
+            preview/preview.manifest
+      - name: Verify provenance before publishing
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" preview/provenance.jsonl
+          for artifact in preview/preview.manifest preview/zsearch.dmg; do
+            gh attestation verify "$artifact" --bundle preview/provenance.jsonl \
+              --repo "$GITHUB_REPOSITORY" --deny-self-hosted-runners \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/macos-app.yml@$GITHUB_REF" \
+              --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA"
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
           if [ -n "$PR_NUMBER" ]; then tag="preview-pr-$PR_NUMBER"; else tag=preview-main; fi
-          printf 'Preview of commit %s. Verify the checksum before installing. This preview is ad-hoc signed; macOS may require Open Anyway.\n' "$SHA" > notes.md
+          versioned="$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf 'GitHub-attested preview of commit %s.\n\nInstall from a trusted checkout with a current GitHub CLI:\n\n    macos/scripts/install-preview.sh %s --build %s-%s\n\nThe installer verifies the DMG and manifest against the expected GitHub workflow before mounting. It installs without quarantine. Browser downloads may still need Open Anyway because previews are ad-hoc signed, not Apple-notarized.\n' \
+            "$SHA" "${PR_NUMBER:-main}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > notes.md
+          gh release create "$versioned" preview/zsearch.dmg preview/zsearch.dmg.sha256 \
+            preview/preview.manifest preview/provenance.jsonl --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" --prerelease --latest=false --title "macOS preview: $versioned" --notes-file notes.md
+          # Only the convenient latest alias is replaced; the versioned release stays unchanged.
           gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
-          gh release create "$tag" preview/zsearch.dmg preview/zsearch.dmg.sha256 --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease --latest=false --title "macOS preview: $tag" --notes-file notes.md
+          gh release create "$tag" preview/zsearch.dmg preview/zsearch.dmg.sha256 \
+            preview/preview.manifest preview/provenance.jsonl --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" --prerelease --latest=false --title "macOS preview: $tag" --notes-file notes.md
           if [ -n "$PR_NUMBER" ]; then
-            printf 'macOS preview: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$tag" > comment.md
+            printf 'Authenticated macOS preview: https://github.com/%s/releases/tag/%s\n\nInstall from a trusted checkout with GitHub CLI installed:\n\n    macos/scripts/install-preview.sh %s --build %s-%s\n' \
+              "$GITHUB_REPOSITORY" "$versioned" "$PR_NUMBER" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > comment.md
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          fi
+
+  install-smoke:
+    name: Install authenticated preview (macOS)
+    needs: publish
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install exact published build without a GitHub login or Apple credentials
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ZSEARCH_APP_DIR: ${{ runner.temp }}/zsearch-install-smoke
+        run: |
+          set -euo pipefail
+          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" \
+            --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          codesign --verify --deep --strict "$ZSEARCH_APP_DIR/zsearch.app"
+          attrs=$(xattr -r "$ZSEARCH_APP_DIR/zsearch.app")
+          if [[ "$attrs" == *com.apple.quarantine* ]]; then echo 'Quarantine unexpectedly present' >&2; exit 1; fi
+          # Reinstalling the identical authenticated build is safe and idempotent.
+          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" \
+            --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Reject modified metadata and an unrelated publisher with the real verifier
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          channel="main"; if [ -n "$PR_NUMBER" ]; then channel="pr-$PR_NUMBER"; fi
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/preview-$channel-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          curl --proto '=https' --proto-redir '=https' -fsSL "$url/preview.manifest" -o preview.manifest
+          curl --proto '=https' --proto-redir '=https' -fsSL "$url/provenance.jsonl" -o provenance.jsonl
+          if env -u GH_TOKEN -u GITHUB_TOKEN gh attestation verify preview.manifest \
+            --bundle provenance.jsonl --repo another-owner/zsearch; then
+            echo 'Wrong publisher unexpectedly accepted' >&2; exit 1
+          fi
+          printf 'modified\n' >> preview.manifest
+          if env -u GH_TOKEN -u GITHUB_TOKEN gh attestation verify preview.manifest \
+            --bundle provenance.jsonl --repo "$GITHUB_REPOSITORY"; then
+            echo 'Modified metadata unexpectedly accepted' >&2; exit 1
           fi
 
   cleanup:

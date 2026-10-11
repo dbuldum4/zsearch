@@ -34,19 +34,27 @@ The app is built and tested on GitHub Actions ([`.github/workflows/macos-app.yml
 | GitHub Actions, Linux | the same tests, in the `swift:6.2-noble` container |
 | GitHub Actions, macOS | builds the engine, runs the Swift tests against it (`ZSEARCH_ENGINE`), compiles the SwiftUI app, signs it ad hoc, makes `zsearch.dmg` and publishes it |
 
-Every pull request from this repository gets a pre-release named `preview-pr-<n>`, plus a comment on the PR linking to it. Each push replaces the release, and it is deleted when the PR closes. `main` publishes `preview-main`. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
+Every pull request from this repository gets a GitHub-attested pre-release named `preview-pr-<n>-<run-id>-<attempt>`, plus a comment linking to it. The workflow retains that versioned build and replaces the convenient `preview-pr-<n>` alias on each push. The alias is deleted when the PR closes. `main` similarly publishes `preview-main-<run-id>-<attempt>` and a `preview-main` alias. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
 
 Keep `Sources/ZSearch` (the macOS-only UI) thin and put logic in `Sources/ZSearchKit`, where it can be tested on Linux. The UI files are wrapped in `#if os(macOS)`, so `swift build` also works on Linux (it builds a stub).
 
 ## Installing a preview
 
 ```sh
+brew install gh                            # current GitHub CLI; no login needed
 macos/scripts/install-preview.sh 12          # pull request #12
 macos/scripts/install-preview.sh main        # latest main
 macos/scripts/install-preview.sh 12 --open
+macos/scripts/install-preview.sh main --build 123456789-1  # exact versioned build
 ```
 
-The script downloads with `curl`, mounts the DMG and copies `zsearch.app` to `~/Applications`, quitting a running copy first. It needs no admin rights. It verifies the published SHA-256 checksum and the app signature before replacing an installed copy, and preserves Gatekeeper quarantine. For ad-hoc previews, approve the first launch in System Settings › Privacy & Security › **Open Anyway**.
+Run a reviewed copy of the installer from a trusted checkout. It downloads over HTTPS and verifies the signed manifest and DMG with GitHub CLI **before mounting** the image. Verification pins `dbuldum4/zsearch`, the numeric owner and repository IDs, the exact macOS workflow, the main or PR source reference, the workflow commit and the build invocation. A checksum alone, a missing attestation, a wrong publisher or an unrelated workflow is rejected. `ZSEARCH_REPO` cannot redirect this installer to a different publisher.
+
+The script stages and verifies `zsearch.app`, including its source commit, before quitting the running app and replacing the installed copy. It restores the previous copy if replacement fails; if restoration itself fails, it keeps the backup and prints its location. It installs to `~/Applications` without admin rights (`ZSEARCH_APP_DIR` overrides the destination). A private state file there remembers the newest successfully installed build for each channel, so replaying an older authenticated build is rejected. Use `--allow-downgrade` for a deliberate downgrade; this does not lower the remembered highest build. A fresh destination has no previous build history.
+
+**The installer removes `com.apple.quarantine` from the authenticated copy.** It does not use an Apple Developer ID or notarization. Browser downloads and manual copies can still carry quarantine and need **Open Anyway** in System Settings › Privacy & Security. GitHub provenance authenticates the project workflow and exact bytes; it does not establish that the code is harmless or that `dbuldum4` personally reviewed a PR preview.
+
+Older previews without the manifest and attestation bundle cannot be installed through this authenticated path. If a latest alias changes during download, verification stops safely; retry or select the exact versioned build from the release link. See [release security](RELEASE-SECURITY.md) for verification and repository settings.
 
 `Info.plist` records the commit as `ZSearchCommit`:
 
@@ -66,7 +74,7 @@ ZSEARCH_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 ZSEARCH_NOTARY_PROFILE="zsearch-notary" macos/scripts/build-app.sh
 ```
 
-Release mode requires both values, enables the hardened runtime and timestamps, signs inside-out with Bun’s JIT/FFI entitlements, submits the DMG, staples the ticket and verifies Gatekeeper acceptance. This requires an Apple Developer account and a macOS host. Preview CI continues to use ad-hoc signing with read-only build credentials; a separate privileged job publishes the completed artifacts.
+Release mode requires both values, enables the hardened runtime and timestamps, signs inside-out with Bun’s JIT/FFI entitlements, submits the DMG, staples the ticket and verifies Gatekeeper acceptance. This requires an Apple Developer account and a macOS host. Preview CI uses ad-hoc signing with read-only build credentials. A separate publisher authenticates the completed DMG and manifest with GitHub's short-lived signing identity; it never checks out or runs PR code and needs no Apple credentials or long-lived release signing key.
 
 ## Running from source on a Mac
 

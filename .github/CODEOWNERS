@@ -1,0 +1,7 @@
+# Require dbuldum4's review for these paths when a branch rule enables code-owner reviews.
+/.github/workflows/ @dbuldum4
+/.github/CODEOWNERS @dbuldum4
+/macos/scripts/ @dbuldum4
+/package.json @dbuldum4
+/bun.lock @dbuldum4
+/bun.lockb @dbuldum4

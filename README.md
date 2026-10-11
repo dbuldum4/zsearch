@@ -61,6 +61,8 @@ macos/scripts/install-preview.sh main       # latest main
 macos/scripts/install-preview.sh 12         # pull request #12
 ```
 
+Install a current GitHub CLI first (`brew install gh`). The preview installer verifies GitHub provenance before mounting the download, stages a recoverable replacement, and installs without a quarantine marker. No GitHub login or Apple credentials are required. See [Mac installation and verification](macos/README.md#installing-a-preview).
+
 See [macos/README.md](macos/README.md) for how it is built and how to work on it without Xcode.
 
 ## Quick start
