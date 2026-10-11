@@ -82,11 +82,10 @@ case "pdf":
     if let i = args.firstIndex(of: "--max-pages"), i + 1 < args.count, let n = Int(args[i + 1]) { maxPages = n }
     guard let document = PDFDocument(url: url) else { fail("could not open the PDF") }
     if document.isLocked { fail("document is password-protected") }
-    var pages: [String] = []
     var read = 0
     for index in 0..<document.pageCount {
         guard let page = document.page(at: index), !hasText(page), read < maxPages else {
-            pages.append("")
+            FileHandle.standardOutput.write(Data("\u{0C}".utf8))
             continue
         }
         read += 1
@@ -95,9 +94,9 @@ case "pdf":
             guard let image = render(page) else { return "" }
             return (try? recognize(VNImageRequestHandler(cgImage: image))) ?? ""
         }
-        pages.append(text)
+        // Stream complete pages, so a deadline preserves everything already recognized.
+        FileHandle.standardOutput.write(Data((text + "\u{0C}").utf8))
     }
-    FileHandle.standardOutput.write(Data(pages.joined(separator: "\u{0C}").utf8))
 default:
     fail("unknown command \(args[1]): use image or pdf")
 }

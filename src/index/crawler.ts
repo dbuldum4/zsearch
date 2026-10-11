@@ -3,6 +3,7 @@ import { type Dirent, lstatSync, readdirSync, readFileSync, realpathSync, statSy
 import { join, relative } from "node:path"
 import { extOf } from "../kinds.ts"
 import { isMac, PACKAGE_EXTS, SKIP_DIR_NAMES } from "../platform.ts"
+import { pathPolicy } from "./policy.ts"
 
 export interface CrawlOptions {
   roots: string[]
@@ -24,12 +25,15 @@ export interface CrawlOptions {
   opaquePackages?: boolean
 }
 
-export interface CrawlEntry {
+interface CrawlEntry {
   path: string
   name: string
   isDir: boolean
   size: number
   mtime: number
+  created?: number
+  dev?: number
+  ino?: number
   namesOnly: boolean
   /**
    * The file's data is not stored locally (cloud "online-only" placeholder, sparse file):
@@ -43,6 +47,7 @@ export interface CrawlStats {
   files: number
   errors: number
   skipped: number
+  unreadable?: string[]
 }
 
 const IGNORE_FILES = [".gitignore", ".ignore", ".zsearchignore"]
@@ -64,25 +69,31 @@ function under(path: string, prefix: string): boolean {
 export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }): Generator<CrawlEntry> {
   const skipNames = opts.skipDirNames ?? SKIP_DIR_NAMES
   const excludePaths = opts.excludePaths.filter(Boolean)
+  const failed = (path: string) => { stats.errors++; (stats.unreadable ??= []).push(path) }
   const userIgnore = opts.excludePatterns.length ? ignore({ allowRelativePaths: true }).add(opts.excludePatterns) : null
   const opaque = opts.opaquePackages ?? isMac
   const visitedReal = new Set<string>()
   const seenRoots = new Set<string>()
 
-  for (const root of opts.roots) {
+  const namesOnlyPrefixes = opts.namesOnly.map((path) => ({ path, child: path === "/" ? "/" : path + "/" }))
+  const excludePrefixes = excludePaths.map((path) => ({ path, child: path === "/" ? "/" : path + "/" }))
+  const prefixed = (path: string, prefixes: { path: string; child: string }[]) => prefixes.some((p) => path === p.path || path.startsWith(p.child))
+  for (const root of [...opts.roots].sort((a, b) => a.length - b.length)) {
+    if (prefixed(root, excludePrefixes)) continue
     if (seenRoots.has(root) || [...seenRoots].some((r) => under(root, r))) continue
     seenRoots.add(root)
     let rootStat
     try {
       rootStat = statSync(root)
     } catch {
-      stats.errors++
+      failed(root)
       continue
     }
     if (!rootStat.isDirectory()) {
       const name = root.split("/").pop() || root
       stats.files++
-      yield { path: root, name, isDir: false, size: rootStat.size, mtime: Math.floor(rootStat.mtimeMs), namesOnly: false }
+      const policy = pathPolicy(root, opts)
+      if (policy.allowed) yield { path: root, name, isDir: false, size: rootStat.size, mtime: Math.floor(rootStat.mtimeMs), created: Math.floor(rootStat.birthtimeMs), dev: rootStat.dev, ino: rootStat.ino, namesOnly: !policy.content }
       continue
     }
     const rootDev = rootStat.dev
@@ -94,23 +105,26 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
       }
     }
     // Explicit stack: [dir, ignore levels, namesOnly, depth]
-    const stack: [string, IgnoreLevel[], boolean, number][] = [[root, [], opts.namesOnly.some((p) => under(root, p)), 0]]
+    const stack: [string, IgnoreLevel[], boolean, number][] = [[root, [], prefixed(root, namesOnlyPrefixes), 0]]
     while (stack.length) {
       const [dir, parentLevels, dirNamesOnly, depth] = stack.pop()!
       let entries: Dirent[]
       try {
         entries = readdirSync(dir, { withFileTypes: true })
       } catch {
-        stats.errors++
+        failed(dir)
         continue
       }
       stats.dirs++
       let levels = parentLevels
-      if (opts.respectGitignore) {
+      {
         for (const f of IGNORE_FILES) {
+          if (f !== ".zsearchignore" && !opts.respectGitignore) continue
           if (!entries.some((e) => e.name === f && !e.isDirectory())) continue
           try {
-            const ig = ignore({ allowRelativePaths: true }).add(readFileSync(join(dir, f), "utf8"))
+            const file = join(dir, f)
+            if (lstatSync(file).isSymbolicLink() || statSync(file).size > 1024 * 1024) continue
+            const ig = ignore({ allowRelativePaths: true }).add(readFileSync(file, "utf8"))
             if (levels === parentLevels) levels = [...parentLevels]
             levels.push({ base: dir, ig })
           } catch {
@@ -134,7 +148,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
           stats.skipped++
           continue
         }
-        if (excludePaths.some((p) => under(path, p))) {
+        if (prefixed(path, excludePrefixes)) {
           stats.skipped++
           continue
         }
@@ -151,6 +165,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
           st = lstatSync(path)
           if (isLink || st.isSymbolicLink()) {
             isLink = true
+            if (!opts.followSymlinks || !pathPolicy(path, opts).allowed) { stats.skipped++; continue }
             st = statSync(path)
             isDir = st.isDirectory()
             if (isDir && !opts.followSymlinks) {
@@ -163,12 +178,12 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
             isDir = st.isDirectory()
           }
         } catch {
-          stats.errors++
+          failed(path)
           continue
         }
-        const namesOnly = dirNamesOnly || (opts.namesOnly.length > 0 && opts.namesOnly.some((p) => under(path, p)))
+        const namesOnly = dirNamesOnly || (isLink ? !pathPolicy(path, opts).content : prefixed(path, namesOnlyPrefixes))
         if (isDir) {
-          yield { path, name, isDir: true, size: 0, mtime: Math.floor(st.mtimeMs), namesOnly }
+          yield { path, name, isDir: true, size: 0, mtime: Math.floor(st.mtimeMs), created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly }
           if (opaque && PACKAGE_EXTS.has(extOf(name))) continue
           if (opts.oneFileSystem && st.dev !== rootDev) continue
           if (depth >= 64) continue
@@ -185,7 +200,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
         } else {
           stats.files++
           const offline = st.size > 4096 && st.blocks === 0
-          yield { path, name, isDir: false, size: st.size, mtime: Math.floor(st.mtimeMs), namesOnly, offline }
+          yield { path, name, isDir: false, size: st.size, mtime: Math.floor(st.mtimeMs), created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly, offline }
         }
       }
       // Reverse so the walk visits folders in directory order.

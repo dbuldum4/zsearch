@@ -1,8 +1,9 @@
 import { type ClipboardService, type CliRenderer, createClipboard, createHostClipboard, createRendererClipboardAdapter } from "@opentui/core"
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { type Config, configExists, type Paths, paths, saveConfig } from "../config.ts"
+import { type Config, configExists, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
 import { IndexRun, type IndexOutcome, type IndexRunHandlers } from "../index/client.ts"
+import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
 import { copyToClipboard, editorCommand, isTerminalEditor, openWithDefault, revealInFileManager } from "../platform.ts"
 import { SearchClient, type StatsReply } from "../search/client.ts"
@@ -50,13 +51,32 @@ export function realServices(config: Config): Services {
   const p = paths()
   let clipboard: ClipboardService | null = null
   const client = new SearchClient(p.db, config)
+  let baseline = structuredClone(config)
+  let live: IndexRun | null = null
+  const watcher = new RootWatcher(() => {
+    if (live || lockHolder(p.lock) !== null) return false
+    if (!configExists()) return
+    const current = loadConfig(); client.setConfig(current)
+    live = new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() })
+    void live.done.finally(() => { live = null; client.refresh(true) })
+  })
+  watcher.update(config)
+  const reload = () => { if (configExists()) { const current = loadConfig(); client.setConfig(current); watcher.update(current) } }
+  const originalSearch = client.search.bind(client), originalPreview = client.preview.bind(client)
+  client.search = (...args) => { reload(); return originalSearch(...args) }
+  client.preview = (...args) => { reload(); return originalPreview(...args) }
   return {
     paths: p,
     config,
     firstRun: !configExists() || !existsSync(p.db),
     search: client,
-    saveConfig,
-    startIndex: (cfg, handlers) => new IndexRun(cfg, p.db, p.lock, handlers),
+    saveConfig: (next) => {
+      let merged = loadConfig()
+      const value = (c: Config, key: string) => key.split(".").reduce((v: any, k) => v[k], c)
+      for (const key of configKeys()) if (JSON.stringify(value(next, key)) !== JSON.stringify(value(baseline, key))) merged = withConfigSetting(merged, key, value(next, key))
+      saveConfig(merged); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
+    },
+    startIndex: (cfg, handlers) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers),
     indexLockedBy: () => lockHolder(p.lock),
     open: openWithDefault,
     reveal: revealInFileManager,
@@ -73,11 +93,15 @@ export function realServices(config: Config): Services {
       return copyToClipboard(text) ? "host" : null
     },
     async dispose() {
+      watcher.close()
+      live?.cancel()
+      if (live) await live.done
       await clipboard?.dispose().catch(() => {})
       clipboard = null
     },
     edit: async (path, line, suspend, resume) => {
-      const cmd = editorCommand(config.editor, path, line)
+      let cmd: string[]
+      try { cmd = editorCommand(loadConfig().editor, path, line) } catch (err) { return (err as Error).message }
       if (isTerminalEditor(cmd)) {
         await suspend()
         try {

@@ -60,8 +60,8 @@ export class SearchClient {
   private checkStuck() {
     const now = Date.now()
     for (const p of this.pending.values()) {
-      if (p.kind === "search" && now - p.started > this.timeoutMs) {
-        this.restart(`search took longer than ${this.timeoutMs / 1000}s and was stopped`)
+      if (now - p.started > this.timeoutMs) {
+        this.restart(`${p.kind} took longer than ${this.timeoutMs / 1000}s and was stopped`)
         return
       }
     }

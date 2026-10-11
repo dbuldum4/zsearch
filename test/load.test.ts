@@ -16,24 +16,15 @@ describe("how much of the computer indexing uses", () => {
     expect(defaultWorkers(0.1, 16)).toBe(1)
   })
 
-  test("the CPU budget says when this process took more than its share", async () => {
-    const all = new CpuBudget(1, 4)
-    const little = new CpuBudget(0.1, 1)
+  test("the CPU budget says when this process took more than its share", () => {
+    let at = 0, cpu = 0
+    const sample = () => ({ at, cpu })
+    const all = new CpuBudget(1, 4, sample), little = new CpuBudget(0.1, 1, sample)
     expect(little.over).toBe(false)
-    // Busy for half a second: a whole core against a tenth of one.
-    const end = performance.now() + 500
-    let allOver = false
-    while (performance.now() < end) {
-      allOver ||= all.over
-      little.over
-    }
-    expect(allOver).toBe(false)
-    expect(little.over).toBe(true)
+    for (let i = 0; i < 10; i++) { at += 50000; cpu += 50000; little.over }
     expect(all.over).toBe(false)
-    // Idle, the last second's share falls back under the limit.
-    await Bun.sleep(1200)
-    little.over
-    await Bun.sleep(300)
+    expect(little.over).toBe(true)
+    for (let i = 0; i < 30; i++) { at += 50000; little.over }
     expect(little.over).toBe(false)
   })
 

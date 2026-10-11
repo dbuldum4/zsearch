@@ -7,7 +7,7 @@ import type { Mode } from "../search/query.ts"
 import { App } from "./app.tsx"
 import { realServices } from "./services.ts"
 
-export interface RunOptions {
+interface RunOptions {
   config: Config
   query?: string
   mode?: Mode

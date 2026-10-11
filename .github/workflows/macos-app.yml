@@ -12,8 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # create and delete preview releases
-  pull-requests: write # the comment that links to the preview
+  contents: read
 
 concurrency:
   group: macos-app-${{ github.event.pull_request.number || github.ref }}
@@ -26,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.2-noble
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: swift test --package-path macos
 
   app:
@@ -34,11 +33,11 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Build the pull request's own commit, so the preview matches what was pushed.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
@@ -60,23 +59,56 @@ jobs:
           bun test test/ocr.test.ts
         env:
           ZSEARCH_OCR_TEST: ${{ github.workspace }}/dist/zsearch.app/Contents/Helpers/zsearch-ocr
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/zsearch.dmg
           retention-days: 14
-      - name: Publish the preview release
-        # Other branches, and pull requests from forks (read-only token), only upload the artifact.
-        if: >-
-          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-        run: macos/scripts/publish-preview.sh
+      - name: Checksum the DMG
+        run: shasum -a 256 dist/zsearch.dmg > dist/zsearch.dmg.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checksum-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/zsearch.dmg.sha256
+
+  publish:
+    name: Publish preview artifact
+    needs: app
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
+          path: preview
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: checksum-${{ github.event.pull_request.head.sha || github.sha }}
+          path: preview
+      # This privileged job never checks out or executes pull-request code.
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then tag="preview-pr-$PR_NUMBER"; else tag=preview-main; fi
+          printf 'Preview of commit %s. Verify the checksum before installing. This preview is ad-hoc signed; macOS may require Open Anyway.\n' "$SHA" > notes.md
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$tag" preview/zsearch.dmg preview/zsearch.dmg.sha256 --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease --latest=false --title "macOS preview: $tag" --notes-file notes.md
+          if [ -n "$PR_NUMBER" ]; then
+            printf 'macOS preview: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$tag" > comment.md
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          fi
 
   cleanup:
+    permissions:
+      contents: write
     name: Delete the preview release
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

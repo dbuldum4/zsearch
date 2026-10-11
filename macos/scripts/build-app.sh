@@ -5,7 +5,7 @@
 #   macos/scripts/build-app.sh
 #
 # Environment: VERSION (default: package.json), BUILD (default: 1), COMMIT (default: git HEAD).
-# The app is ad-hoc signed: macOS runs it, but it is not notarized (see macos/README.md).
+# Preview builds are ad-hoc signed. Releases use Developer ID and notarization (macos/README.md).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -40,10 +40,17 @@ else
 fi
 plutil -lint "$APP/Contents/Info.plist"
 
-# Sign inside-out: the engine first, then the bundle.
-codesign --force --sign - --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
-codesign --force --sign - --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
-codesign --force --sign - "$APP"
+# Sign inside-out with a stable Developer ID for releases.
+IDENTITY=${ZSEARCH_SIGN_IDENTITY:--}
+SIGN_FLAGS=()
+if [ "$IDENTITY" != "-" ]; then SIGN_FLAGS=(--options runtime --timestamp); fi
+if [ "${ZSEARCH_RELEASE:-0}" = "1" ] && [ "$IDENTITY" = "-" ]; then
+  echo "error: release builds require ZSEARCH_SIGN_IDENTITY" >&2; exit 1
+fi
+# The engine first, then the bundle.
+codesign --force "${SIGN_FLAGS[@]}" --entitlements "$ROOT/macos/engine-entitlements.plist" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
+codesign --force "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
+codesign --force "${SIGN_FLAGS[@]}" --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 # The bundled engine must still run after signing.
@@ -56,3 +63,12 @@ ln -s /Applications "$STAGE/Applications"
 rm -f "$DIST/zsearch.dmg"
 hdiutil create -quiet -volname "zsearch $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO "$DIST/zsearch.dmg"
 echo "Built $APP and $DIST/zsearch.dmg (version $VERSION, build $BUILD, commit $COMMIT)"
+
+if [ "${ZSEARCH_RELEASE:-0}" = "1" ]; then
+  : "${ZSEARCH_NOTARY_PROFILE:?release builds require ZSEARCH_NOTARY_PROFILE}"
+  xcrun notarytool submit "$DIST/zsearch.dmg" --keychain-profile "$ZSEARCH_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DIST/zsearch.dmg"
+  xcrun stapler validate "$DIST/zsearch.dmg"
+  spctl --assess --type open --context context:primary-signature "$DIST/zsearch.dmg"
+fi
+shasum -a 256 "$DIST/zsearch.dmg" > "$DIST/zsearch.dmg.sha256"

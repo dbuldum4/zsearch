@@ -1,15 +1,17 @@
 import { tidy } from "./xml.ts"
+import { cappedText, trackProcess } from "../../util/process.ts"
 
 /** Scanned pages read at most per PDF: OCR takes a fraction of a second per page. */
-export const OCR_MAX_PAGES = 100
+const OCR_MAX_PAGES = 100
 
 /** Run the OCR helper (`zsearch-ocr`, see `ocrToolPath`) and return what it prints. */
-async function runOcr(tool: string, args: string[], timeoutMs: number): Promise<string> {
-  const p = Bun.spawn([tool, ...args], { stdout: "pipe", stderr: "pipe" })
+async function runOcr(tool: string, args: string[], timeoutMs: number, partial = false): Promise<string> {
+  const p = trackProcess(Bun.spawn([tool, ...args], { stdout: "pipe", stderr: "pipe" }))
   const timer = setTimeout(() => p.kill(), timeoutMs)
   try {
-    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited])
-    if (p.signalCode) throw new Error(`OCR timed out after ${timeoutMs / 1000}s`)
+    const [out, err, code] = await Promise.all([cappedText(p.stdout, 8 * 1024 * 1024, () => p.kill()), cappedText(p.stderr, 8192, () => p.kill()), p.exited])
+    if (p.signalCode && !(partial && out.includes("\f"))) throw new Error(`OCR timed out after ${timeoutMs / 1000}s`)
+    if (p.signalCode && partial) return out.slice(0, out.lastIndexOf("\f"))
     if (code !== 0) throw new Error(`OCR failed (${code}): ${err.trim().slice(0, 200)}`)
     return out
   } finally {
@@ -40,7 +42,7 @@ export async function ocrBlankPages(tool: string, path: string, text: string, ti
   if (!pages.some(blankPage)) return text
   let read: string[]
   try {
-    read = (await runOcr(tool, ["pdf", path, "--max-pages", String(OCR_MAX_PAGES)], timeoutMs)).split("\f")
+    read = (await runOcr(tool, ["pdf", path, "--max-pages", String(OCR_MAX_PAGES)], Math.min(540_000, Math.max(timeoutMs, OCR_MAX_PAGES * 5000)), true)).split("\f")
   } catch {
     // The text the PDF has is still worth keeping.
     return text

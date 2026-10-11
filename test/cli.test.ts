@@ -105,6 +105,22 @@ describe("zsearch command line", () => {
     expect((await zs("search", "-m", "regex", "x")).code).toBe(2)
   })
 
+  test("command help, NUL/CSV output, sorting and negated CLI filters", async () => {
+    expect((await zs("search", "--help")).out).toContain("--csv")
+    expect((await zs("duplicates", "--help")).out).toContain("duplicates [--json]")
+    const nul = await zs("search", "-0", "type:slides", "--sort", "name")
+    expect(nul.code).toBe(0)
+    expect(nul.out.endsWith("\0")).toBe(true)
+    expect(nul.out.slice(0, -1).split("\0")).toHaveLength(3)
+    const csv = await zs("search", "--csv", "name:paper.pdf")
+    expect(csv.code).toBe(0)
+    expect(csv.out.split("\n")[0]).toBe("path,kind,size,mtime,match_count")
+    expect(csv.out).toContain('"' + join(corpus.home, "Documents/paper.pdf") + '","pdf",')
+    const inverse = await zs("search", "--json", "budget", "-ext:xlsx")
+    expect(JSON.parse(inverse.out).hits.every((h: { path: string }) => !h.path.endsWith(".xlsx"))).toBe(true)
+    expect((await zs("duplicates", "--json")).code).toBe(0)
+  })
+
   test("status and doctor", async () => {
     const s = await zs("status")
     expect(s.code).toBe(0)

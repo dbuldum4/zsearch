@@ -50,6 +50,7 @@ public struct PreviewLine: Decodable, Hashable, Sendable {
 }
 
 public struct FilePreview: Decodable, Hashable, Sendable {
+    public var contentAllowed: Bool?
     public var id: Int
     public var path: String
     public var display: String
@@ -68,6 +69,7 @@ public struct FilePreview: Decodable, Hashable, Sendable {
 }
 
 public struct IndexStats: Decodable, Hashable, Sendable {
+    public var unreadableFolders: [String]?
     public var files: Int
     public var folders: Int
     public var withContent: Int
@@ -83,6 +85,7 @@ public struct IndexStats: Decodable, Hashable, Sendable {
 }
 
 public struct IndexProgress: Decodable, Hashable, Sendable {
+    public var unreadableFolders: Int?
     public var phase: String
     public var scanned: Int
     public var added: Int
@@ -108,10 +111,12 @@ public struct ContentConfig: Codable, Hashable, Sendable {
     /// Read the text in images and scanned PDF pages. Nil from engines older than OCR, and in
     /// patches that leave it as it is.
     public var ocr: Bool?
+    public var metadata: Bool?
 
-    public init(enabled: Bool, ocr: Bool? = nil) {
+    public init(enabled: Bool, ocr: Bool? = nil, metadata: Bool? = nil) {
         self.enabled = enabled
         self.ocr = ocr
+        self.metadata = metadata
     }
 }
 

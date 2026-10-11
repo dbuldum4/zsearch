@@ -4,7 +4,7 @@
  * at camelCase humps and in consecutive runs score higher, gaps cost points.
  */
 
-export const SCORE_MATCH = 16
+const SCORE_MATCH = 16
 const SCORE_GAP_START = -3
 const SCORE_GAP_EXTENSION = -1
 const BONUS_BOUNDARY = SCORE_MATCH / 2
@@ -52,7 +52,7 @@ function bonusFor(prev: C, cls: C): number {
   return 0
 }
 
-export interface FuzzyResult {
+interface FuzzyResult {
   score: number
   /** Matched character positions in the text. */
   positions: number[]
@@ -128,7 +128,7 @@ function scoreWindow(text: string, lower: string, pattern: string, sidx: number,
 }
 
 /** Exact substring match (fzf's `'term`), scored like a fully consecutive fuzzy match. */
-export function exactMatch(text: string, lower: string, pattern: string, from = 0): FuzzyResult | null {
+function exactMatch(text: string, lower: string, pattern: string, from = 0): FuzzyResult | null {
   let best: FuzzyResult | null = null
   let idx = lower.indexOf(pattern, from)
   let tries = 0
@@ -191,7 +191,7 @@ export function charMask(lower: string): number {
   return m
 }
 
-export interface PathMatch {
+interface PathMatch {
   score: number
   positions: number[]
 }

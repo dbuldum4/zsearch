@@ -27,7 +27,7 @@ DMG_URL="$SERVER/$REPO/releases/download/$TAG/zsearch.dmg"
 NOTES=$(cat <<NOTES
 Preview build of the zsearch Mac app from $SHORT ([build log]($RUN_URL)). It is replaced on every push.
 
-**Install** (from a clone of the repo; downloads with curl, so macOS does not quarantine it):
+**Install** (from a clone of the repo; verifies the download and keeps macOS quarantine):
 
 \`\`\`sh
 macos/scripts/install-preview.sh $ARG
@@ -38,7 +38,8 @@ NOTES
 )
 
 gh release delete "$TAG" --repo "$REPO" --cleanup-tag --yes 2>/dev/null || true
-gh release create "$TAG" "dist/zsearch.dmg" --repo "$REPO" --target "$SHA" --prerelease --latest=false --title "$TITLE" --notes "$NOTES"
+shasum -a 256 dist/zsearch.dmg > dist/zsearch.dmg.sha256
+gh release create "$TAG" "dist/zsearch.dmg" "dist/zsearch.dmg.sha256" --repo "$REPO" --target "$SHA" --prerelease --latest=false --title "$TITLE" --notes "$NOTES"
 
 # Keep one comment on the pull request pointing at the latest build.
 if [ -n "${PR_NUMBER:-}" ]; then

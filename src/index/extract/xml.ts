@@ -1,4 +1,4 @@
-/** Tiny tolerant XML/HTML text extraction helpers (no DOM, regex tokenizer). */
+/** Tiny tolerant XML/HTML text extraction helpers (no DOM, linear scanner). */
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
@@ -52,7 +52,8 @@ export function decodeEntities(s: string): string {
   })
 }
 
-export interface XmlTextSpec {
+interface XmlTextSpec {
+  preserveWhitespace?: boolean
   /** If set, only text inside one of these elements is kept. */
   textTags?: Set<string>
   /** Content of these elements is dropped entirely. */
@@ -69,7 +70,37 @@ export interface XmlTextSpec {
   spaceTags?: Set<string>
 }
 
-const TOKEN = /<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>|<([/?!]?)([A-Za-z_][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>|([^<]+)|</g
+/** Linear tolerant scanner: malformed tags never rescan the remaining input. */
+function* xmlTokens(s: string): Generator<{ text?: string; cdata?: boolean; kind?: string; name?: string; attrs?: string; selfClosing?: boolean; start?: number; end?: number }> {
+  let i = 0
+  while (i < s.length) {
+    if (s[i] !== "<") {
+      const end = s.indexOf("<", i)
+      const next = end < 0 ? s.length : end
+      yield { text: s.slice(i, next) }; i = next; continue
+    }
+    if (s.startsWith("<!--", i) || s.startsWith("<![CDATA[", i)) {
+      const cdata = s.startsWith("<![CDATA[", i)
+      const start = i + (cdata ? 9 : 4)
+      const end = s.indexOf(cdata ? "]]>" : "-->", start)
+      if (cdata) yield { text: s.slice(start, end < 0 ? s.length : end), cdata: true }
+      i = end < 0 ? s.length : end + 3; continue
+    }
+    const start = i++
+    let quote = ""
+    while (i < s.length && s[i] !== "<") {
+      const c = s[i]!
+      if (quote) { if (c === quote) quote = "" }
+      else if (c === '"' || c === "'") quote = c
+      else if (c === ">") break
+      i++
+    }
+    if (s[i] !== ">") continue
+    const tag = s.slice(start + 1, i++)
+    const m = /^([/?!]?)([A-Za-z_][\w:.-]*)([\s\S]*)$/.exec(tag)
+    if (m) yield { kind: m[1], name: m[2], attrs: m[3], start, end: i, selfClosing: /\/\s*$/.test(m[3]!) }
+  }
+}
 
 /** Extract readable text from an XML document according to `spec`. */
 export function xmlText(xml: string, spec: XmlTextSpec): string {
@@ -77,18 +108,15 @@ export function xmlText(xml: string, spec: XmlTextSpec): string {
   let textDepth = 0
   let skipDepth = 0
   const { textTags, skipTags, newlineAfter, tabAfter, pageAfter, newlineTags, tabTags, spaceTags } = spec
-  TOKEN.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = TOKEN.exec(xml))) {
-    const text = m[6] ?? m[1]
-    if (text !== undefined) {
-      if (skipDepth === 0 && (!textTags || textDepth > 0)) out.push(m[1] !== undefined ? text : decodeEntities(text))
+  for (const m of xmlTokens(xml)) {
+    if (m.text !== undefined) {
+      if (skipDepth === 0 && (!textTags || textDepth > 0)) out.push(m.cdata ? m.text : decodeEntities(m.text))
       continue
     }
-    const kind = m[2]
-    const name = m[3]
+    const kind = m.kind
+    const name = m.name
     if (!name || kind === "!" || kind === "?") continue
-    const selfClosing = m[5] === "/"
+    const selfClosing = m.selfClosing
     const closing = kind === "/"
     if (skipTags?.has(name)) {
       if (selfClosing) continue
@@ -103,7 +131,7 @@ export function xmlText(xml: string, spec: XmlTextSpec): string {
       if (newlineTags?.has(name)) out.push("\n")
       else if (tabTags?.has(name)) out.push("\t")
       else if (spaceTags?.has(name)) {
-        const c = /\bc="(\d+)"/.exec(m[4] ?? "")
+        const c = /\bc="(\d+)"/.exec(m.attrs ?? "")
         out.push(" ".repeat(Math.min(64, c ? Number(c[1]) : 1)))
       }
     }
@@ -113,12 +141,12 @@ export function xmlText(xml: string, spec: XmlTextSpec): string {
       else if (tabAfter?.has(name)) out.push("\t")
     }
   }
-  return tidy(tidyCells(out.join("")))
+  return spec.preserveWhitespace ? out.join("") : tidy(tidyCells(out.join("")))
 }
 
 /** Paragraph breaks inside table cells: "a\n\tb\n\t\n" -> "a\tb\n". */
-export function tidyCells(s: string): string {
-  return s.replace(/\n+\t/g, "\t").replace(/\t+\n/g, "\n")
+function tidyCells(s: string): string {
+  return s.replace(/\n+/g, (run, offset, text) => text[offset + run.length] === "\t" ? "" : run).replace(/\t+/g, (run, offset, text) => text[offset + run.length] === "\n" ? "" : run)
 }
 
 /**
@@ -127,12 +155,26 @@ export function tidyCells(s: string): string {
  * Breaks at the end start no page with text and are dropped.
  */
 export function tidy(s: string): string {
-  return s
-    .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
+  const text = s.replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+/g, (run, offset, text) => text[offset + run.length] === "\n" ? "" : run)
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t\n]*\f[^\S\f]*/g, "\f")
-    .replace(/^[^\S\f]+|\s+$/g, "")
+    .replace(/[^\S\f]+/g, (run, offset, text) => text[offset - 1] === "\f" || (text[offset + run.length] === "\f" && /^[ \t\n]+$/.test(run)) ? "" : run)
+  let first = 0
+  while (first < text.length && text[first] !== "\f" && /\s/.test(text[first]!)) first++
+  return text.slice(first).trimEnd()
+}
+
+/** Non-overlapping XML elements, scanned once even when closing tags are missing. */
+export function* xmlElements(xml: string, name: string): Generator<{ attrs: string; body: string }> {
+  let open: { start: number; attrs: string } | null = null
+  for (const token of xmlTokens(xml)) {
+    if (token.name !== name) continue
+    if (token.kind === "/") {
+      if (open) yield { attrs: open.attrs, body: xml.slice(open.start, token.start) }
+      open = null
+    } else if (token.selfClosing) { yield { attrs: token.attrs ?? "", body: "" }; open = null }
+    else open = { start: token.end!, attrs: token.attrs ?? "" }
+  }
 }
 
 const HTML_BLOCK = new Set(
@@ -143,24 +185,22 @@ const HTML_BLOCK = new Set(
 
 /** Visible text of an HTML/XHTML document. */
 export function htmlText(html: string): string {
-  const body = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, (m, tag: string) => (tag.toLowerCase() === "head" ? titleOf(m) : " "))
   const out: string[] = []
-  const re = /<\/?([A-Za-z][\w:-]*)(?:[^>"']|"[^"]*"|'[^']*')*>|([^<]+)|</g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(body))) {
-    if (m[2] !== undefined) out.push(decodeEntities(m[2]).replace(/[ \t\r\n]+/g, " "))
-    else if (m[1]) {
-      const tag = m[1].toLowerCase()
-      if (HTML_BLOCK.has(tag)) out.push("\n")
-      else if (tag === "td" || tag === "th") out.push("\t")
+  const skip = new Set(["script", "style", "noscript", "template", "svg"])
+  let skipped = 0, inHead = 0, inTitle = 0
+  for (const m of xmlTokens(html)) {
+    if (m.text !== undefined) {
+      if (!skipped && (!inHead || inTitle)) out.push(decodeEntities(m.text).replace(/[ \t\r\n]+/g, " "))
+      continue
     }
+    if (!m.name || m.kind === "!" || m.kind === "?") continue
+    const tag = m.name.toLowerCase(), closing = m.kind === "/"
+    if (skip.has(tag)) { if (!m.selfClosing) skipped = Math.max(0, skipped + (closing ? -1 : 1)); continue }
+    if (tag === "head") inHead = closing ? 0 : 1
+    if (tag === "title") inTitle = closing ? 0 : 1
+    if (skipped) continue
+    if (HTML_BLOCK.has(tag)) out.push("\n")
+    else if (tag === "td" || tag === "th") out.push("\t")
   }
-  return tidy(out.join("").replace(/ *\n */g, "\n"))
-}
-
-function titleOf(head: string): string {
-  const t = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(head)
-  return t ? `\n${t[1]}\n` : " "
+  return tidy(out.join("").replace(/ +/g, (run, offset, text) => text[offset - 1] === "\n" || text[offset + run.length] === "\n" ? "" : run))
 }

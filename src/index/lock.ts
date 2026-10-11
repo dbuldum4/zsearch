@@ -1,48 +1,54 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs"
+import { closeSync, constants, fchmodSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs"
 import { dirname } from "node:path"
+import { dlopen, FFIType } from "bun:ffi"
 
+const symbols = { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } } as const
+const lib = (() => {
+  if (process.platform === "darwin") return dlopen("/usr/lib/libSystem.B.dylib", symbols)
+  try { return dlopen("libc.so.6", symbols) }
+  catch { return dlopen(`/lib/libc.musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`, symbols) }
+})()
+const exclusive = (fd: number) => lib.symbols.flock(fd, 2 | 4) === 0
+
+function holder(raw: string): { pid: number; legacy: boolean } | null {
+  try {
+    const value = JSON.parse(raw)
+    const pid = typeof value === "number" ? value : value.pid
+    return Number.isInteger(pid) && pid > 0 ? { pid, legacy: typeof value === "number" } : null
+  } catch { return null }
+}
 function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM"
-  }
+  try { process.kill(pid, 0); return true }
+  catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM" }
 }
 
-/** PID of the process currently indexing, or null. */
+/** Kernel-held locks cannot be confused with a reused PID. Old PID-only locks still work. */
 export function lockHolder(path: string): number | null {
+  let fd: number | undefined
   try {
-    const pid = Number(readFileSync(path, "utf8").trim())
-    return Number.isInteger(pid) && pid > 0 && alive(pid) ? pid : null
-  } catch {
-    return null
-  }
+    fd = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW)
+    const owner = holder(readFileSync(fd, "utf8").trim())
+    if (!exclusive(fd)) return owner?.pid ?? null
+    return owner?.legacy && alive(owner.pid) ? owner.pid : null
+  } catch { return null }
+  finally { if (fd !== undefined) closeSync(fd) }
 }
 
-/** Take the indexing lock. Returns a release function, or null if another live process holds it. */
+/** Keep the lock inode in place: unlinking it permits two writers to lock different inodes. */
 export function acquireLock(path: string): (() => void) | null {
-  mkdirSync(dirname(path), { recursive: true })
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = openSync(path, "wx")
-      writeSync(fd, String(process.pid))
-      closeSync(fd)
-      let released = false
-      return () => {
-        if (released) return
-        released = true
-        try {
-          if (readFileSync(path, "utf8").trim() === String(process.pid)) rmSync(path, { force: true })
-        } catch {
-          // already gone
-        }
-      }
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
-      if (lockHolder(path) !== null) return null
-      rmSync(path, { force: true }) // stale lock from a crashed run
-    }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600)
+  fchmodSync(fd, 0o600)
+  if (!exclusive(fd)) { closeSync(fd); return null }
+  const owner = holder(readFileSync(fd, "utf8").trim())
+  if (owner?.legacy && alive(owner.pid)) { closeSync(fd); return null }
+  ftruncateSync(fd, 0)
+  writeSync(fd, JSON.stringify({ pid: process.pid }), 0, "utf8")
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    ftruncateSync(fd, 0)
+    closeSync(fd)
   }
-  return null
 }

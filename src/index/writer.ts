@@ -5,7 +5,7 @@ import type { ExtractReply } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
 
 /** What is stored of an extraction: all of it but the vocabulary terms. */
-export type StoredReply = Exclude<ExtractReply, { status: "ok" }> | Omit<Extract<ExtractReply, { status: "ok" }>, "terms">
+type StoredReply = Exclude<ExtractReply, { status: "ok" }> | Omit<Extract<ExtractReply, { status: "ok" }>, "terms">
 
 /** An extracted file, ready to store. */
 export interface ContentItem {
@@ -40,7 +40,7 @@ export class ContentWriter {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
     const q = (sql: string) => db.prepare(sql)
     this.st = {
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1 WHERE id = ?"),
+      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = ? WHERE id = ?"),
       ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
       ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
@@ -68,6 +68,7 @@ export class ContentWriter {
   }
 
   private store({ reply: r, name, dirs, inFts }: ContentItem) {
+    if (r.status === "error" && r.error === "cancelled") return
     if (inFts) {
       if (!this.manualDelete) this.st.ftsDeleteRow.run(r.id)
       else {
@@ -79,12 +80,12 @@ export class ContentWriter {
     if (r.status === "ok") {
       this.st.ftsInsert.run(r.id, name, dirs, r.body)
       this.st.contentPut.run(r.id, r.compressed)
-      this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.id)
+      this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", r.id)
     } else {
       this.st.ftsInsert.run(r.id, name, dirs, "")
       this.st.contentDel.run(r.id)
-      if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, r.id)
-      else this.st.setState.run(ContentState.Error, 0, r.error, r.id)
+      if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, "", r.id)
+      else this.st.setState.run(ContentState.Error, 0, r.error, "", r.id)
     }
   }
 
@@ -181,7 +182,7 @@ export type WriteWorkerOut =
  * thread of its own, which does it after each commit. SQLite still does it on the writer's
  * connection once the log passes this many pages, so the log cannot grow without bound.
  */
-export const WRITER_AUTOCHECKPOINT = 8192
+const WRITER_AUTOCHECKPOINT = 8192
 
 /**
  * Writes on a thread of its own, with its own connection, so that the indexer thread can take

@@ -1,10 +1,12 @@
+import { boundedFile } from "../util/files.ts"
 /**
  * Reading an indexed file's text by line range, for `zsearch mcp`'s read_file tool and file
  * resources. Unlike the preview, which shows a window for the eye, this returns the text whole
  * (long lines included) and says exactly where to continue, so a caller can read every byte.
  */
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { decompressText } from "../index/db.ts"
+import { credentialPath, crawlOptionsFor, pathPolicy } from "../index/policy.ts"
 import { decodeText, looksBinary } from "../index/extract/text.ts"
 import type { Kind } from "../kinds.ts"
 import type { SearchEngine } from "./engine.ts"
@@ -25,7 +27,7 @@ export interface ReadOptions {
   context?: number
 }
 
-export interface ReadLine {
+interface ReadLine {
   n: number
   text: string
   /** Match ranges in `text`. */
@@ -63,7 +65,7 @@ const MAX_MATCH_LINES = 100_000
 const MATCH_BUDGET_MS = 2000
 
 /** The line each page starts at, for text with form feeds between pages (empty otherwise). */
-export function pageStartsOf(text: string): number[] {
+function pageStartsOf(text: string): number[] {
   if (!text.includes("\f")) return []
   const starts = [1]
   let line = 1
@@ -75,7 +77,7 @@ export function pageStartsOf(text: string): number[] {
   return starts
 }
 
-type Row = { id: number; path: string; kind: Kind; is_dir: number; size: number; mtime: number; content_state: number; note: string | null }
+type Row = { id: number; path: string; kind: Kind; is_dir: number; size: number; mtime: number; content_state: number; source_path: string; note: string | null }
 
 /**
  * Read the indexed file at `path` (absolute), ignoring case only when nothing matches exactly.
@@ -87,13 +89,15 @@ export function readIndexed(engine: SearchEngine, path: string, query: string, m
   const pattern = query.trim() ? engine.matchPattern(query, mode) : null
   const db = engine.db
   return db.transaction((): ReadResult | null => {
-    const cols = "id, path, kind, is_dir, size, mtime, content_state, note"
+    const cols = "id, path, kind, is_dir, size, mtime, content_state, source_path, note"
     let row = db.query(`SELECT ${cols} FROM files WHERE path = ?`).get(path) as Row | null
     if (!row) {
       const loose = db.query(`SELECT ${cols} FROM files WHERE path = ? COLLATE NOCASE LIMIT 2`).all(path) as Row[]
       row = loose.length === 1 ? loose[0]! : null
     }
     if (!row) return null
+    const policy = pathPolicy(row.path, crawlOptionsFor(engine.config))
+    if (!policy.allowed) return null
     const base: ReadResult = {
       id: row.id,
       path: row.path,
@@ -109,16 +113,18 @@ export function readIndexed(engine: SearchEngine, path: string, query: string, m
       lines: [],
       next: null,
     }
-    if (row.is_dir) return readFolder(base, engine.config.includeHidden, opts)
+    if (credentialPath(row.path) || credentialPath(policy.real!)) return { ...base, message: "credential files cannot be read through MCP" }
+    if (row.is_dir) return readFolder(base, engine, opts)
+    if (!engine.config.content.enabled || !policy.content || (row.source_path && row.source_path !== policy.real)) return { ...base, message: policy.reason ?? "file contents are disabled in settings" }
     let text: string | null = null
     const stored = db.query("SELECT data FROM content WHERE id = ?").get(row.id) as { data: Uint8Array } | null
     if (stored) {
       text = decompressText(stored.data)
       base.source = "index"
     } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
-      // Not stored (names-only area, say): a small text file can still be read as it is now.
+      // Only files currently authorized for content can fall back to disk.
       try {
-        const buf = new Uint8Array(readFileSync(row.path))
+        const buf = boundedFile(policy.real!, 2 * 1024 * 1024)
         if (!looksBinary(buf)) {
           text = decodeText(buf)
           base.source = "disk"
@@ -225,11 +231,11 @@ function takeMatches(out: ReadResult, all: string[], ranges: Map<number, [number
   return out
 }
 
-function readFolder(out: ReadResult, includeHidden: boolean, opts: ReadOptions): ReadResult {
+function readFolder(out: ReadResult, engine: SearchEngine, opts: ReadOptions): ReadResult {
   let names: string[]
   try {
     names = readdirSync(out.path, { withFileTypes: true })
-      .filter((d) => !d.name.startsWith(".") || includeHidden)
+      .filter((d) => pathPolicy(`${out.path}/${d.name}`, crawlOptionsFor(engine.config)).allowed)
       .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
       .sort((a, b) => Number(b.endsWith("/")) - Number(a.endsWith("/")) || a.localeCompare(b))
   } catch (err) {

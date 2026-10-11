@@ -1,18 +1,23 @@
+import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
+import { crawlOptionsFor, pathPolicy } from "../index/policy.ts"
 import type { Kind } from "../kinds.ts"
 import { escapeRegExp, foldTerm, ftsQuote, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
-import { findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
+import { diacriticPattern, findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
+import { booleanQuery, type QueryExpression } from "./boolean.ts"
+import { TopK } from "../util/top-k.ts"
+import { retryClock, type RetryClock } from "../util/clock.ts"
 
-export type Source = "name" | "content"
+type Source = "name" | "content"
 
 export interface SearchHit {
   id: number
@@ -52,6 +57,7 @@ export interface PreviewLine {
 }
 
 export interface Preview {
+  contentAllowed?: boolean
   id: number
   path: string
   display: string
@@ -71,7 +77,7 @@ export interface Preview {
   source: "index" | "disk" | "none"
 }
 
-export interface SearchOptions {
+interface SearchOptions {
   limit?: number
   /** Polled during long scans; return true to abandon the search. */
   cancelled?: () => boolean
@@ -85,8 +91,7 @@ const RANK_POOL = 128
 
 /**
  * Decoded texts by file id, least recently used first. Searching while typing reads the same
- * candidates keystroke after keystroke; this skips their decompression. Cleared whenever the
- * index changes, so it never serves stale text.
+ * candidates keystroke after keystroke; this skips their decompression. Changed and deleted files are evicted after each commit.
  */
 class TextCache {
   private map = new Map<number, string>()
@@ -124,6 +129,11 @@ class TextCache {
     this.chars = 0
   }
 
+  delete(id: number) {
+    const old = this.map.get(id)
+    if (old !== undefined) { this.chars -= old.length; this.map.delete(id) }
+  }
+
   get full(): boolean {
     return this.chars >= this.maxChars * 0.9
   }
@@ -139,6 +149,10 @@ export class SearchEngine {
   readonly vocab = new Vocab()
   private dataVersion = -1
   private generation = ""
+  private cacheSeq = 0
+  private cacheRemoved = 0
+  private frecencySeq = ""
+  private revision = 0
   private frecency = new Map<string, { count: number; last: number }>()
 
   constructor(
@@ -146,6 +160,7 @@ export class SearchEngine {
     public config: Config,
     /** How many decoded characters to keep (UTF-16, so about twice that in bytes). */
     textCacheChars = 24_000_000,
+    private clock: RetryClock = retryClock,
   ) {
     this.texts = new TextCache(textCacheChars)
     this.refresh(true)
@@ -159,18 +174,33 @@ export class SearchEngine {
   refresh(force = false): boolean {
     const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
     if (!force && dv === this.dataVersion) return false
+    return this.db.transaction(() => {
     this.dataVersion = dv
-    this.texts.clear()
     this.warmOrder = null
     const gen = `${getMeta(this.db, "generation") ?? 0}:${getMeta(this.db, "schema_version")}`
     const full = gen !== this.generation
+    this.revision++
+    if (full) this.texts.clear()
+    else {
+      for (const [id] of this.db.query("SELECT id FROM files WHERE seq > ?").values(this.cacheSeq) as number[][]) this.texts.delete(id!)
+      const first = (this.db.query("SELECT MIN(n) AS n FROM removed").get() as { n: number | null }).n
+      if (first !== null && first > this.cacheRemoved + 1) this.texts.clear()
+      else for (const [id] of this.db.query("SELECT id FROM removed WHERE n > ?").values(this.cacheRemoved) as number[][]) this.texts.delete(id!)
+    }
+    this.cacheSeq = Number(getMeta(this.db, "change_seq") ?? 0)
+    this.cacheRemoved = (this.db.query("SELECT COALESCE(MAX(n), 0) AS n FROM removed").get() as { n: number }).n
     this.generation = gen
     this.catalog.load(this.db, !full)
     this.vocab.load(this.db, !full)
-    this.frecency.clear()
-    for (const r of this.db.query("SELECT path, count, last FROM frecency").all() as { path: string; count: number; last: number }[]) this.frecency.set(r.path, r)
-    for (const o of this.unsaved) this.countOpen(o.path, o.at)
+    const opens = getMeta(this.db, "frecency_seq") ?? "0"
+    if (full || opens !== this.frecencySeq) {
+      this.frecencySeq = opens
+      this.frecency.clear()
+      for (const r of this.db.query("SELECT path, count, last FROM frecency").all() as { path: string; count: number; last: number }[]) this.frecency.set(r.path, r)
+      for (const o of this.unsaved) this.countOpen(o.path, o.at)
+    }
     return true
+    })()
   }
 
   /* ------------------------------------------------------------ public -- */
@@ -186,10 +216,12 @@ export class SearchEngine {
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
     try {
+      const expression = booleanQuery(rawQuery)
+      if (expression) return await this.searchExpression(expression, rawQuery, mode, opts, t0)
       if (!q.text && !q.phrases.length) {
         if (hasFilters(q.filters)) {
           res.strategy = "recent files matching filters"
-          const idx = this.catalog.browse(q.filters, limit)
+          const idx = q.filters.sort ? Array.from({ length: this.catalog.size }, (_, i) => i).filter((i) => this.catalog.passes(i, q.filters)).sort((a, b) => this.compareIds(this.catalog.ids[a]!, this.catalog.ids[b]!, q.filters.sort!)).slice(0, limit) : this.catalog.browse(q.filters, limit)
           res.hits = idx.map((i) => this.hit(this.catalog.ids[i]!, 0, ["name"]))
           res.total = res.hits.length
         } else {
@@ -204,12 +236,77 @@ export class SearchEngine {
     } catch (err) {
       res.error = (err as Error).message
     }
+    if (!res.error && !res.hits.length && !q.regex && q.words.length) {
+      const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
+      if (alternatives.some((w, i) => w !== q.words[i])) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
+    }
     return this.done(res, t0)
   }
 
   private done(res: SearchResponse, t0: number): SearchResponse {
+    const policyOpts = crawlOptionsFor(this.config)
+    const returned = res.hits.length
+    res.hits = res.hits.filter((hit) => {
+      const policy = pathPolicy(hit.path, policyOpts)
+      if (!policy.allowed) return false
+      const i = this.catalog.indexOf(hit.id)
+      const contentAllowed = i !== undefined && this.contentAuthorized(i, policyOpts)
+      if (usesMetadata(parseQuery(res.query).filters) && (!this.config.content.metadata || !contentAllowed)) return false
+      if (!contentAllowed) {
+        hit.sources = hit.sources.filter((s) => s !== "content")
+        hit.lines = []; hit.matchCount = 0
+        if (!hit.sources.length) return false
+      }
+      return true
+    })
+    res.total = Math.max(res.hits.length, res.total - (returned - res.hits.length))
     res.elapsedMs = performance.now() - t0
     return res
+  }
+
+  private contentAuthorized(i: number, opts = crawlOptionsFor(this.config)): boolean {
+    if (!this.config.content.enabled) return false
+    const policy = pathPolicy(this.catalog.paths[i]!, opts)
+    return policy.allowed && policy.content && (!this.catalog.sourcePaths.has(this.catalog.ids[i]!) || this.catalog.sourcePaths.get(this.catalog.ids[i]!) === policy.real)
+  }
+
+  private visibleTerm(term: string): boolean {
+    if (!this.config.content.enabled) return false
+    const opts = crawlOptionsFor(this.config)
+    try {
+      for (const [id] of this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : ${ftsQuote(term)}`) as number[][]) {
+        const i = this.catalog.indexOf(id)
+        if (i !== undefined && this.contentAuthorized(i, opts)) return true
+      }
+    } catch {}
+    return false
+  }
+
+  private compareIds(a: number, b: number, sort: string): number {
+    const ia = this.catalog.indexOf(a), ib = this.catalog.indexOf(b)
+    if (ia === undefined || ib === undefined) return 0
+    const c = this.catalog, key = sort.replace(/^-/, ""), sign = sort.startsWith("-") ? -1 : 1
+    const order = key === "size" ? c.sizes[ia]! - c.sizes[ib]! : key === "date" ? c.mtimes[ia]! - c.mtimes[ib]! : key === "name" ? c.paths[ia]!.slice(c.paths[ia]!.lastIndexOf("/") + 1).localeCompare(c.paths[ib]!.slice(c.paths[ib]!.lastIndexOf("/") + 1)) : c.paths[ia]!.localeCompare(c.paths[ib]!)
+    return sign * order || c.paths[ia]!.localeCompare(c.paths[ib]!)
+  }
+
+  private async searchExpression(expr: QueryExpression, query: string, mode: Mode, opts: SearchOptions, started: number): Promise<SearchResponse> {
+    if (expr.op === "leaf") { const res = await this.search(expr.text, mode, opts); res.query = query; return res }
+    const deadline = performance.now() + (opts.budgetMs ?? 2500)
+    const revision = this.revision, config = this.config
+    const parts: SearchResponse[] = []
+    for (const part of expr.parts) parts.push(await this.searchExpression(part, query, mode, { ...opts, limit: 5000, budgetMs: Math.max(1, deadline - performance.now()) }, started))
+    if (this.revision !== revision || this.config !== config) return this.done({ query, mode, resolved: mode, strategy: "grouped search interrupted", hits: [], total: 0, elapsedMs: 0, partial: true }, started)
+    const merged = new Map<number, SearchHit>()
+    for (const [n, part] of parts.entries()) for (const h of part.hits) {
+      const old = merged.get(h.id)
+      if (!old && (expr.op === "or" || n === 0)) merged.set(h.id, structuredClone(h))
+      else if (old) { old.score += h.score; old.sources = [...new Set([...old.sources, ...h.sources])]; old.lines.push(...h.lines.filter((l) => !old.lines.some((o) => o.line === l.line))) }
+    }
+    if (expr.op === "and") for (const id of merged.keys()) if (parts.some((p) => !p.hits.some((h) => h.id === id))) merged.delete(id)
+    const sort = parseQuery(query).filters.sort
+    const hits = [...merged.values()].sort((a, b) => sort ? this.compareIds(a.id, b.id, sort) : b.score - a.score)
+    return this.done({ query, mode, resolved: mode, strategy: "grouped search", total: hits.length, hits: hits.slice(0, opts.limit ?? 100), elapsedMs: 0, partial: parts.some((p) => p.partial || p.total > p.hits.length), error: parts.find((p) => p.error)?.error }, started)
   }
 
   /* ---------------------------------------------------------- strategy -- */
@@ -227,7 +324,6 @@ export class SearchEngine {
     if (!operators) lists.push({ name: "text", weight: 0.6, items: this.keywordMatches(q, limit, q.typing, true), source: "content" })
     res.strategy = operators ? "fuzzy names" : "fuzzy names + typo-tolerant text"
     this.fuse(lists, limit, res, q)
-    res.total = Math.max(res.total, this.catalog.lastMatchCount)
   }
 
   /* ------------------------------------------------------------- names -- */
@@ -357,7 +453,7 @@ export class SearchEngine {
     const idx: number[] = []
     for (const id of ids) {
       const i = cat.indexOf(id)
-      if (i !== undefined && cat.passes(i, filters)) idx.push(i)
+      if (i !== undefined && cat.passes(i, filters) && this.contentAuthorized(i)) idx.push(i)
     }
     if (!idx.length || !groups.length) return []
     const res = groups.map((g) => {
@@ -496,39 +592,51 @@ export class SearchEngine {
   /* ---------------------------------------------------- regex / exact -- */
 
   private buildRegex(q: ParsedQuery, isRegex: boolean): { re: RegExp; req: Req; ci: boolean } {
-    const text = isRegex ? q.text : q.phrases.length && !q.words.length ? q.phrases.join(" ") : q.text
-    const ci = !smartCaseSensitive(text)
-    const source = isRegex ? text : escapeRegExp(text)
+    const text = isRegex ? q.text : q.text.replace(/"([^"]*)"/g, "$1")
+    const ci = q.regexFlags.includes("i") || q.caseMode === false || (q.caseMode !== true && !smartCaseSensitive(text))
+    let source = isRegex ? text : q.all ? [...q.words, ...q.phrases].map(escapeRegExp).join("|") : escapeRegExp(text)
+    if (q.near !== undefined && q.words.length > 1) source = q.words.map(escapeRegExp).join(`(?:[^\\p{L}\\p{N}]+[\\p{L}\\p{N}]+){0,${q.near}}[^\\p{L}\\p{N}]+`)
+    if (q.wholeWord) source = `(?<![\\p{L}\\p{N}])(?:${source})(?![\\p{L}\\p{N}])`
+    if (q.diacritics === false && !isRegex) source = diacriticPattern(source)
     let re: RegExp
     try {
-      re = new RegExp(source, `gm${ci ? "i" : ""}`)
+      re = new RegExp(source, [...new Set(`gm${q.wholeWord || q.near !== undefined || q.diacritics === false ? "u" : ""}${ci ? "i" : ""}${q.regexFlags}`)].join(""))
     } catch {
       try {
-        re = new RegExp(source, `gmu${ci ? "i" : ""}`)
+        re = new RegExp(source, [...new Set(`gmu${ci ? "i" : ""}${q.regexFlags}`)].join(""))
       } catch (err) {
         throw new Error(`invalid regex: ${(err as Error).message.replace(/^Invalid regular expression: /, "")}`)
       }
     }
-    const req = isRegex ? regexRequirements(source, ci) : literalRequirement(text, ci)
+    const req = q.diacritics === false ? regexRequirements(source, ci) : isRegex ? regexRequirements(source, ci) : q.all ? { t: "and" as const, items: [...q.words, ...q.phrases].map((w) => literalRequirement(w, ci)) } : literalRequirement(text, ci)
     return { re, req, ci }
   }
 
   private async runGrep(q: ParsedQuery, limit: number, res: SearchResponse, isRegex: boolean, opts: SearchOptions) {
+    const policyOpts = crawlOptionsFor(this.config)
+    const revision = this.revision
+    const configAtStart = this.config
     const { re, req } = this.buildRegex(q, isRegex)
     const budget = opts.budgetMs ?? 2500
     const deadline = Date.now() + budget
     // Names first: regex over the displayed path.
-    const nameRe = new RegExp(re.source, re.flags.replace("g", "").replace("m", ""))
-    const nameHits = this.catalog.regex(nameRe, q.filters, limit)
-    const contentHits: Ranked[] = []
+    const allParts = q.all && q.near === undefined ? [...q.words, ...q.phrases].map((w) => new RegExp(q.diacritics === false ? diacriticPattern(escapeRegExp(w)) : escapeRegExp(w), re.flags.replace("g", ""))) : []
+    const nameSource = allParts.length ? allParts.map((p) => `(?=[\\s\\S]*${p.source})`).join("") + "[\\s\\S]*" : re.source
+    const nameRe = new RegExp(nameSource, re.flags.replace("g", "").replace("m", ""))
+    const nameHits = this.catalog.regex(nameRe, q.filters, q.filters.sort ? this.catalog.size : Math.max(limit * 5, 100)).filter((m) => pathPolicy(this.catalog.paths[m.idx]!, policyOpts).allowed)
+    if (q.filters.sort) nameHits.sort((a, b) => this.compareIds(this.catalog.ids[a.idx]!, this.catalog.ids[b.idx]!, q.filters.sort!))
+    if (nameHits.length > limit) nameHits.length = limit
+    const best = new TopK<Ranked>(Math.max(limit * 5, 100), (h) => h.count ?? 0, q.filters.sort ? (a, b) => -this.compareIds(a.id, b.id, q.filters.sort!) : undefined)
+    let matched = 0
     const expr = reqToFts(req, this.vocab)
     let scanned = 0
     let candidates = 0
     const check = (id: number, text: string): boolean => {
       scanned++
+      if (allParts.some((part) => !part.test(text))) return false
       const { lines, count } = findLines(text, re, 20, 10_000, deadline)
-      if (count > 0) contentHits.push({ id, lines, count })
-      return contentHits.length >= limit
+      if (count > 0) { matched++; best.add({ id, lines, count }) }
+      return false
     }
     if (expr !== "__no_match__") {
       // Candidate ids from FTS alone (no join), then filtered and ordered newest first with the
@@ -545,7 +653,7 @@ export class SearchEngine {
         const i = cat.indexOf(id)
         // No content-state check: the catalog does not follow content-state changes during an
         // index run, and a file without stored text simply has no row in the batch fetch below.
-        if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters)) idx.push(i)
+        if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters) && this.contentAuthorized(i, policyOpts)) idx.push(i)
       }
       idx.sort((a, b) => cat.mtimes[b]! - cat.mtimes[a]!)
       candidates = idx.length
@@ -567,7 +675,7 @@ export class SearchEngine {
           // Let newer requests in; abandon this scan if one superseded it.
           await new Promise((r) => setImmediate(r))
           lastYield = Date.now()
-          if (opts.cancelled?.()) {
+          if (opts.cancelled?.() || revision !== this.revision || this.config !== configAtStart) {
             res.partial = true
             break
           }
@@ -575,7 +683,8 @@ export class SearchEngine {
       }
     }
     res.strategy = `${isRegex ? "regex" : "exact text"} ${expr ? "(indexed)" : "(full scan)"} · ${scanned.toLocaleString("en-US")} of ${candidates.toLocaleString("en-US")} files read`
-    contentHits.sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+    if (revision !== this.revision || this.config !== configAtStart) { res.partial = true; return }
+    const contentHits = best.values()
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [
       { name: "names", weight: 1, items: nameHits.map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions })), source: "name" },
       { name: "content", weight: 1, items: contentHits, source: "content" },
@@ -583,7 +692,7 @@ export class SearchEngine {
     this.fuse(lists, limit, res, q, true)
     // A file can match by name and by content: count it once.
     const ids = new Set([...nameHits.map((m) => this.catalog.ids[m.idx]!), ...contentHits.map((h) => h.id)])
-    res.total = Math.max(res.total, ids.size)
+    res.total = Math.max(res.total, ids.size, matched)
   }
 
   /* ------------------------------------------------------------ fusion -- */
@@ -647,9 +756,19 @@ export class SearchEngine {
         const boost = i === undefined ? 0 : this.frecencyPoints(i) / 200 + this.recencyPoints(i) / 400
         return { id, e, score: e.score * (1 + boost) }
       })
-      .sort((a, b) => b.score - a.score)
-    res.total = Math.max(res.total, ranked.length)
-    const top = ranked.slice(0, limit)
+      .sort((a, b) => q.filters.sort ? this.compareIds(a.id, b.id, q.filters.sort) : b.score - a.score)
+    const policyOpts = crawlOptionsFor(this.config)
+    const top = ranked.filter(({ id, e }) => {
+      const i = this.catalog.indexOf(id)
+      if (i === undefined) return false
+      const policy = pathPolicy(this.catalog.paths[i]!, policyOpts)
+      if (!policy.allowed) return false
+      if (usesMetadata(q.filters) && (!this.config.content.metadata || !this.contentAuthorized(i, policyOpts))) return false
+      if (!this.contentAuthorized(i, policyOpts)) { e.sources.delete("content"); e.lines = undefined; e.count = 0 }
+      return e.sources.size > 0
+    })
+    res.total = Math.max(res.total, top.length)
+    top.length = Math.min(top.length, limit)
     // Typo expansions are highlighted as whole words.
     const pattern = keepLines ? null : termsPattern(q.words, [...q.phrases, ...this.lastExpansions], q.typing)
     res.hits = top.map(({ id, e, score }, n) => {
@@ -683,12 +802,13 @@ export class SearchEngine {
     // The text cache must not outlive an index update made by another process.
     this.refresh()
     const i = this.catalog.indexOf(id)
-    const row = this.db.query("SELECT path, kind, is_dir, size, mtime, content_state, note FROM files WHERE id = ?").get(id) as {
+    const row = this.db.query("SELECT path, kind, is_dir, size, mtime, source_path, content_state, note FROM files WHERE id = ?").get(id) as {
       path: string
       kind: Kind
       is_dir: number
       size: number
       mtime: number
+      source_path: string
       content_state: number
       note: string | null
     } | null
@@ -709,7 +829,10 @@ export class SearchEngine {
       source: "none",
     }
     if (!row) return { ...base, message: "file is no longer in the index" }
+    const policy = pathPolicy(row.path, crawlOptionsFor(this.config))
+    if (!policy.allowed) return { ...base, contentAllowed: false, message: policy.reason }
     if (row.is_dir) return this.folderPreview(base)
+    if (!this.config.content.enabled || !policy.content || (row.source_path && row.source_path !== policy.real)) return { ...base, contentAllowed: false, message: policy.reason ?? "file contents are disabled in settings" }
     let text: string | null = null
     const stored = this.storedText(id)
     if (stored !== null) {
@@ -717,7 +840,7 @@ export class SearchEngine {
       base.source = "index"
     } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
       try {
-        const buf = new Uint8Array(readFileSync(row.path))
+        const buf = boundedFile(policy.real!, 2 * 1024 * 1024)
         if (!looksBinary(buf)) {
           text = decodeText(buf)
           base.source = "disk"
@@ -780,7 +903,10 @@ export class SearchEngine {
     base.focusLine = focus
     const from = Math.max(1, focus - Math.floor(window / 4))
     const to = Math.min(all.length, from + window - 1)
-    for (let n = from; n <= to; n++) {
+    const folded = parseQuery(rawQuery).fold && base.matchLines.length > 0
+    const visible = new Set<number>()
+    if (folded) for (const match of base.matchLines) for (let n = Math.max(1, match - 2); n <= Math.min(all.length, match + 2); n++) visible.add(n)
+    for (const n of folded ? [...visible].sort((a, b) => a - b).slice(0, window) : Array.from({ length: to - from + 1 }, (_, i) => from + i)) {
       const t = all[n - 1]!
       base.lines.push({ n, text: t.length > 2000 ? t.slice(0, 2000) + "…" : t, ranges: (matchRanges.get(n) ?? []).filter(([a]) => a < 2000) })
     }
@@ -803,7 +929,7 @@ export class SearchEngine {
     let names: string[] = []
     try {
       names = readdirSync(base.path, { withFileTypes: true })
-        .filter((d) => !d.name.startsWith(".") || this.config.includeHidden)
+        .filter((d) => pathPolicy(`${base.path}/${d.name}`, crawlOptionsFor(this.config)).allowed)
         .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
         .sort((a, b) => Number(b.endsWith("/")) - Number(a.endsWith("/")) || a.localeCompare(b))
     } catch (err) {
@@ -857,7 +983,7 @@ export class SearchEngine {
         this.unsaved = []
         throw err
       }
-      this.saveTimer = setTimeout(() => {
+      this.saveTimer = this.clock.setTimeout(() => {
         this.saveTimer = null
         this.saveOpens()
       }, OPEN_RETRY_MS)
@@ -884,3 +1010,5 @@ function ftsWords(tokens: string[], prefixLast: boolean): string {
   const quoted = tokens.map((t, i) => (prefixLast && i === tokens.length - 1 ? `${ftsQuote(t)}*` : ftsQuote(t)))
   return quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`
 }
+
+function usesMetadata(filters: Filters): boolean { return !!filters.tags?.length || !!filters.not?.some(usesMetadata) }

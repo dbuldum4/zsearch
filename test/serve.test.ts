@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { makeCorpus } from "./helpers/corpus.ts"
 
@@ -64,10 +65,14 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(cfg.type).toBe("config")
   expect((cfg.config as { roots: string[] }).roots).toEqual(["~"])
   expect(cfg.config).not.toHaveProperty("bogus")
+  const configPath = join(corpus.home, ".zsearch-data", "config.json")
+  const external = JSON.parse(readFileSync(configPath, "utf8"))
+  external.roots = ["~", "~/another-frontend-root"]
+  writeFileSync(configPath, JSON.stringify(external))
   // A patch changes only what it names: the folders set above stay.
   s.send({ id: 10, type: "setConfig", config: { exclude: ["*.nothing"] } })
   const patched = (await s.reply(10)).config as { roots: string[]; exclude: string[] }
-  expect(patched.roots).toEqual(["~"])
+  expect(patched.roots).toEqual(["~", "~/another-frontend-root"])
   expect(patched.exclude).toEqual(["*.nothing"])
 
   s.send({ id: 2, type: "index" })

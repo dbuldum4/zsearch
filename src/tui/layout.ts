@@ -12,7 +12,7 @@ export interface Row {
   hit: number
 }
 
-export function hitHeight(h: SearchHit): number {
+function hitHeight(h: SearchHit): number {
   return h.lines.length ? 2 : 1
 }
 
@@ -108,7 +108,7 @@ export function resultRows(hits: SearchHit[], selected: number, top: number, col
 
 const PAGE_WORD: Record<string, string> = { pdf: "page", slides: "slide", sheet: "sheet", ebook: "chapter" }
 
-export interface PreviewLayout {
+interface PreviewLayout {
   header: Row[]
   body: Row[]
   /** Visual row index of the focus line within `body`. */

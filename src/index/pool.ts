@@ -25,6 +25,10 @@ export class ExtractPool {
   private affinity = new Map<string, Worker>()
   private flushQueued = false
   private idleResolvers: (() => void)[] = []
+  private timers = new Map<number, ReturnType<typeof setTimeout>>()
+  private started = new Set<number>()
+  private closed = false
+  private children = new Map<Worker, Set<number>>()
   /** Workers in the pool. */
   size: number
 
@@ -51,7 +55,21 @@ export class ExtractPool {
 
   private spawn(): Worker {
     const w = new Worker(workerUrl("index/extract-worker.ts"))
-    w.onmessage = (ev: MessageEvent<ExtractReply>) => this.finish(w, ev.data)
+    w.onmessage = (ev: MessageEvent<ExtractReply | { started: number } | { process: number; running: boolean }>) => {
+      if ("process" in ev.data) {
+        const children = this.children.get(w)
+        if (ev.data.running) children?.add(ev.data.process)
+        else children?.delete(ev.data.process)
+      } else if ("started" in ev.data) {
+        const id = ev.data.started
+        if (this.owner.get(id) !== w) return
+        this.started.add(id)
+        const job = this.assigned.get(w)?.get(id)
+        const timeout = this.opts.fileTimeoutMs ?? (job?.ext === "pdf" && this.opts.ocrTool ? 600_000 : 60_000)
+        this.timers.set(id, setTimeout(() => this.replace(w, "timed out"), timeout))
+      } else if (ev.data.status === "error" && ev.data.error.startsWith("PDF parsing timed out")) this.replace(w, ev.data.error)
+      else this.finish(w, ev.data)
+    }
     w.onerror = (ev) => {
       // A crashed worker (e.g. out of memory on a pathological file) fails its jobs and is replaced.
       ev.preventDefault?.()
@@ -61,12 +79,15 @@ export class ExtractPool {
     w.postMessage(init)
     this.workers.push(w)
     this.assigned.set(w, new Map())
+    this.children.set(w, new Set())
     this.docs.set(w, 0)
     return w
   }
 
   private replace(w: Worker, error: string) {
+    if (this.closed || !this.assigned.has(w)) return
     const jobs = [...(this.assigned.get(w)?.values() ?? [])]
+    this.killChildren(w)
     w.terminate()
     this.workers = this.workers.filter((x) => x !== w)
     this.assigned.delete(w)
@@ -76,8 +97,9 @@ export class ExtractPool {
     this.spawn()
     // The worker takes its jobs on in order, a few at a time: the first ones were running and
     // fail. The others had not started, and go to the workers left.
-    for (const [k, job] of jobs.entries()) {
-      if (k < JOBS_AT_ONCE) this.finish(null, { id: job.id, status: "error", error })
+    const anyStarted = jobs.some((job) => this.started.has(job.id))
+    for (const [position, job] of jobs.entries()) {
+      if (this.started.has(job.id) || (!anyStarted && position === 0)) this.finish(null, { id: job.id, status: "error", error })
       else this.send(job)
     }
   }
@@ -89,6 +111,9 @@ export class ExtractPool {
     const cb = this.waiting.get(reply.id)
     if (!cb) return
     this.waiting.delete(reply.id)
+    clearTimeout(this.timers.get(reply.id))
+    this.timers.delete(reply.id)
+    this.started.delete(reply.id)
     this.owner.delete(reply.id)
     if (owner) {
       const job = this.assigned.get(owner)?.get(reply.id)
@@ -178,8 +203,14 @@ export class ExtractPool {
     return new Promise((r) => this.idleResolvers.push(r))
   }
 
+  private killChildren(w: Worker) {
+    for (const pid of this.children.get(w) ?? []) { try { process.kill(pid, "SIGKILL") } catch {} }
+    this.children.delete(w)
+  }
+
   close() {
-    for (const w of this.workers) w.terminate()
+    this.closed = true
+    for (const w of this.workers) { this.killChildren(w); w.terminate() }
     this.workers = []
     this.assigned.clear()
     this.docs.clear()

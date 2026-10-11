@@ -6,8 +6,8 @@ import { charMask, matchPath, parseFuzzyTerms, type FuzzyTerm } from "./fuzzy.ts
 import type { Filters } from "./query.ts"
 
 /** Columns read for each entry, in this order. */
-const COLUMNS = "id, path, kind, ext, is_dir, size, mtime, seq"
-type Row = [id: number, path: string, kind: Kind, ext: string, isDir: number, size: number, mtime: number, seq: number]
+const COLUMNS = "id, path, kind, ext, is_dir, size, mtime, seq, created, metadata, source_path"
+type Row = [id: number, path: string, kind: Kind, ext: string, isDir: number, size: number, mtime: number, seq: number, created: number, metadata: string, sourcePath: string]
 
 /**
  * In-memory list of every indexed path, for instant name matching (like fzf/fff).
@@ -30,6 +30,9 @@ export class Catalog {
   isDir = new Uint8Array(0)
   sizes = new Float64Array(0)
   mtimes = new Float64Array(0)
+  created = new Float64Array(0)
+  metadata = new Map<number, string>()
+  sourcePaths = new Map<number, string>()
   masks = new Int32Array(0)
   /** Position + 1 of each file id in the arrays above (0: not in the catalog). */
   private pos = new Int32Array(0)
@@ -80,6 +83,9 @@ export class Catalog {
     this.isDir = new Uint8Array(0)
     this.sizes = new Float64Array(0)
     this.mtimes = new Float64Array(0)
+    this.created = new Float64Array(0)
+    this.metadata.clear()
+    this.sourcePaths.clear()
     this.masks = new Int32Array(0)
     this.pos = new Int32Array(0)
     this.maxId = 0
@@ -103,6 +109,13 @@ export class Catalog {
         this.isDir[i] = r[4]
         this.sizes[i] = r[5]
         this.mtimes[i] = r[6]
+        this.created[i] = r[8]
+        if (r[9]) this.metadata.set(r[0], r[9]); else this.metadata.delete(r[0])
+        if (r[10]) this.sourcePaths.set(r[0], r[10]); else this.sourcePaths.delete(r[0])
+        if (this.paths[i] !== r[1]) {
+          this.paths[i] = r[1]; this.display[i] = this.displayFor(r[1]); this.lower[i] = this.display[i]!.toLowerCase()
+          this.nameStart[i] = this.display[i]!.lastIndexOf("/") + 1; this.masks[i] = charMask(this.lower[i]!)
+        }
       }
       if (r[7] > this.maxSeq) this.maxSeq = r[7]
     }
@@ -141,6 +154,7 @@ export class Catalog {
       this.isDir = grow(this.isDir, (l) => new Uint8Array(l))
       this.sizes = grow(this.sizes, (l) => new Float64Array(l))
       this.mtimes = grow(this.mtimes, (l) => new Float64Array(l))
+      this.created = grow(this.created, (l) => new Float64Array(l))
       this.masks = grow(this.masks, (l) => new Int32Array(l))
     }
     if (maxId >= this.pos.length) {
@@ -195,6 +209,10 @@ export class Catalog {
       this.isDir[idx] = r[4]
       this.sizes[idx] = r[5]
       this.mtimes[idx] = r[6]
+      this.created[idx] = r[8]
+      if (r[9]) this.metadata.set(id, r[9])
+      if (r[10]) this.sourcePaths.set(id, r[10])
+      if (r[7] > this.maxSeq) this.maxSeq = r[7]
       this.pos[id] = idx + 1
       if (id > this.maxId) this.maxId = id
     }
@@ -203,6 +221,8 @@ export class Catalog {
   /** Drop entry `i`: the last entry takes its place. */
   private removeAt(i: number) {
     const last = this.size - 1
+    this.metadata.delete(this.ids[i]!)
+    this.sourcePaths.delete(this.ids[i]!)
     this.pos[this.ids[i]!] = 0
     if (i !== last) {
       this.ids[i] = this.ids[last]!
@@ -215,6 +235,7 @@ export class Catalog {
       this.isDir[i] = this.isDir[last]!
       this.sizes[i] = this.sizes[last]!
       this.mtimes[i] = this.mtimes[last]!
+      this.created[i] = this.created[last]!
       this.masks[i] = this.masks[last]!
       this.pos[this.ids[i]!] = i + 1
     }
@@ -254,11 +275,19 @@ export class Catalog {
 
   /** Whether entry `i` passes the filters. */
   passes(i: number, f: Filters): boolean {
+    if (f.names?.some(({ source, flags }) => !new RegExp(source, flags).test(this.paths[i]!.slice(this.paths[i]!.lastIndexOf("/") + 1)))) return false
+    if (f.not?.some((n) => this.passes(i, n))) return false
     if (f.kinds && !f.kinds.has(this.kinds[i]!)) return false
     if (f.notKinds && f.notKinds.has(this.kinds[i]!)) return false
     if (f.exts && !f.exts.has(this.exts[i]!)) return false
     if (f.sizeMin !== undefined && this.sizes[i]! < f.sizeMin) return false
     if (f.sizeMax !== undefined && this.sizes[i]! > f.sizeMax) return false
+    if (f.createdMin !== undefined && this.created[i]! < f.createdMin) return false
+    if (f.createdMax !== undefined && this.created[i]! >= f.createdMax) return false
+    if (f.tags?.some((tag) => {
+      const metadata = this.metadata.get(this.ids[i]!); if (!metadata) return true
+      return !String(JSON.parse(metadata).tags ?? "").split("\n").some((s) => s.toLowerCase() === tag.toLowerCase())
+    })) return false
     if (f.mtimeMin !== undefined && this.mtimes[i]! < f.mtimeMin) return false
     if (f.mtimeMax !== undefined && this.mtimes[i]! >= f.mtimeMax) return false
     if (f.inPaths.length) {

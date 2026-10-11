@@ -116,11 +116,6 @@ export function segsWidth(segs: Seg[]): number {
   return segs.reduce((n, s) => n + width(s.text), 0)
 }
 
-/** Shift highlight ranges after cutting `cut` characters from the left of a string. */
-export function shiftRanges(ranges: [number, number][], cut: number): [number, number][] {
-  return ranges.map(([a, b]) => [a - cut, b - cut] as [number, number]).filter(([, b]) => b > 0)
-}
-
 /** Wrap a line into rows of at most `cols` columns, keeping highlight ranges per row. */
 export function wrapLine(text: string, ranges: [number, number][], cols: number, maxRows = 50): { text: string; ranges: [number, number][] }[] {
   if (cols <= 0) return [{ text: "", ranges: [] }]

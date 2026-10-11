@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
@@ -11,6 +12,7 @@ export interface ContentConfig {
   maxTextMB: number
   /** Extracted text kept per file, in characters. */
   maxChars: number
+  metadata: boolean
   /** Read the text in images and scanned PDF pages, where the OCR helper is available (Mac app). */
   ocr: boolean
 }
@@ -35,6 +37,7 @@ export interface Config {
   content: ContentConfig
   /** Refresh the index in the background when it is older than this (0 = never). */
   autoRefreshMinutes: number
+  liveUpdates: boolean
   /** Extraction worker threads (0 = automatic). */
   workers: number
   /**
@@ -63,8 +66,9 @@ export function defaultConfig(): Config {
     followSymlinks: false,
     oneFileSystem: false,
     cloudContent: false,
-    content: { enabled: true, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000, ocr: true },
+    content: { enabled: true, metadata: false, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000, ocr: true },
     autoRefreshMinutes: 60,
+    liveUpdates: true,
     workers: 0,
     indexLoad: 70,
     editor: "",
@@ -77,7 +81,7 @@ export function home(): string {
   return process.env.HOME || homedir()
 }
 
-export function expandHome(p: string): string {
+function expandHome(p: string): string {
   if (p === "~") return home()
   if (p.startsWith("~/")) return join(home(), p.slice(2))
   return p
@@ -130,6 +134,73 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
+/** Validation shared by the CLI, app and MCP. */
+const CONFIG_RULES: Record<string, (v: unknown) => string | null> = {
+  defaultMode: (v) => v === "find" || v === "fuzzy" ? null : 'must be "find" or "fuzzy"',
+  indexLoad: (v) => Number.isInteger(v) && Number(v) >= 10 && Number(v) <= 100 ? null : "must be a whole number from 10 to 100 (percent)",
+  workers: (v) => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 64 ? null : "must be a whole number from 0 (automatic) to 64",
+  autoRefreshMinutes: (v) => Number.isFinite(v) && Number(v) >= 0 ? null : "must be 0 (off) or more",
+  "content.maxDocumentMB": (v) => Number.isFinite(v) && Number(v) > 0 ? null : "must be more than 0",
+  "content.maxTextMB": (v) => Number.isFinite(v) && Number(v) > 0 ? null : "must be more than 0",
+  "content.maxChars": (v) => Number.isInteger(v) && Number(v) > 0 ? null : "must be a whole number above 0",
+}
+
+export function configKeys(): string[] {
+  const out: string[] = []
+  const walk = (o: Record<string, unknown>, prefix = "") => {
+    for (const [k, v] of Object.entries(o)) {
+      if (isObject(v)) walk(v, `${prefix}${k}.`)
+      else out.push(prefix + k)
+    }
+  }
+  walk(defaultConfig() as unknown as Record<string, unknown>)
+  return out
+}
+
+/** Convert and validate one setting without mutating the caller's copy. */
+export function withConfigSetting(config: Config, key: string, raw: unknown): Config {
+  if (!configKeys().includes(key)) throw new Error(`unknown config key: ${key}`)
+  const parts = key.split(".")
+  const next = structuredClone(config)
+  const parent = parts.slice(0, -1).reduce<Record<string, unknown>>((o, k) => o[k] as Record<string, unknown>, next as unknown as Record<string, unknown>)
+  const last = parts.at(-1)!
+  const cur = parent[last]
+  let value = raw
+  if (Array.isArray(cur)) {
+    if (typeof raw === "string") {
+      try { value = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",") }
+      catch { throw new Error(`${key} expects a list of strings`) }
+    }
+    if (!Array.isArray(value) || value.some((x) => typeof x !== "string")) throw new Error(`${key} expects a list of strings`)
+    value = value.map((s: string) => s.trim()).filter(Boolean)
+  } else if (typeof cur === "boolean") {
+    if (typeof raw === "string" && /^(true|false|1|0|yes|no|on|off)$/i.test(raw)) value = /^(true|1|yes|on)$/i.test(raw)
+    if (typeof value !== "boolean") throw new Error(`${key} expects true or false`)
+  } else if (typeof cur === "number") {
+    if (typeof raw === "string" && raw.trim()) value = Number(raw)
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} expects a number`)
+  } else if (typeof value !== typeof cur) throw new Error(`${key} expects a ${typeof cur}`)
+  const problem = CONFIG_RULES[key]?.(value)
+  if (problem) throw new Error(`${key} ${problem}`)
+  parent[last] = value
+  return next
+}
+
+/** Reject invalid app patches rather than silently saving unusable settings. */
+export function validateConfigPatch(base: Config, patch: unknown): Config {
+  if (!isObject(patch)) throw new Error("expected a settings object")
+  let out = structuredClone(base)
+  const walk = (o: Record<string, unknown>, prefix = "") => {
+    for (const [k, v] of Object.entries(o)) {
+      const key = prefix + k
+      if (isObject(v) && configKeys().some((s) => s.startsWith(key + "."))) walk(v, `${key}.`)
+      else if (configKeys().includes(key)) out = withConfigSetting(out, key, v)
+    }
+  }
+  walk(patch)
+  return out
+}
+
 /** Deep-merge a partial user config onto defaults, ignoring unknown or ill-typed keys. */
 export function mergeConfig(base: Config, patch: unknown): Config {
   const out = structuredClone(base) as unknown as Record<string, unknown>
@@ -166,48 +237,24 @@ export function loadConfig(): Config {
 
 export function saveConfig(config: Config): void {
   const file = paths().configFile
-  mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n")
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  chmodSync(dirname(file), 0o700)
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600, flag: "wx" })
   renameSync(tmp, file)
 }
 
 /** Set a dotted key (e.g. "content.enabled") from a CLI string value. */
 export function setConfigValue(config: Config, key: string, raw: string): Config {
-  const parts = key.split(".")
-  let obj = config as unknown as Record<string, unknown>
-  for (let i = 0; i < parts.length - 1; i++) {
-    const next = obj[parts[i]!]
-    if (!isObject(next)) throw new Error(`unknown config key: ${key}`)
-    obj = next
-  }
-  const last = parts[parts.length - 1]!
-  if (!(last in obj)) throw new Error(`unknown config key: ${key}`)
-  const cur = obj[last]
-  let value: unknown
-  if (typeof cur === "boolean") {
-    if (!/^(true|false|1|0|yes|no|on|off)$/i.test(raw)) throw new Error(`${key} expects true or false`)
-    value = /^(true|1|yes|on)$/i.test(raw)
-  } else if (typeof cur === "number") {
-    value = Number(raw)
-    if (!Number.isFinite(value)) throw new Error(`${key} expects a number`)
-  } else if (Array.isArray(cur)) {
-    value = raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-  } else if (typeof cur === "string") {
-    value = raw
-  } else {
-    throw new Error(`cannot set ${key} directly`)
-  }
-  obj[last] = value
-  return config
+  return withConfigSetting(config, key, raw)
 }
 
 export function ensureDirs(): Paths {
   const p = paths()
-  mkdirSync(p.data, { recursive: true })
-  mkdirSync(p.config, { recursive: true })
+  mkdirSync(p.data, { recursive: true, mode: 0o700 })
+  mkdirSync(p.config, { recursive: true, mode: 0o700 })
+  chmodSync(p.data, 0o700)
+  chmodSync(p.config, 0o700)
+  if (existsSync(p.configFile)) chmodSync(p.configFile, 0o600)
   return p
 }

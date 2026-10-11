@@ -14,7 +14,7 @@ import { StyledLine } from "./line.tsx"
 import { fitSegs, type Seg, segsWidth, truncate } from "./styled.ts"
 import { DARK, LIGHT, type Theme } from "./theme.ts"
 
-export interface AppProps {
+interface AppProps {
   services: Services
   /** Initial query (from the command line). */
   initialQuery?: string
@@ -90,8 +90,9 @@ export function App(props: AppProps) {
     const issued = Date.now()
     setSearching(true)
     const res = await svc.search.search(q, m, 200)
-    if (seq !== searchSeq || !res) return
+    if (seq !== searchSeq) return
     setSearching(false)
+    if (!res) return
     // Keep the highlighted file if the user moved to it while this search was running.
     const prevId = current()?.id
     if (lastMove > issued) keepSelection = true
@@ -276,6 +277,22 @@ export function App(props: AppProps) {
     else notify("Could not reach a clipboard (install wl-clipboard, xclip or xsel)", "warn")
   }
 
+  const copyAll = async () => {
+    const where = await svc.copy(hits().map((h) => h.path).join("\n"), renderer)
+    notify(where ? `Copied ${hits().length} paths` : "Could not reach a clipboard", where ? "ok" : "warn")
+  }
+  const excludeSelected = () => {
+    const h = current()
+    if (h) applySettings({ ...config(), exclude: [...new Set([...config().exclude, h.path])] }, true)
+  }
+  const cycleSort = () => {
+    const sorts = ["name", "size", "-date", "path"]
+    const previous = /\bsort:(\S+)/.exec(query())?.[1] ?? "path"
+    const next = sorts[(sorts.indexOf(previous) + 1) % sorts.length]!
+    setQuery(`${query().replace(/\s*\bsort:\S+/g, "").trim()} sort:${next}`)
+    if (input) input.value = query()
+  }
+
   const move = (delta: number) => {
     const n = hits().length
     if (!n) return
@@ -377,6 +394,10 @@ export function App(props: AppProps) {
     if (k === "tab") return handled(() => cycleMode(key.shift ? -1 : 1))
     if (k === "f1" || (key.ctrl && (k === "/" || k === "_"))) return handled(() => setOverlay("help"))
     if (key.ctrl) {
+      if (key.shift && k === "t") return handled(() => { setQuery(query().replace(/\s*\bfold:[^\s]+/g, "") + (query().includes("fold:on") ? " fold:off" : " fold:on")); scheduleSearch(0) })
+      if (key.shift && k === "y") return handled(copyAll)
+      if (key.shift && k === "x") return handled(excludeSelected)
+      if (key.shift && k === "o") return handled(cycleSort)
       switch (k) {
         case "e":
           return handled(editSelected)
@@ -546,7 +567,7 @@ export function App(props: AppProps) {
             value={props.initialQuery ?? ""}
             focused={!overlay()}
             flexGrow={1}
-            placeholder="Search names and contents · try ext:pdf, in:~/Documents, /regex/, ?question"
+            placeholder="Search names and contents · try ext:pdf, in:~/Documents, /regex/, name:*.pdf"
             textColor={t().text}
             cursorColor={t().accent}
             onInput={(v: string) => setQuery(v)}
@@ -613,7 +634,9 @@ const HELP: [string, [string, string][]][] = [
       ["Enter", "open with the default app"],
       ["^E", "open in your editor at the match"],
       ["^O", "reveal in the file manager"],
-      ["^Y", "copy the path"],
+      ["^Y / Ctrl-Shift-Y", "copy selected / all paths"],
+      ["Ctrl-Shift-X", "exclude this file or folder"],
+      ["Ctrl-Shift-O / Ctrl-Shift-T", "cycle sorting / fold preview"],
       ["Tab, Alt-1 / Alt-2", "switch between find and fuzzy"],
       ["^T", "toggle preview"],
       ["Shift-↑↓  ^D ^U", "scroll preview"],
@@ -634,6 +657,9 @@ const HELP: [string, [string, string][]][] = [
   [
     "Query syntax",
     [
+      ["*.pdf  name:/^IMG_/i", "glob / regex over file names"],
+      ["all:alpha beta / alpha OR beta", "all words / alternatives (group with parentheses)"],
+      ["sort:-size  case:on  word:on", "ordering / match controls"],
       ["ext:pdf,docx  type:doc", "extension / kind (doc, sheet, slides, code…)"],
       ["in:~/Documents  path:2024", "inside a folder / path contains"],
       ["size:>5mb  mtime:<7d", "size / age (also after:2024-01-01)"],

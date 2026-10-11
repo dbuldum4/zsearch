@@ -12,7 +12,7 @@ const CP1252: Record<number, string> = {
   0x98: "˜", 0x99: "™", 0x9a: "š", 0x9b: "›", 0x9c: "œ", 0x9e: "ž", 0x9f: "Ÿ",
 }
 
-export function cp1252(bytes: Uint8Array, start = 0, end = bytes.length): string {
+function cp1252(bytes: Uint8Array, start = 0, end = bytes.length): string {
   let s = ""
   for (let i = start; i < end; i++) {
     const b = bytes[i]!
@@ -30,7 +30,7 @@ export function isOle2(buf: Uint8Array): boolean {
 }
 
 /** OLE2 / Compound File Binary reader. */
-export class Cfb {
+class Cfb {
   private view: DataView
   private sectorSize: number
   private miniSectorSize: number
@@ -48,7 +48,9 @@ export class Cfb {
     this.miniSectorSize = 1 << v.getUint16(0x20, true)
     if (this.sectorSize !== 512 && this.sectorSize !== 4096) throw new Error("bad sector size")
     this.miniCutoff = v.getUint32(0x38, true)
+    if (this.miniSectorSize !== 64) throw new Error("bad mini sector size")
     const numFat = v.getUint32(0x2c, true)
+    if (numFat > Math.floor(buf.length / this.sectorSize)) throw new Error("compound file allocation table exceeds size budget")
     // DIFAT: 109 entries in the header, the rest chained through DIFAT sectors.
     const fatSectors: number[] = []
     for (let i = 0; i < 109 && fatSectors.length < numFat; i++) fatSectors.push(v.getUint32(0x4c + i * 4, true))
@@ -114,6 +116,7 @@ export class Cfb {
   }
 
   private readMiniChain(start: number, size: number): Uint8Array {
+    if (size > this.miniStream.length || size > 64 * 1024 * 1024) throw new Error("compound file stream exceeds size budget")
     const out = new Uint8Array(size)
     let s = start
     let pos = 0
@@ -184,10 +187,16 @@ export function extractDoc(buf: Uint8Array): string {
 function piecesText(wd: Uint8Array, clx: Uint8Array, maxCp: number): string {
   const v = new DataView(clx.buffer, clx.byteOffset, clx.byteLength)
   let i = 0
-  while (i < clx.length && clx[i] === 0x01) i += 3 + v.getInt16(i + 1, true)
-  if (clx[i] !== 0x02) throw new Error("corrupt piece table")
+  while (i < clx.length && clx[i] === 0x01) {
+    if (i + 3 > clx.length) throw new Error("corrupt piece table")
+    const size = v.getInt16(i + 1, true)
+    if (size < 0 || i + 3 + size > clx.length) throw new Error("corrupt piece table")
+    i += 3 + size
+  }
+  if (clx[i] !== 0x02 || i + 5 > clx.length) throw new Error("corrupt piece table")
   const lcb = v.getUint32(i + 1, true)
   const plc = i + 5
+  if (lcb < 4 || plc + lcb > clx.length) throw new Error("corrupt piece table")
   const n = Math.floor((lcb - 4) / 12)
   const out: string[] = []
   for (let k = 0; k < n; k++) {

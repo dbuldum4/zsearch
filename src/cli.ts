@@ -1,3 +1,5 @@
+import { progressLine } from "./util/progress.ts"
+export { progressLine } from "./util/progress.ts"
 import { existsSync, rmSync } from "node:fs"
 import { Database } from "bun:sqlite"
 import pkg from "../package.json" with { type: "json" }
@@ -15,6 +17,8 @@ import {
   tildify,
 } from "./config.ts"
 import { indexStats, openDb } from "./index/db.ts"
+import { excludingPath } from "./index/exclude.ts"
+import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
 import { acquireLock, lockHolder } from "./index/lock.ts"
 import { KIND_BADGE } from "./kinds.ts"
@@ -33,6 +37,8 @@ Usage
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
   zsearch config [get|set|path|reset] [key] [value]
+  zsearch duplicates [--json]      find identical indexed files
+  zsearch exclude <path>          exclude an indexed file or folder
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
   zsearch serve                   JSON lines on stdin/stdout (for the macOS app)
@@ -49,6 +55,9 @@ Search options
   -e, --regex         treat the query as a regular expression
   -n, --limit <n>     maximum results (default 20)
   -l, --files         print paths only
+  -0                  NUL-separated paths
+      --csv           CSV output
+      --sort <key>    name, size, date, path (prefix - for descending)
       --json          JSON output
       --no-color      disable colors
 
@@ -79,7 +88,7 @@ interface Args {
   flags: Map<string, string | boolean>
 }
 
-const VALUE_FLAGS = new Set(["mode", "m", "limit", "n"])
+const VALUE_FLAGS = new Set(["mode", "m", "limit", "n", "sort"])
 
 export function parseArgs(argv: string[]): Args {
   const _: string[] = []
@@ -90,6 +99,8 @@ export function parseArgs(argv: string[]): Args {
       _.push(...argv.slice(i + 1))
       break
     }
+    if (a === "-0") { flags.set("0", true); continue }
+    if (/^-[a-z]+:/.test(a)) { _.push(a); continue }
     if (a.startsWith("--")) {
       const eq = a.indexOf("=")
       if (eq > 0) flags.set(a.slice(2, eq), a.slice(eq + 1))
@@ -135,7 +146,7 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
   if (flag(args, "help", "h")) {
-    process.stdout.write(HELP)
+    process.stdout.write(commandHelp(args._[0]))
     return 0
   }
   if (flag(args, "version", "v")) {
@@ -151,6 +162,22 @@ export async function main(argv: string[]): Promise<number> {
       case "index":
       case "i":
         return await cmdIndex(rest, args)
+      case "exclude": {
+        if (!rest.length) throw new UsageError("exclude needs an indexed path")
+        const db = openDb(paths().db)
+        try { saveConfig(excludingPath(db, loadConfig(), rest.join(" "))) } finally { db.close() }
+        return await cmdIndex([], args)
+      }
+      case "duplicates": {
+        const db = openDb(paths().db)
+        try {
+          const result = await duplicateFiles(db, loadConfig())
+          if (flag(args, "json")) console.log(JSON.stringify(result, null, 2))
+          else for (const group of result.groups) console.log(`${formatBytes(group.size)} each\n${group.paths.join("\n")}\n`)
+          if (result.partial) console.error("Duplicate scan reached its time budget; some files were not checked.")
+          return 0
+        } finally { db.close() }
+      }
       case "status":
         return cmdStatus(args)
       case "config":
@@ -206,6 +233,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
   }
   const mode = parseMode(flag(args, "mode", "m")) ?? "find"
   if (flag(args, "regex", "e") === true) query = `re:${query}`
+  if (typeof flag(args, "sort") === "string") query += ` sort:${flag(args, "sort")}`
   const limitFlag = flag(args, "limit", "n")
   const limit = typeof limitFlag === "string" ? Math.max(1, Number(limitFlag) || 20) : 20
   const db = openDb(p.db)
@@ -221,6 +249,16 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
     return 2
   }
   const c = color(process.stdout.isTTY === true && flag(args, "color") !== false && !process.env.NO_COLOR)
+  if (flag(args, "0")) {
+    process.stdout.write(res.hits.map((h) => h.path + "\0").join(""))
+    return res.hits.length ? 0 : 1
+  }
+  if (flag(args, "csv")) {
+    const cell = (v: string | number) => `"${String(v).replaceAll('"', '""')}"`
+    console.log("path,kind,size,mtime,match_count")
+    for (const h of res.hits) console.log([h.path, h.kind, h.size, new Date(h.mtime).toISOString(), h.matchCount].map(cell).join(","))
+    return res.hits.length ? 0 : 1
+  }
   if (flag(args, "files", "l")) {
     for (const h of res.hits) console.log(h.path)
     return res.hits.length ? 0 : 1
@@ -341,6 +379,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         `Done in ${formatDuration(result.elapsedMs)}: ${formatCount(result.scanned)} items scanned, ${formatCount(result.added)} new, ${formatCount(result.updated)} changed, ${formatCount(result.removed)} removed.`,
       )
       console.error(`Index: ${formatCount(stats.files)} files, ${formatCount(stats.folders)} folders, ${formatCount(stats.withContent)} with text (${formatBytes(stats.contentBytes)}), ${formatBytes(stats.dbBytes)} on disk.`)
+      if (result.unreadableFolders) console.error(`Could not read ${result.unreadableFolders} folders (check permissions); their indexed files were kept.`)
       if (result.contentErrors) console.error(`${formatCount(result.contentErrors)} files could not be read (see \`zsearch status --errors\`).`)
     }
     return 0
@@ -348,22 +387,6 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
     process.off("SIGINT", onSignal)
     process.off("SIGTERM", onSignal)
     release()
-  }
-}
-
-export function progressLine(p: IndexProgress): string {
-  switch (p.phase) {
-    case "starting":
-    case "scan":
-      return `Scanning… ${formatCount(p.scanned)} items  ${tildify(p.current)}`
-    case "content": {
-      const pct = p.contentTotal ? Math.floor((p.contentDone / p.contentTotal) * 100) : 100
-      return `Reading contents ${pct}%  ${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} · ${formatBytes(p.contentBytes)}  ${tildify(p.current)}`
-    }
-    case "cleanup":
-      return `Cleaning up ${formatCount(p.removed)} removed files…`
-    default:
-      return `${p.phase} in ${formatDuration(p.elapsedMs)}`
   }
 }
 
@@ -388,6 +411,7 @@ function cmdStatus(args: Args): number {
   console.log(`Files        ${formatCount(s.files)} files, ${formatCount(s.folders)} folders`)
   console.log(`Contents     ${formatCount(s.withContent)} files with text (${formatBytes(s.contentBytes)}), ${formatCount(s.skipped)} skipped, ${formatCount(s.errors)} unreadable, ${formatCount(s.pending)} pending`)
   console.log(`Updated      ${s.lastIndexedAt ? `${formatAge(s.lastIndexedAt)} (took ${formatDuration(s.lastDurationMs ?? 0)})` : "never completed"}`)
+  if (s.unreadableFolders?.length) console.log(`Could not read ${s.unreadableFolders.length} folders (check permissions); indexed files were kept.`)
   const holder = lockHolder(p.lock)
   if (holder) console.log(`Indexing     in progress (pid ${holder})`)
   if (flag(args, "errors")) {
@@ -482,3 +506,8 @@ function cmdDoctor(): number {
 }
 
 export type { Config }
+
+function commandHelp(command?: string): string {
+  const usage: Record<string, string> = { search: "search <query> [-m find|fuzzy] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
+}

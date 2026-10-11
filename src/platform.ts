@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { existsSync, accessSync, constants, statSync, realpathSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
 import { home, paths } from "./config.ts"
 
 export const isMac = process.platform === "darwin"
@@ -66,7 +66,6 @@ export const SKIP_DIR_NAMES = new Set([
   ".android",
   ".vagrant.d",
   ".docker",
-  ".local/share/Trash",
 ])
 
 /**
@@ -187,13 +186,16 @@ export function systemNamesOnly(): string[] {
 }
 
 function which(cmd: string): string | null {
-  const r = spawnSync("sh", ["-c", `command -v ${cmd}`], { encoding: "utf8" })
-  const out = r.stdout?.trim()
-  return r.status === 0 && out ? out : null
+  if (!cmd) return null
+  const candidates = cmd.includes("/") ? [resolve(cmd)] : (process.env.PATH ?? "").split(":").map((dir) => join(dir || ".", cmd))
+  for (const path of candidates) {
+    try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return resolve(path) } catch {}
+  }
+  return null
 }
 
 const whichCache = new Map<string, string | null>()
-export function findTool(cmd: string): string | null {
+function findTool(cmd: string): string | null {
   if (!whichCache.has(cmd)) whichCache.set(cmd, which(cmd))
   return whichCache.get(cmd) ?? null
 }
@@ -236,7 +238,12 @@ export function revealInFileManager(path: string, isDir: boolean): Promise<strin
 export function editorCommand(editorSetting: string, file: string, line?: number): string[] {
   const editor = editorSetting || process.env.VISUAL || process.env.EDITOR || (findTool("nvim") ? "nvim" : findTool("vim") ? "vim" : "vi")
   const parts = editor.split(/\s+/).filter(Boolean)
-  const bin = parts[0]!.split("/").pop()!
+  const executable = findTool(parts[0]!)
+  if (!executable) throw new Error(`editor executable not found: ${parts[0]}`)
+  const bin = executable.split("/").pop()!
+  const interpreter = /^(?:ba|da|z|fi|tc|c|k)?sh$|^(?:bash|fish|python[0-9.]*|perl|ruby|node|bun|env|osascript)$/
+  if (interpreter.test(bin) || interpreter.test(realpathSync(executable).split("/").pop()!)) throw new Error("choose an editor executable, not a command interpreter")
+  parts[0] = executable
   if (line && line > 0) {
     if (/^(code|code-insiders|cursor|codium|windsurf)$/.test(bin)) return [...parts, "-g", `${file}:${line}`]
     if (/^(zed|subl|sublime_text|hx|helix|micro)$/.test(bin)) return [...parts, `${file}:${line}`]
@@ -282,14 +289,6 @@ export function ocrToolPath(): string | null {
 }
 
 export function pdftotextPath(): string | null {
-  if (process.env.ZSEARCH_NO_PDFTOTEXT) return null
+  if (/^(1|true|yes|on)$/i.test(process.env.ZSEARCH_NO_PDFTOTEXT ?? "")) return null
   return findTool("pdftotext")
-}
-
-export function fileExists(p: string): boolean {
-  try {
-    return existsSync(p)
-  } catch {
-    return false
-  }
 }

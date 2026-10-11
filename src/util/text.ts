@@ -6,7 +6,7 @@ const MARKS = /\p{M}+/gu
 /** Lower-case and strip diacritics, the way unicode61 folds tokens. */
 export function foldTerm(s: string): string {
   if (!NON_ASCII.test(s)) return s.toLowerCase()
-  return s.normalize("NFD").replace(MARKS, "").toLowerCase()
+  return s.normalize("NFC").replace(/\p{Script=Latin}\p{M}*/gu, (c) => c.normalize("NFD").replace(MARKS, "")).toLowerCase()
 }
 
 const WORD = /[\p{L}\p{N}\p{Co}]+/gu

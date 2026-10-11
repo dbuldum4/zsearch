@@ -76,6 +76,8 @@ final class SearchModel {
     @ObservationIgnored private var autoUpdateTask: Task<Void, Never>?
     /// When the last automatic update was started (ms since 1970).
     @ObservationIgnored private var lastAutoUpdate: Double?
+    @ObservationIgnored private var engineRestartTask: Task<Void, Never>?
+    @ObservationIgnored private var automaticRestartUsed = false
     /// Opens the main window; set by a view that has the `openWindow` action.
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
@@ -141,6 +143,8 @@ final class SearchModel {
     }
 
     func stop() {
+        engineRestartTask?.cancel()
+        engineRestartTask = nil
         generation += 1
         autoUpdateTask?.cancel()
         autoUpdateTask = nil
@@ -149,6 +153,7 @@ final class SearchModel {
     }
 
     func restartEngine() {
+        automaticRestartUsed = false
         stop()
         start()
     }
@@ -158,6 +163,13 @@ final class SearchModel {
         indexing = false
         activity.progress = nil
         engineFailure = error.localizedDescription
+        guard !automaticRestartUsed else { return }
+        automaticRestartUsed = true
+        engineRestartTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.start()
+        }
     }
 
     private func handle(_ message: Message) {
@@ -392,13 +404,18 @@ final class SearchModel {
     }
 
     /// Save settings. `reindex` marks changes that only apply after the next index update.
-    func updateConfig(_ patch: ConfigPatch, reindex: Bool) {
+    func updateConfig(_ patch: ConfigPatch, reindex: Bool, indexAfterSaving: Bool = false) {
         guard let engine else { return }
         if reindex { settingsRevision += 1 }
         Task {
             do {
-                if case let .config(c) = try await engine.request(.setConfig(patch)) { config = c }
+                if case let .config(c) = try await engine.request(.setConfig(patch)) {
+                    config = c
+                    clearPreviewCache()
+                    scheduleSearch(delay: 0)
+                }
                 if reindex { needsReindex = true }
+                if indexAfterSaving { startIndex() }
             } catch {
                 show(error.localizedDescription)
             }
@@ -411,7 +428,11 @@ final class SearchModel {
         Task {
             do {
                 let patch = ConfigPatch(roots: roots, content: ContentConfig(enabled: readContents))
-                if case let .config(c) = try await engine.request(.setConfig(patch)) { config = c }
+                if case let .config(c) = try await engine.request(.setConfig(patch)) {
+                    config = c
+                    clearPreviewCache()
+                    scheduleSearch(delay: 0)
+                }
                 firstRun = false
                 showSetup = false
                 startIndex()
@@ -440,6 +461,32 @@ final class SearchModel {
 
     func revealSelected() {
         if let hit = selectedHit { reveal(hit) }
+    }
+
+    func sortResults(_ key: String) {
+        let token = "sort:" + key
+        let descending = query.contains(token)
+        query = query.replacingOccurrences(of: #"\s*\bsort:[^\s]+"#, with: "", options: .regularExpression)
+        query += " sort:" + (descending ? "-" : "") + key
+        scheduleSearch(delay: 0)
+    }
+    func toggleFoldedPreview() {
+        let on = !query.contains("fold:on")
+        query = query.replacingOccurrences(of: #"\s*\bfold:[^\s]+"#, with: "", options: .regularExpression)
+        query += " fold:" + (on ? "on" : "off")
+        clearPreviewCache()
+        scheduleSearch(delay: 0)
+    }
+    func copyAllPaths() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(hits.map(\.path).joined(separator: "\n"), forType: .string)
+    }
+    func exclude(_ hit: SearchHit) {
+        guard let config else { return }
+        updateConfig(ConfigPatch(exclude: Array(Set(config.exclude + [hit.path])).sorted()), reindex: true, indexAfterSaving: true)
+        response?.hits.removeAll { $0.path == hit.path || $0.path.hasPrefix(hit.path + "/") }
+        if let count = response?.hits.count { response?.total = count }
+        clearPreviewCache()
     }
 
     func copyPath(_ hit: SearchHit) {

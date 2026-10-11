@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite"
-import { mkdirSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-export const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -14,20 +14,6 @@ export const ContentState = {
   Skipped: 3,
   Pending: 4,
 } as const
-
-export interface FileRow {
-  id: number
-  path: string
-  name: string
-  ext: string
-  kind: string
-  is_dir: number
-  size: number
-  mtime: number
-  content_state: number
-  content_len: number
-  note: string | null
-}
 
 /**
  * The ids of files removed from the index, in order: readers keeping the file list in memory
@@ -42,20 +28,22 @@ function versionAtLeast(v: string, major: number, minor: number): boolean {
   return a > major || (a === major && b >= minor)
 }
 
-export interface OpenOptions {
+interface OpenOptions {
   readonly?: boolean
   /** Force the classic contentless FTS delete protocol (tests). */
   manualFtsDelete?: boolean
 }
 
 export function openDb(path: string, opts: OpenOptions = {}): Database {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true })
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const db = new Database(path, { create: !opts.readonly, readwrite: true, strict: true })
+  if (path !== ":memory:") chmodSync(path, 0o600)
   db.exec("PRAGMA busy_timeout = 5000")
   db.exec("PRAGMA journal_mode = WAL")
   db.exec("PRAGMA synchronous = NORMAL")
   db.exec("PRAGMA temp_store = MEMORY")
   db.exec("PRAGMA cache_size = -32000")
+  if (path !== ":memory:") for (const suffix of ["-wal", "-shm"]) if (existsSync(path + suffix)) chmodSync(path + suffix, 0o600)
   if (!opts.readonly) migrate(db, opts)
   return db
 }
@@ -80,6 +68,11 @@ function migrate(db: Database, opts: OpenOptions) {
       is_dir INTEGER NOT NULL DEFAULT 0,
       size INTEGER NOT NULL DEFAULT 0,
       mtime INTEGER NOT NULL DEFAULT 0,
+      created INTEGER NOT NULL DEFAULT 0,
+      dev INTEGER NOT NULL DEFAULT 0,
+      ino INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '',
+      source_path TEXT NOT NULL DEFAULT '',
       content_state INTEGER NOT NULL DEFAULT 0,
       content_len INTEGER NOT NULL DEFAULT 0,
       in_fts INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +82,12 @@ function migrate(db: Database, opts: OpenOptions) {
     )`)
     db.exec("CREATE INDEX files_state ON files(content_state)")
     db.exec("CREATE INDEX files_seq ON files(seq)")
+    for (const [event, clause] of [["insert", "INSERT"], ["update", "UPDATE OF path, name, ext, kind, is_dir, size, mtime, created, dev, ino, metadata, source_path, content_state, content_len, note, in_fts"]]) {
+      db.exec(`CREATE TRIGGER files_${event}_seq AFTER ${clause} ON files BEGIN
+        INSERT INTO meta(key, value) VALUES ('change_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;
+        UPDATE files SET seq = (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'change_seq') WHERE id = NEW.id;
+      END`)
+    }
     db.exec("CREATE TABLE content (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
     const contentlessDelete = !opts.manualFtsDelete && versionAtLeast(sqliteVersion, 3, 43)
@@ -103,6 +102,9 @@ function migrate(db: Database, opts: OpenOptions) {
     db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
     db.exec(REMOVED_TABLE)
     db.exec("CREATE TABLE IF NOT EXISTS frecency (path TEXT PRIMARY KEY, count INTEGER NOT NULL, last INTEGER NOT NULL)")
+    for (const event of ["INSERT", "UPDATE", "DELETE"]) db.exec(`CREATE TRIGGER IF NOT EXISTS frecency_${event.toLowerCase()} AFTER ${event} ON frecency BEGIN
+      INSERT INTO meta(key, value) VALUES ('frecency_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;
+    END`)
     db.exec("DELETE FROM meta WHERE key <> 'created_at'")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
     setMeta(db, "fts_delete", contentlessDelete ? "contentless" : "manual")
@@ -212,6 +214,7 @@ export function readContent(db: Database, id: number): string | null {
 }
 
 export interface IndexStats {
+  unreadableFolders?: string[]
   files: number
   folders: number
   withContent: number
@@ -250,6 +253,7 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
   const last = getMeta(db, "last_indexed_at")
   const dur = getMeta(db, "last_duration_ms")
   return {
+    unreadableFolders: JSON.parse(getMeta(db, "unreadable_folders") ?? "[]"),
     files: counts.files ?? 0,
     folders: counts.folders ?? 0,
     withContent: counts.withContent ?? 0,
