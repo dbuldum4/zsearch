@@ -876,7 +876,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
     description: `Change one of zsearch's settings. The settings are shared with the zsearch terminal app and Mac app.
 
 - roots: folders to index; exclude: gitignore-style patterns or folders to skip; namesOnly: folders indexed by name only (lists; a comma-separated string works too)
-- includeHidden, respectGitignore, followSymlinks, oneFileSystem, cloudContent (read iCloud/CloudStorage contents, may download files), content.enabled (read the text inside files): true or false
+- includeHidden, respectGitignore, followSymlinks, oneFileSystem, cloudContent (read iCloud/CloudStorage contents, may download files), content.enabled (read the text inside files), content.ocr (read the text in images and scanned PDF pages; Mac app only): true or false
 - content.maxDocumentMB, content.maxTextMB, content.maxChars: limits on what is read
 - autoRefreshMinutes (0: off), workers (0: automatic), indexLoad (10–100, percent of the computer indexing may use)
 - editor, defaultMode ("find" or "fuzzy"), preview

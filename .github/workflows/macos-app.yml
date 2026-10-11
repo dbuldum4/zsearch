@@ -54,6 +54,12 @@ jobs:
         env:
           BUILD: ${{ github.run_number }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: OCR helper on the test fixtures
+        run: |
+          dist/zsearch.app/Contents/Helpers/zsearch doctor | grep -F 'zsearch.app/Contents/Helpers/zsearch-ocr'
+          bun test test/ocr.test.ts
+        env:
+          ZSEARCH_OCR_TEST: ${{ github.workspace }}/dist/zsearch.app/Contents/Helpers/zsearch-ocr
       - uses: actions/upload-artifact@v4
         with:
           name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}

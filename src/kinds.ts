@@ -117,6 +117,9 @@ export function kindOf(name: string, isDir = false): Kind {
 /** Kinds read as plain text (subject to binary sniffing). */
 export const TEXTUAL_KINDS = new Set<Kind>(["code", "text", "markdown", "data", "web"])
 
+/** Images whose text can be read with OCR (see `ocrToolPath`): formats macOS's Vision reads. */
+export const OCR_EXTS = new Set(["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "bmp", "gif"])
+
 /** Kinds that need a document extractor. */
 export const DOCUMENT_EXTS = new Set([
   "pdf",

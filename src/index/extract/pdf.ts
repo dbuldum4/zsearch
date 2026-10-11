@@ -1,8 +1,17 @@
 import { pdftotextPath } from "../../platform.ts"
+import { ocrBlankPages } from "./ocr.ts"
 import { tidy } from "./xml.ts"
 
-/** Text of a PDF with pages separated by form feeds. Uses poppler's pdftotext when available. */
-export async function extractPdf(path: string, buf: () => Promise<Uint8Array>, timeoutMs = 60_000): Promise<string> {
+/**
+ * Text of a PDF with pages separated by form feeds. Uses poppler's pdftotext when available.
+ * With an OCR helper, pages without text (scans) are read with OCR.
+ */
+export async function extractPdf(path: string, buf: () => Promise<Uint8Array>, timeoutMs = 60_000, ocrTool?: string | null): Promise<string> {
+  const text = await pdfText(path, buf, timeoutMs)
+  return ocrTool ? ocrBlankPages(ocrTool, path, text, timeoutMs) : text
+}
+
+async function pdfText(path: string, buf: () => Promise<Uint8Array>, timeoutMs: number): Promise<string> {
   const tool = pdftotextPath()
   if (tool) {
     try {

@@ -151,7 +151,11 @@ export class SearchEngine {
     this.refresh(true)
   }
 
-  /** Pick up index changes made by another connection (the indexer). Returns true if anything changed. */
+  /**
+   * Pick up index changes made by another connection (the indexer), or with `force` by any.
+   * Returns true if anything changed. Only a rebuilt index is read again in full: otherwise
+   * the catalog takes in just the files added, changed and removed since.
+   */
   refresh(force = false): boolean {
     const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
     if (!force && dv === this.dataVersion) return false
@@ -159,7 +163,7 @@ export class SearchEngine {
     this.texts.clear()
     this.warmOrder = null
     const gen = `${getMeta(this.db, "generation") ?? 0}:${getMeta(this.db, "schema_version")}`
-    const full = force || gen !== this.generation
+    const full = gen !== this.generation
     this.generation = gen
     this.catalog.load(this.db, !full)
     this.vocab.load(this.db, !full)
@@ -264,21 +268,14 @@ export class SearchEngine {
 
   private recent(limit: number): SearchHit[] {
     // Frecent files first, then recently modified files.
-    const hits: SearchHit[] = []
-    const seen = new Set<number>()
-    const frec = [...this.frecency.entries()].sort((a, b) => b[1].last - a[1].last)
-    for (const [path] of frec) {
-      const i = this.catalog.paths.indexOf(path)
-      if (i < 0) continue
-      hits.push(this.hit(this.catalog.ids[i]!, 0, ["name"]))
-      seen.add(i)
-      if (hits.length >= Math.min(limit, 20)) break
-    }
-    const idx: number[] = []
-    for (let i = 0; i < this.catalog.size; i++) if (!this.catalog.isDir[i] && !seen.has(i)) idx.push(i)
-    idx.sort((a, b) => this.catalog.mtimes[b]! - this.catalog.mtimes[a]!)
-    for (const i of idx.slice(0, limit - hits.length)) hits.push(this.hit(this.catalog.ids[i]!, 0, ["name"]))
-    return hits
+    const cat = this.catalog
+    const frecent: number[] = []
+    if (this.frecency.size) for (let i = 0; i < cat.size; i++) if (this.frecency.has(cat.paths[i]!)) frecent.push(i)
+    frecent.sort((a, b) => this.frecency.get(cat.paths[b]!)!.last - this.frecency.get(cat.paths[a]!)!.last)
+    frecent.length = Math.min(frecent.length, Math.min(limit, 20))
+    const seen = new Set(frecent)
+    const newest = cat.newest(limit - frecent.length, (i) => !cat.isDir[i] && !seen.has(i))
+    return [...frecent, ...newest].map((i) => this.hit(cat.ids[i]!, 0, ["name"]))
   }
 
   /* ----------------------------------------------------------- keyword -- */
@@ -538,7 +535,7 @@ export class SearchEngine {
       // in-memory catalog: several times faster than letting SQLite join and sort.
       let ids: number[]
       try {
-        ids = expr ? (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : (${expr})`) as number[][]).map((r) => r[0]!) : this.catalog.ids
+        ids = expr ? (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : (${expr})`) as number[][]).map((r) => r[0]!) : Array.from(this.catalog.ids.subarray(0, this.catalog.size))
       } catch (err) {
         throw new Error(`search failed: ${(err as Error).message}`)
       }
