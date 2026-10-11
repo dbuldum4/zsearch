@@ -7,6 +7,9 @@ import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
+import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
+import { DATASET_NOTE, datasetFolders } from "./datasets.ts"
+import type { PowerGate } from "./power.ts"
 import type { ExtractReply } from "./extract-job.ts"
 import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
 import { ExtractPool } from "./pool.ts"
@@ -25,6 +28,8 @@ export interface IndexProgress {
   contentBytes: number
   unreadableFolders?: number
   contentErrors: number
+  /** Why reading contents waits (Low Power Mode, say), while it does. */
+  waiting?: string
   current: string
   startedAt: number
   elapsedMs: number
@@ -38,6 +43,8 @@ interface IndexOptions {
   inProcess?: boolean
   /** Called after each committed batch so readers can refresh. */
   onCommit?: () => void
+  /** Wait during big passes while this says to (background runs; see `power.ts`). */
+  power?: PowerGate
 }
 
 /** A file waiting for its contents. */
@@ -55,6 +62,8 @@ interface Pending {
 const JOBS_PER_WORKER = 64
 /** At most this much (file size, text files) in flight at once, or started during the scan in all. */
 const MAX_INFLIGHT_BYTES = 64 * 1024 * 1024
+/** Files to read, at least, for a run to wait on power: a first pass, or a big change (see `IndexOptions.power`). */
+const BIG_RUN = 1000
 /** Files whose contents are written in rowid order (see `content`). */
 const WRITE_RUN = 4096
 /** A job still running holds back the writing of at most this many results after it. */
@@ -105,6 +114,8 @@ export class Indexer {
   private cpu: CpuBudget
   /** The OCR helper, when this run reads images and scanned pages. */
   private ocrTool: string | null
+  /** Folders whose images OCR leaves out (see `datasets.ts`). */
+  private datasets = new Set<string>()
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -217,6 +228,7 @@ export class Indexer {
   private async runPhases(): Promise<IndexProgress> {
     try {
       setMeta(this.db, "indexing_started_at", String(this.progress.startedAt))
+      this.sweepSecrets()
       const removed = this.scan()
       if (this.aborted) return this.finish("cancelled")
       await this.content()
@@ -248,6 +260,24 @@ export class Indexer {
   }
 
   /* ------------------------------------------------------------- scan -- */
+
+  /**
+   * Drop the text of files indexed before keys were left out (see `secrets.ts`), once. Files
+   * matched by name lose theirs in the scan; this finds those whose text holds a private key.
+   */
+  private sweepSecrets() {
+    if (getMeta(this.db, "secrets_swept") === "1") return
+    const candidates = this.db
+      .query("SELECT f.id, f.path FROM fts JOIN files f ON f.id = fts.rowid WHERE fts MATCH 'body:(private AND key) OR body:(putty AND user AND key AND file)' AND f.content_state = ?")
+      .all(ContentState.Indexed) as { id: number; path: string }[]
+    this.db.transaction(() => {
+      for (const c of candidates) {
+        const row = this.st.contentGet.get(c.id) as { data: Uint8Array } | null
+        if (row && holdsPrivateKey(decompressText(row.data))) this.dropContent(c.id, c.path, ContentState.Skipped, SECRET_NOTE)
+      }
+      setMeta(this.db, "secrets_swept", "1")
+    }).immediate()
+  }
 
   /** Walk the roots, record new/changed files. Returns ids that disappeared. */
   private scan(): number[] {
@@ -317,7 +347,11 @@ export class Indexer {
         catch { stats.errors++; (stats.unreadable ??= []).push(e.path); continue }
       }
       const storedSource = sourcePath === e.path ? "" : sourcePath
-      const wants = !e.isDir && contentOn && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata)
+      // Keys and password files are kept by name, with a note saying why their text is not.
+      const secret = !e.isDir && contentOn && secretFile(e.path)
+      const wants = !e.isDir && contentOn && !secret && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata)
+      const idle = secret ? ContentState.Skipped : ContentState.None
+      const idleNote = secret ? SECRET_NOTE : null
       const moved = !existing.has(e.path) && e.ino ? identities.get(`${e.dev}:${e.ino}:${e.size}:${e.mtime}`) : undefined
       if (moved?.length === 1 && !visited.has(moved[0]!.entry.id) && moved[0]!.entry.kind === kind && moved[0]!.entry.state === ContentState.Indexed && wants && !policyChanged) {
         const old = moved[0]!; visited.add(old.entry.id); this.progress.updated++
@@ -341,13 +375,14 @@ export class Indexer {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
               waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
             })
-          else if (!wants && prev.state !== ContentState.None) batch.push(() => this.dropContent(prev.id, e.path, ContentState.None, null))
+          else if (!wants && prev.state !== idle) batch.push(() => this.dropContent(prev.id, e.path, idle, idleNote))
           continue
         }
         this.progress.updated++
         batch.push(() => {
-          if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, ContentState.None, null)
-          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : ContentState.None, prev.id)
+          if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, idle, idleNote)
+          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, prev.id)
+          if (secret) this.st.setState.run(idle, 0, idleNote, prev.id)
           if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
         })
       } else {
@@ -355,10 +390,11 @@ export class Indexer {
         batch.push(() => {
           // Files waiting for their contents get their FTS row once, in the content phase.
           // run() and lastInsertRowid cost about half as much as RETURNING id.
-          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : ContentState.None, wants ? 0 : 1)
+          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, wants ? 0 : 1)
           if (!wants) {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
+            if (secret) this.st.setState.run(idle, 0, idleNote, Number(lastInsertRowid))
           } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0 })
         })
       }
@@ -419,6 +455,8 @@ export class Indexer {
   }
 
   private extract(pool: ExtractPool, p: Pending): Promise<ExtractReply> {
+    if (this.datasets.size && OCR_EXTS.has(p.ext) && p.kind === "image" && this.datasets.has(p.path.slice(0, Math.max(1, p.path.lastIndexOf("/")))))
+      return Promise.resolve({ id: p.id, status: "skip", reason: DATASET_NOTE })
     return pool.run({ id: p.id, path: p.path, ext: p.ext, kind: p.kind, size: p.size, run: this.runId })
   }
 
@@ -428,7 +466,7 @@ export class Indexer {
    */
   private startEarly(files: Pending[]) {
     // Over the CPU budget, the content phase starts them instead.
-    if (this.opts.inProcess || !files.length || this.cpu.over) return
+    if (this.opts.inProcess || !files.length || this.cpu.over || (this.earlyFound >= BIG_RUN && this.opts.power?.reason())) return
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
@@ -444,10 +482,28 @@ export class Indexer {
     this.pool?.flush()
   }
 
+  /** With the setting off, have the images that were left out of OCR read now. */
+  private readDatasets() {
+    if (!this.ocrTool || this.config.skipDatasetOcr) return
+    this.db.query("UPDATE files SET content_state = ? WHERE content_state = ? AND note = ?").run(ContentState.Pending, ContentState.Skipped, DATASET_NOTE)
+    setMeta(this.db, "dataset_folders", "[]")
+  }
+
+  /** Find the dataset folders OCR leaves out, among all indexed images (see `datasets.ts`). */
+  private findDatasets() {
+    const paths = (this.db.query("SELECT path FROM files WHERE kind = 'image' AND is_dir = 0").values() as [string][]).map((r) => r[0])
+    const found = datasetFolders(paths, crawlOptionsFor(this.config).roots)
+    this.datasets = new Set(found.map((f) => f.dir))
+    setMeta(this.db, "dataset_folders", JSON.stringify(found))
+  }
+
   private async content() {
+    this.readDatasets()
     const all = this.db
       .query("SELECT id, path, ext, kind, size, in_fts AS inFts FROM files WHERE content_state = ? ORDER BY mtime DESC")
       .all(ContentState.Pending) as Pending[]
+    // Only runs with images to read look for dataset folders.
+    if (this.ocrTool && this.config.skipDatasetOcr && all.some((p) => OCR_EXTS.has(p.ext) && p.kind === "image")) this.findDatasets()
     this.progress.phase = "content"
     this.progress.contentTotal = all.length
     this.emit(true)
@@ -567,9 +623,16 @@ export class Indexer {
     for (const p of started) launch(this.early.get(p.id)!)
     this.early.clear()
     this.earlyBytes = 0
+    // A big pass waits while the computer is in Low Power Mode, hot or (optionally) on battery.
+    const power = pending.length >= BIG_RUN ? this.opts.power : undefined
     let ok = false
     try {
       while ((next < pending.length || active) && !sink.failed) {
+        const waiting = power?.reason() ?? undefined
+        if (waiting !== this.progress.waiting) {
+          this.progress.waiting = waiting
+          this.emit(true)
+        }
         // No new jobs while the writer has much to catch up on.
         const behind = sink.backlog > MAX_INFLIGHT_BYTES
         // Nor while this process takes more CPU time than it may: it waits for the workers to
@@ -577,7 +640,7 @@ export class Indexer {
         const throttled = this.cpu.over
         // The workers are topped up once half their queue is done, so jobs go out in batches.
         const refill = Math.max(1, pool.slots >> 1)
-        if (!behind && !throttled && pool.capacity >= Math.min(refill, pending.length - next)) {
+        if (!behind && !throttled && !waiting && pool.capacity >= Math.min(refill, pending.length - next)) {
           while (next < pending.length && pool.capacity > 0 && !this.aborted) {
             const job = pending[next]!
             if (active && inflightBytes + cost(job) > MAX_INFLIGHT_BYTES) break
@@ -586,6 +649,7 @@ export class Indexer {
         }
         if (this.aborted) break
         if (active || behind) await new Promise<void>((r) => (wake = r))
+        else if (waiting) await new Promise<void>((r) => { wake = r; setTimeout(r, 1000) })
         else if (throttled) await new Promise<void>((r) => setTimeout(r, 20))
         wake = null
         flush(heldBytes > MAX_HELD_BYTES)

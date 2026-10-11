@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { type Config, configExists, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
 import { IndexRun, type IndexOutcome, type IndexRunHandlers } from "../index/client.ts"
+import { estimateInBackground, type FolderEstimate } from "../index/estimate.ts"
 import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
 import { copyToClipboard, editorCommand, isTerminalEditor, openWithDefault, revealInFileManager } from "../platform.ts"
@@ -37,6 +38,8 @@ export interface Services {
   startIndex(config: Config, handlers: IndexRunHandlers): IndexHandle
   /** PID of another process currently indexing, or null. */
   indexLockedBy(): number | null
+  /** Count what a first index of these folders takes, in the background (setup). */
+  estimate?(roots: string[], config: Config): { done: Promise<FolderEstimate[]>; cancel: () => void }
   open(path: string): Promise<string | null>
   reveal(path: string, isDir: boolean): Promise<string | null>
   /** Open in an editor; `suspend`/`resume` wrap terminal editors. */
@@ -78,6 +81,7 @@ export function realServices(config: Config): Services {
     },
     startIndex: (cfg, handlers) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers),
     indexLockedBy: () => lockHolder(p.lock),
+    estimate: estimateInBackground,
     open: openWithDefault,
     reveal: revealInFileManager,
     async copy(text, renderer) {

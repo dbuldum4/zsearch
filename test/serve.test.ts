@@ -118,6 +118,16 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   const st = await s.reply(5)
   expect((st.stats as { files: number }).files).toBeGreaterThan(5)
 
+  // How long a first index would take, counted on a worker.
+  s.send({ id: 7, type: "estimate", roots: ["~/Documents", "~/notes"] })
+  const est = await s.reply(7)
+  expect(est.type).toBe("estimate")
+  expect((est.estimates as { root: string }[]).map((e) => e.root)).toEqual(["~/Documents", "~/notes"])
+  expect((est.total as { files: number; complete: boolean }).files).toBeGreaterThan(2)
+  expect(String(est.text)).toMatch(/files · /)
+  s.send({ id: 8, type: "estimate", roots: [] })
+  expect((await s.reply(8)).type).toBe("error")
+
   s.send("not json")
   expect(String((await s.until((m) => m.type === "error")).error)).toContain("bad request")
   s.send({ id: 6, type: "nope" })

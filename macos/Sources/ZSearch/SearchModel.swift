@@ -422,6 +422,14 @@ final class SearchModel {
         }
     }
 
+    /// How long a first index of these folders takes, in words, or nil if it could not be counted
+    /// (or a newer request superseded this one).
+    func estimate(roots: [String]) async -> String? {
+        guard let engine, !roots.isEmpty else { return nil }
+        guard case let .estimate(reply) = try? await engine.request(.estimate(roots: roots)) else { return nil }
+        return reply.text
+    }
+
     /// Save what to index (first run or File › Choose Folders…) and start indexing.
     func applySetup(roots: [String], readContents: Bool) {
         guard let engine else { return }

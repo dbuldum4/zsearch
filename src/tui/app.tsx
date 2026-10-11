@@ -499,6 +499,8 @@ export function App(props: AppProps) {
       if (!p || p.phase === "starting" || p.phase === "scan") {
         segs.push({ text: "Scanning folders… ", fg: t().text, bold: true }, { text: `${formatCount(p?.scanned ?? 0)} items found`, fg: t().muted })
         if (p?.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
+      } else if (p.phase === "content" && p.waiting) {
+        segs.push({ text: `Waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} files read · resumes on its own`, fg: t().muted })
       } else if (p.phase === "content") {
         const pct = p.contentTotal ? p.contentDone / p.contentTotal : 1
         const eta = pct > 0.02 && p.contentDone > 0 ? ((p.elapsedMs / Math.max(1, p.contentDone)) * (p.contentTotal - p.contentDone)) : 0
@@ -557,6 +559,7 @@ export function App(props: AppProps) {
             height={dims().height}
             onDone={(c) => applySettings(c, true)}
             onCancel={() => quit()}
+            estimate={svc.estimate}
           />
         }
       >
@@ -608,6 +611,7 @@ export function App(props: AppProps) {
               height={dims().height}
               onDone={(c, changed) => applySettings(c, changed)}
               onCancel={() => setOverlay(null)}
+              estimate={svc.estimate}
             />
           </box>
         </Show>

@@ -5,6 +5,7 @@ import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
 import { fileMetadata, metadataText } from "./extract/metadata.ts"
 import { pathPolicy } from "./policy.ts"
+import { holdsPrivateKey, SECRET_NOTE } from "./secrets.ts"
 
 const encoder = new TextEncoder()
 
@@ -112,6 +113,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
     }
     const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
     if (r.status === "skip") return { id: job.id, status: "skip", reason: r.reason }
+    if (holdsPrivateKey(r.text)) return { id: job.id, status: "skip", reason: SECRET_NOTE }
     const { body, terms } = indexTerms(r.text)
     return {
       id: job.id,

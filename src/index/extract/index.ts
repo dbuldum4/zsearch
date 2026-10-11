@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathPolicy } from "../policy.ts"
 import type { CrawlOptions } from "../crawler.ts"
+import { bytesHoldPrivateKey, SECRET_NOTE } from "../secrets.ts"
 import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
@@ -35,7 +36,7 @@ export const DEFAULT_EXTRACT: ExtractOptions = {
 
 type ExtractResult =
   | { status: "ok"; text: string; truncated: boolean }
-  | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" }
+  | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" | typeof SECRET_NOTE }
 
 /** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
 type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
@@ -117,6 +118,7 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   }
   const buf = await readFile(path, opts.maxTextBytes)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
+  if (bytesHoldPrivateKey(buf)) return { status: "skip", reason: SECRET_NOTE }
   return { status: "bytes", bytes: buf }
 }
 

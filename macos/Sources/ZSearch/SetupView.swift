@@ -17,6 +17,8 @@ struct SetupView: View {
     @State private var choice: Choice = .documents
     @State private var folders: [String] = []
     @State private var readContents = true
+    /// How long the first index of the chosen folders takes, roughly.
+    @State private var estimate: String?
 
     private var roots: [String] {
         switch choice {
@@ -57,6 +59,12 @@ struct SetupView: View {
                 }
                 .padding(.leading, 20)
             }
+            if let estimate {
+                Text("First index: \(estimate)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 20)
+            }
             Toggle("Read the text inside files (PDF, Office, code, …)", isOn: $readContents)
             Text("macOS may ask to let zsearch read your Documents and Downloads folders. The index stays on this Mac.")
                 .font(.caption)
@@ -76,6 +84,15 @@ struct SetupView: View {
         .padding(20)
         .frame(width: 460)
         .onAppear(perform: load)
+        // Counted for the chosen folders only: walking others could bring up macOS's folder
+        // permission prompts for folders the user never picked.
+        .task(id: roots) {
+            estimate = roots.isEmpty ? nil : "counting files…"
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            let text = await model.estimate(roots: roots)
+            if !Task.isCancelled { estimate = text }
+        }
     }
 
     private func load() {

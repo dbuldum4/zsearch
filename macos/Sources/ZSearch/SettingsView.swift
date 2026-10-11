@@ -171,6 +171,8 @@ private struct IndexSettings: View {
                             .disabled(excludeList == (model.config?.exclude ?? []))
                     }
                 }
+                Toggle("Wait with a big first index while on battery", isOn: pauseOnBattery)
+                    .help("Low Power Mode and a hot Mac always make it wait. It picks up where it left off.")
                 Picker("Update the index", selection: refresh) {
                     Text("Only when I ask").tag(0.0)
                     Text("Every 15 minutes").tag(15.0)
@@ -234,6 +236,14 @@ private struct IndexSettings: View {
         Binding(
             get: { model.config?[keyPath: path] ?? false },
             set: { model.updateConfig(patch($0), reindex: true) }
+        )
+    }
+
+    /// Applies to a run already going, within half a minute: no index update needed.
+    private var pauseOnBattery: Binding<Bool> {
+        Binding(
+            get: { model.config?.pauseOnBattery ?? false },
+            set: { model.updateConfig(ConfigPatch(pauseOnBattery: $0), reindex: false) }
         )
     }
 

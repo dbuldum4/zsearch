@@ -10,6 +10,7 @@ import { createInterface } from "node:readline"
 import { type Config, configExists, ensureDirs, loadConfig, validateConfigPatch, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
+import { combine, describeEstimate, ESTIMATE_CANCELLED, estimateInBackground, type FolderEstimate } from "./index/estimate.ts"
 import type { IndexProgress } from "./index/indexer.ts"
 import { lockHolder } from "./index/lock.ts"
 import { RootWatcher } from "./index/watch.ts"
@@ -27,6 +28,7 @@ type ServeIn =
   | { id?: number; type: "index"; rebuild?: boolean }
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
+  | { id?: number; type: "estimate"; roots: string[] }
 
 type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
@@ -37,6 +39,7 @@ type ServeOut =
   | { id?: number; type: "config"; config: Config }
   | { id?: number; type: "cancelled" }
   | { id?: number; type: "ok" }
+  | { id?: number; type: "estimate"; estimates: FolderEstimate[]; total: FolderEstimate; text: string }
   | { id?: number; type: "error"; error: string }
   | { type: "indexProgress"; progress: IndexProgress }
   | { type: "indexDone"; status: "done" | "cancelled" | "error" | "locked"; progress?: IndexProgress; error?: string }
@@ -51,6 +54,8 @@ export async function serve(version: string): Promise<number> {
   let config = loadConfig()
   const client = new SearchClient(p.db, config)
   let index: IndexRun | null = null
+  /** The estimate being counted: a newer request supersedes it. */
+  const estimating: { run: { cancel: () => void } | null } = { run: null }
   let closed = false
   const watcher = new RootWatcher(() => {
     if (firstRun && !configExists()) return
@@ -147,6 +152,24 @@ export async function serve(version: string): Promise<number> {
       case "cancelIndex":
         index?.cancel()
         return send({ id, type: "ok" })
+      case "estimate": {
+        // Counting a big folder takes seconds: on a worker, and only the latest request's.
+        estimating.run?.cancel()
+        const roots = Array.isArray(msg.roots) ? msg.roots.filter((r): r is string => typeof r === "string").slice(0, 32) : []
+        if (!roots.length) return send({ id, type: "error", error: "estimate needs folders" })
+        const run = estimateInBackground(roots, config)
+        estimating.run = run
+        try {
+          const estimates = await run.done
+          const total = combine(estimates)
+          return send({ id, type: "estimate", estimates, total, text: describeEstimate(total) })
+        } catch (err) {
+          if ((err as Error).message === ESTIMATE_CANCELLED) return send({ id, type: "cancelled" })
+          throw err
+        } finally {
+          if (estimating.run === run) estimating.run = null
+        }
+      }
       case "opened":
         client.opened(String(msg.path))
         return send({ id, type: "ok" })
@@ -177,6 +200,7 @@ export async function serve(version: string): Promise<number> {
   }
   // stdin closed: finish what was asked, stop indexing cleanly, and exit.
   closed = true
+  estimating.run?.cancel()
   watcher.close()
   await Promise.all(inflight)
   if (index) {
