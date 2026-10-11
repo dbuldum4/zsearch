@@ -5,6 +5,7 @@ import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
+import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
 import { escapeRegExp, foldTerm, ftsQuote, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
@@ -845,12 +846,14 @@ export class SearchEngine {
     if (stored !== null) {
       text = stored
       base.source = "index"
-    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
+    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1 && row.note !== SECRET_NOTE) {
       try {
         const buf = boundedFile(policy.real!, 2 * 1024 * 1024)
         if (!looksBinary(buf)) {
-          text = decodeText(buf)
-          base.source = "disk"
+          // Keys stay out of previews, as out of the index, even in a file changed since.
+          text = redactPrivateKeys(decodeText(buf))
+          if (onlyKeys(text)) text = null
+          else base.source = "disk"
         }
       } catch {
         // unreadable
@@ -867,7 +870,9 @@ export class SearchEngine {
                 ? "binary file"
                 : row.note === "empty"
                   ? "empty file"
-                  : "contents not indexed"
+                  : row.note === SECRET_NOTE
+                    ? "key or password file: indexed by name only"
+                    : "contents not indexed"
             : row.content_state === 4
               ? "contents not indexed yet"
               : "no text preview for this kind of file"

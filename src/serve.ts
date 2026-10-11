@@ -25,7 +25,7 @@ type ServeIn =
   | { id?: number; type: "stats" }
   | { id?: number; type: "config" }
   | { id?: number; type: "setConfig"; config: Partial<Config> }
-  | { id?: number; type: "index"; rebuild?: boolean }
+  | { id?: number; type: "index"; rebuild?: boolean; background?: boolean }
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
   | { id?: number; type: "estimate"; roots: string[] }
@@ -60,7 +60,7 @@ export async function serve(version: string): Promise<number> {
   const watcher = new RootWatcher(() => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
-    startIndex()
+    startIndex(undefined, false, true)
   })
   watcher.update(config)
 
@@ -70,30 +70,44 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  const startIndex = (id?: number, rebuild = false) => {
+  /** `background`: the run started on its own (file changes, the app's schedule), not on request. */
+  const startIndex = (id?: number, rebuild = false, background = false) => {
     if (closed) return
     config = loadConfig()
     client.setConfig(config)
     watcher.update(config)
-    if (index) return send({ id, type: "error", error: "indexing is already running" })
+    if (index) {
+      // Asked for while one runs, perhaps waiting on power: that one goes on now.
+      if (!background) { index.goNow(); return send({ id, type: "ok" }) }
+      return send({ id, type: "error", error: "indexing is already running" })
+    }
     const other = lockHolder(p.lock)
     if (other !== null) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
     let last = 0
     let pending: IndexProgress | null = null
+    // A held-back event goes out once the interval is up: the last one before a quiet spell
+    // (a run waiting on power, say) would otherwise wait for the next.
+    let trailing: ReturnType<typeof setTimeout> | null = null
+    const flush = () => {
+      trailing = null
+      if (!pending || index !== run) return
+      last = Date.now()
+      send({ type: "indexProgress", progress: pending })
+      pending = null
+    }
     const run = new IndexRun(config, p.db, p.lock, {
       onProgress: (progress) => {
         pending = progress
         const now = Date.now()
-        if (now - last < PROGRESS_MS) return
-        last = now
-        pending = null
-        send({ type: "indexProgress", progress })
+        if (now - last < PROGRESS_MS) { trailing ??= setTimeout(flush, PROGRESS_MS - (now - last)); return }
+        flush()
       },
       onCommit: () => client.refresh(),
-    }, rebuild)
+    }, rebuild, background)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
+      if (trailing) clearTimeout(trailing)
       index = null
       if (pending) send({ type: "indexProgress", progress: pending })
       client.refresh(true)
@@ -148,7 +162,7 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "config", config })
       }
       case "index":
-        return startIndex(id, msg.rebuild === true)
+        return startIndex(id, msg.rebuild === true, msg.background === true)
       case "cancelIndex":
         index?.cancel()
         return send({ id, type: "ok" })

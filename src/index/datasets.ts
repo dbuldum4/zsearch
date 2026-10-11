@@ -15,6 +15,11 @@ export const DATASET_MACHINE_SHARE = 0.7
  * program numbered them (`IMG_1234`, `DSC01234`, `PXL_20240101_…`, `scan0001`, `page_001`).
  */
 const DEVICE_PREFIX = /^(?:img|dsc[nf]?|pxl|mvimg|gopr|gh|dji|sam|wp|p|photo|scan|page|screenshot|capture)[_-]?\d/i
+/**
+ * Phones that name photos by when they were taken: `20230512_143022` (Samsung and other Android
+ * cameras, optionally with a burst number) and milliseconds since 1970 (`1699999999123`).
+ */
+const DEVICE_TIME = /^(?:(?:19|20)\d{6}[_-]\d{6}(?:[_-]?\d{1,3})?|1\d{12})(?:\(\d+\))?$/
 const UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i
 const HASH = /^[0-9a-f]{16,}$/i
 
@@ -22,7 +27,7 @@ const HASH = /^[0-9a-f]{16,}$/i
 export function machineNamed(name: string): boolean {
   const dot = name.lastIndexOf(".")
   const stem = dot > 0 ? name.slice(0, dot) : name
-  if (/\s/.test(stem) || DEVICE_PREFIX.test(stem)) return false
+  if (/\s/.test(stem) || DEVICE_PREFIX.test(stem) || DEVICE_TIME.test(stem)) return false
   if (UUID.test(stem) || HASH.test(stem)) return true
   // Mostly digits: "000123", "frame_000123", "n01440764_10026", "cat.1234".
   let digits = 0

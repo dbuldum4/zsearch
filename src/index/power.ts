@@ -58,6 +58,12 @@ export function linuxPowerState(root = "/sys"): PowerState {
 }
 
 export function readPowerState(): PowerState {
+  // For trying it out and for tests: `ZSEARCH_POWER=low-power,hot,battery` (any of them).
+  const forced = process.env.ZSEARCH_POWER
+  if (forced !== undefined) {
+    const set = new Set(forced.split(",").map((s) => s.trim()))
+    return { lowPower: set.has("low-power"), hot: set.has("hot"), battery: set.has("battery") }
+  }
   if (process.platform === "darwin") return { lowPower: pmsetLowPower(pmset("-g")), hot: pmsetHot(pmset("-g", "therm")), battery: pmsetOnBattery(pmset("-g", "batt")) }
   if (process.platform === "linux") return linuxPowerState()
   return CALM

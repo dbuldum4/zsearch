@@ -157,7 +157,9 @@ public struct Config: Codable, Hashable, Sendable {
     public var followSymlinks: Bool
     /// Read contents inside cloud-synced folders (may download online-only files).
     public var cloudContent: Bool
-    /// A big first index waits while on battery. Nil from engines older than the setting.
+    /// A big update the app started on its own waits in Low Power Mode or while the Mac is hot,
+    /// and while on battery. Nil from engines older than these settings.
+    public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
 }
 
@@ -188,6 +190,9 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
+    /// An update the app started on its own (its schedule): a big one waits in Low Power Mode,
+    /// while the Mac is hot or (optionally) on battery.
+    case backgroundIndex
     /// Empty the index and index everything again.
     case rebuildIndex
     case cancelIndex
@@ -209,6 +214,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var followSymlinks: Bool?
     public var cloudContent: Bool?
     public var autoRefreshMinutes: Double?
+    public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
 
     public init(
@@ -221,6 +227,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         followSymlinks: Bool? = nil,
         cloudContent: Bool? = nil,
         autoRefreshMinutes: Double? = nil,
+        pauseOnLowPower: Bool? = nil,
         pauseOnBattery: Bool? = nil
     ) {
         self.roots = roots
@@ -232,6 +239,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.followSymlinks = followSymlinks
         self.cloudContent = cloudContent
         self.autoRefreshMinutes = autoRefreshMinutes
+        self.pauseOnLowPower = pauseOnLowPower
         self.pauseOnBattery = pauseOnBattery
     }
 
@@ -247,6 +255,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             followSymlinks: config.followSymlinks,
             cloudContent: config.cloudContent,
             autoRefreshMinutes: config.autoRefreshMinutes,
+            pauseOnLowPower: config.pauseOnLowPower,
             pauseOnBattery: config.pauseOnBattery
         )
     }
@@ -267,6 +276,7 @@ extension Request {
         var focusLines: [Int?]?
         var rebuild: Bool?
         var roots: [String]?
+        var background: Bool?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -285,6 +295,8 @@ extension Request {
             w.type = "setConfig"; w.config = patch
         case .index:
             w.type = "index"
+        case .backgroundIndex:
+            w.type = "index"; w.background = true
         case .rebuildIndex:
             w.type = "index"; w.rebuild = true
         case let .previews(files, query, mode, focusLines):

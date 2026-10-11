@@ -206,7 +206,11 @@ class Host {
   /** Start an index run with the current settings, unless one is running here or elsewhere. */
   startIndex(rebuild: boolean, reason: RunState["reason"] = "requested"): { status: "started" | "running" } | { status: "busy"; pid: number } {
     this.reloadConfig()
-    if (this.run) return { status: "running" }
+    if (this.run) {
+      // Asked for while one runs, perhaps waiting on power: that one goes on now.
+      if (reason !== "auto") this.run.handle.goNow()
+      return { status: "running" }
+    }
     const other = lockHolder(this.paths.lock)
     if (other !== null) return { status: "busy", pid: other }
     const handle = new IndexRun(
@@ -221,6 +225,7 @@ class Host {
         onCommit: () => this.client.refresh(),
       },
       rebuild,
+      reason === "auto",
     )
     const run: RunState = { handle, progress: null, startedAt: Date.now(), reason, done: handle.done }
     this.run = run

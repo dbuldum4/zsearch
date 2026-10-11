@@ -1,7 +1,7 @@
 /**
  * Keys, certificates and password files: indexed by name only, so their text never reaches
- * the index, previews or MCP. Matched by name wherever they are, and, for plain text files, by
- * a private key block in the text itself.
+ * the index, previews or MCP. Matched by name wherever they are. Private key blocks inside other
+ * text are cut out of it, and a file that is nothing but a key is treated as a key file.
  */
 import { extOf, kindOf } from "../kinds.ts"
 
@@ -10,7 +10,7 @@ const SECRET_DIR = /(?:^|\/)(?:\.ssh|\.aws|\.gnupg|\.kube|\.docker)(?:\/|$)/i
 
 /**
  * Key stores, certificates and password databases. `.key` is left out: zsearch reads it as
- * Keynote, and a PEM key under that name is caught by its contents instead.
+ * Keynote, and extraction takes one that is not a Keynote archive for a key (see `notKeynote`).
  */
 const SECRET_EXTS = new Set([
   "pem", "p12", "pfx", "p8", "keystore", "jks", "bks", "ppk", "kdbx", "kdb", "gpg", "pgp", "asc",
@@ -36,9 +36,35 @@ export function secretFile(path: string): boolean {
 /** The armor line of a private key: PEM, OpenSSH, PGP and PuTTY's own format. */
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|^PuTTY-User-Key-File-\d+:/m
 
-/** Text that holds a private key, which is then not indexed. */
+/** Text that holds a private key. */
 export function holdsPrivateKey(text: string): boolean {
   return (text.includes("PRIVATE KEY") || text.includes("PuTTY-User-Key-File")) && PRIVATE_KEY.test(text)
+}
+
+/** A PEM, OpenSSH or PGP private key block, to its end line (or the end of the text). */
+const KEY_BLOCK = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)-----[\s\S]*?(?:-----END \1-----|(?![\s\S]))/g
+
+/** What stands in for a key cut out of a text. */
+export const KEY_REMOVED = "[private key removed]"
+
+/**
+ * The text with its private keys cut out: the rest of a README, notes file or book stays
+ * searchable. A PuTTY key file is all key. Text without keys comes back as it is.
+ */
+export function redactPrivateKeys(text: string): string {
+  if (!holdsPrivateKey(text)) return text
+  if (/^PuTTY-User-Key-File-\d+:/m.test(text)) return ""
+  return text.replace(KEY_BLOCK, KEY_REMOVED)
+}
+
+/** Whether nothing but cut-out keys is left of a text: it was a key file. */
+export function onlyKeys(redacted: string): boolean {
+  return !redacted.split(KEY_REMOVED).join("").trim()
+}
+
+/** A `.key` file that is not a Keynote archive (a zip): a TLS or SSH key named `server.key`. */
+export function notKeynote(head: Uint8Array): boolean {
+  return !(head[0] === 0x50 && head[1] === 0x4b)
 }
 
 /**

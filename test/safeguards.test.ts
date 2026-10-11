@@ -9,7 +9,9 @@ import { datasetFolders, machineNamed } from "../src/index/datasets.ts"
 import { combine, describeEstimate, estimateFolder, firstPassSeconds, roughDuration } from "../src/index/estimate.ts"
 import { Indexer, type IndexProgress } from "../src/index/indexer.ts"
 import { linuxPowerState, pauseReason, pmsetHot, pmsetLowPower, pmsetOnBattery, PowerGate } from "../src/index/power.ts"
-import { holdsPrivateKey, secretFile } from "../src/index/secrets.ts"
+import { holdsPrivateKey, onlyKeys, redactPrivateKeys, secretFile } from "../src/index/secrets.ts"
+import { readIndexed } from "../src/search/read.ts"
+import { SearchEngine } from "../src/search/engine.ts"
 import { ftsBody } from "../src/util/text.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
@@ -59,23 +61,66 @@ describe("keys and password files", () => {
     expect(holdsPrivateKey("The private key must stay on the server.")).toBe(false)
   })
 
+  test("are cut out of other text", () => {
+    expect(redactPrivateKeys(`before\n${KEY}after`)).toBe("before\n[private key removed]\nafter")
+    expect(redactPrivateKeys('{"private_key": "-----BEGIN PRIVATE KEY-----\\nMIIE\\n-----END PRIVATE KEY-----\\n", "id": 1}')).toBe('{"private_key": "[private key removed]\\n", "id": 1}')
+    // An unterminated block runs to the end of the text.
+    expect(redactPrivateKeys("a\n-----BEGIN EC PRIVATE KEY-----\nMHcC")).toBe("a\n[private key removed]")
+    expect(onlyKeys(redactPrivateKeys(KEY))).toBe(true)
+    expect(onlyKeys(redactPrivateKeys(`notes\n${KEY}`))).toBe(false)
+    expect(redactPrivateKeys("PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n")).toBe("")
+    expect(redactPrivateKeys("no keys here")).toBe("no keys here")
+  })
+
   test("are indexed by name only, and their text never reaches the index", async () => {
     corpus.write("Downloads/id_rsa", KEY)
     corpus.write("Downloads/server.pem", "-----BEGIN CERTIFICATE-----\nquokkacertificate\n")
     corpus.write("projects/api/prod.env", "API_TOKEN=wombattoken42\n")
-    corpus.write("notes/pasted.txt", `my key\n${KEY}`)
+    // Caught by their contents: a key with no telling name, and a TLS key named like Keynote.
+    corpus.write("projects/api/deploy_key", KEY)
+    corpus.write("projects/api/tls.key", KEY)
+    corpus.write("notes/pasted.txt", `my notes about the platypus server\n${KEY}`)
     const db = openDb(":memory:")
     await index(db)
-    for (const rel of ["Downloads/id_rsa", "Downloads/server.pem", "projects/api/prod.env", "notes/pasted.txt"]) {
+    for (const rel of ["Downloads/id_rsa", "Downloads/server.pem", "projects/api/prod.env", "projects/api/deploy_key", "projects/api/tls.key"]) {
       const r = row(db, rel)
       expect([rel, r?.state, r?.note]).toEqual([rel, ContentState.Skipped, "secret"])
       expect(db.query("SELECT 1 FROM content WHERE id = ?").get(r!.id)).toBeNull()
     }
     expect(ftsCount(db, "body:zebrakeymaterial OR body:quokkacertificate OR body:wombattoken42")).toBe(0)
+    // The rest of a file with a key pasted into it stays searchable.
+    expect(row(db, "notes/pasted.txt")?.state).toBe(ContentState.Indexed)
+    expect(ftsCount(db, "body:platypus")).toBe(1)
     // Still found by name.
     expect(ftsCount(db, "name:prod AND name:env")).toBe(1)
-    expect(indexStats(db).secrets).toBe(4)
+    expect(indexStats(db).secrets).toBe(5)
     expect(row(db, "notes/todo.md")?.state).toBe(ContentState.Indexed)
+
+    // Neither previews nor MCP read them from disk instead.
+    const engine = new SearchEngine(db, config())
+    for (const rel of ["projects/api/deploy_key", "projects/api/tls.key", "notes/pasted.txt"]) {
+      const preview = engine.preview(row(db, rel)!.id, "", "find")
+      const text = preview.lines.map((l) => l.text).join("\n")
+      expect([rel, text.includes("zebrakeymaterial")]).toEqual([rel, false])
+      const read = readIndexed(engine, join(corpus.home, rel), "", "find", { lines: 100, maxChars: 10_000 })
+      expect([rel, read?.lines.some((l) => l.text.includes("zebrakeymaterial"))]).toEqual([rel, false])
+    }
+    expect(engine.preview(row(db, "projects/api/deploy_key")!.id, "", "find").message).toBe("key or password file: indexed by name only")
+    expect(engine.preview(row(db, "notes/pasted.txt")!.id, "", "find").lines.map((l) => l.text)).toContain("[private key removed]")
+    db.close()
+  })
+
+  test("are not read from disk by previews, even when not indexed yet", async () => {
+    corpus.write("notes/later.txt", `todo\n${KEY}`)
+    const db = openDb(":memory:")
+    await index(db)
+    // As if the file changed after it was indexed, and its new text is not stored yet.
+    const { id } = row(db, "notes/later.txt")!
+    db.query("DELETE FROM content WHERE id = ?").run(id)
+    db.query("UPDATE files SET content_state = ? WHERE id = ?").run(ContentState.Pending, id)
+    const preview = new SearchEngine(db, config()).preview(id, "", "find")
+    expect(preview.source).toBe("disk")
+    expect(preview.lines.map((l) => l.text)).toEqual(["todo", "[private key removed]", ""])
     db.close()
   })
 
@@ -101,9 +146,9 @@ describe("keys and password files", () => {
 
 describe("dataset folders", () => {
   test("machine-made names, but not cameras', phones' or scanners'", () => {
-    for (const n of ["000123.png", "frame_000123.jpg", "n01440764_10026.JPEG", "cat.1234.jpg", "3f2504e0-4f89-11d3-9a0c-0305e82c3301.png", "d41d8cd98f00b204e9800998ecf8427e.png", "20231005_123456.jpg"])
+    for (const n of ["000123.png", "frame_000123.jpg", "n01440764_10026.JPEG", "cat.1234.jpg", "3f2504e0-4f89-11d3-9a0c-0305e82c3301.png", "d41d8cd98f00b204e9800998ecf8427e.png", "mask_000001.png"])
       expect([n, machineNamed(n)]).toEqual([n, true])
-    for (const n of ["IMG_1234.JPG", "DSC01234.jpg", "PXL_20240101_101010.jpg", "Screenshot 2024-05-01 at 10.00.00.png", "scan0001.tif", "page_001.png", "holiday.jpg", "logo-v2.png", "cat.123.jpg"])
+    for (const n of ["IMG_1234.JPG", "DSC01234.jpg", "PXL_20240101_101010.jpg", "Screenshot 2024-05-01 at 10.00.00.png", "scan0001.tif", "page_001.png", "20230512_143022.jpg", "20230512_143022_001.jpg", "1699999999123.jpg", "holiday.jpg", "logo-v2.png", "cat.123.jpg"])
       expect([n, machineNamed(n)]).toEqual([n, false])
   })
 
@@ -135,6 +180,18 @@ describe("dataset folders", () => {
       expect(stats.datasetImages).toBe(300)
       expect(stats.datasetFolders).toEqual([{ dir: join(corpus.home, "Downloads/dataset"), images: 300 }])
       expect(ftsCount(db, "name:frame")).toBeGreaterThanOrEqual(300)
+
+      // A folder that no longer counts as a dataset has its images read.
+      for (let i = 0; i < 100; i++) rmSync(join(corpus.home, `Downloads/dataset/frame_${String(i).padStart(6, "0")}.png`))
+      corpus.write("Downloads/dataset/frame_new.png", png)
+      await index(db)
+      expect(row(db, "Downloads/dataset/frame_000207.png")?.state).toBe(ContentState.Indexed)
+      expect(indexStats(db).datasetFolders).toEqual([])
+      for (let i = 0; i < 100; i++) corpus.write(`Downloads/dataset/frame_${String(i).padStart(6, "0")}.png`, png)
+      await index(db)
+      // Images already read keep their text; the new ones are left out again.
+      expect(row(db, "Downloads/dataset/frame_000207.png")?.state).toBe(ContentState.Indexed)
+      expect(row(db, "Downloads/dataset/frame_000007.png")).toMatchObject({ state: ContentState.Skipped, note: "dataset" })
 
       await index(db, config({ skipDatasetOcr: false }))
       expect(row(db, "Downloads/dataset/frame_000007.png")?.state).toBe(ContentState.Indexed)

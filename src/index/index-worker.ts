@@ -7,7 +7,7 @@ import { PowerGate } from "./power.ts"
 
 declare const self: Worker
 
-export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; rebuild?: boolean } | { type: "cancel" }
+export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; rebuild?: boolean; background?: boolean } | { type: "cancel" } | { type: "goNow" }
 
 export type IndexWorkerOut =
   | { type: "progress"; progress: IndexProgress }
@@ -17,12 +17,20 @@ export type IndexWorkerOut =
   | { type: "fatal"; error: string }
 
 const controller = new AbortController()
+let running: Indexer | null = null
+/** Asked to go now before the indexer existed. */
+let goNow = false
 const send = (m: IndexWorkerOut) => postMessage(m)
 
 self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
   const msg = ev.data
   if (msg.type === "cancel") {
     controller.abort()
+    return
+  }
+  if (msg.type === "goNow") {
+    goNow = true
+    running?.goNow()
     return
   }
   const release = acquireLock(msg.lockPath)
@@ -34,11 +42,11 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     const db = openDb(msg.dbPath)
     if (msg.rebuild) clearIndex(db)
     let lastCommit = 0
-    // Runs here go on in the background (app, terminal UI, MCP), so big ones wait on power.
+    // Big runs that started on their own wait on power. The settings are read again with the
+    // power state: switching pausing off resumes a run.
     const indexer = new Indexer(db, msg.config, {
       signal: controller.signal,
-      // The settings are read again with the power state: switching pausing off resumes a run.
-      power: new PowerGate(() => (configExists() ? loadConfig() : msg.config)),
+      power: msg.background ? new PowerGate(() => (configExists() ? loadConfig() : msg.config)) : undefined,
       onProgress: (progress) => send({ type: "progress", progress }),
       onCommit: () => {
         const now = Date.now()
@@ -47,6 +55,8 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
         send({ type: "commit" })
       },
     })
+    running = indexer
+    if (goNow) indexer.goNow()
     const result = await indexer.run()
     db.close()
     // Release before reporting: the parent terminates this worker as soon as it hears "done",

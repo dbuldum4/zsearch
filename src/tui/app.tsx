@@ -164,7 +164,10 @@ export function App(props: AppProps) {
 
   const startIndex = (reason: "manual" | "auto" | "setup" = "manual") => {
     if (indexing()) {
-      notify("Indexing is already running")
+      if (reason === "manual" && progress()?.waiting) {
+        indexHandle?.goNow?.()
+        notify("Indexing now, without waiting")
+      } else notify("Indexing is already running")
       return
     }
     const other = svc.indexLockedBy()
@@ -177,7 +180,7 @@ export function App(props: AppProps) {
     const handle = svc.startIndex(config(), {
       onProgress: (p) => setProgress(p),
       onCommit: () => svc.search.refresh(),
-    })
+    }, reason === "auto")
     indexHandle = handle
     void handle.done.then((outcome) => {
       indexHandle = null

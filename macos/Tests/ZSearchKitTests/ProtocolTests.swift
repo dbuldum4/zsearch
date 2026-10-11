@@ -52,6 +52,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try json(.setConfig(ConfigPatch(roots: ["~"]))), #"{"config":{"roots":["~"]},"id":7,"type":"setConfig"}"#)
         XCTAssertEqual(try json(.index), #"{"id":7,"type":"index"}"#)
         XCTAssertEqual(try json(.rebuildIndex), #"{"id":7,"rebuild":true,"type":"index"}"#)
+        XCTAssertEqual(try json(.backgroundIndex), #"{"background":true,"id":7,"type":"index"}"#)
         XCTAssertEqual(try json(.estimate(roots: ["~/Documents"])), #"{"id":7,"roots":["~/Documents"],"type":"estimate"}"#)
         XCTAssertEqual(try json(.previews(files: [1, 2], query: "q", mode: .find)), #"{"files":[1,2],"id":7,"mode":"find","query":"q","type":"previews"}"#)
         XCTAssertEqual(

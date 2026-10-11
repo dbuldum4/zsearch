@@ -8,7 +8,7 @@ import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
-import { DATASET_NOTE, datasetFolders } from "./datasets.ts"
+import { DATASET_NOTE, type DatasetFolder, datasetFolders } from "./datasets.ts"
 import type { PowerGate } from "./power.ts"
 import type { ExtractReply } from "./extract-job.ts"
 import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
@@ -114,6 +114,10 @@ export class Indexer {
   private cpu: CpuBudget
   /** The OCR helper, when this run reads images and scanned pages. */
   private ocrTool: string | null
+  /** Files the scan found gone, removed from the index at the end of the run. */
+  private removed = new Set<number>()
+  /** Someone asked for the run while it waited on power: it waits no more. */
+  private powerOverridden = false
   /** Folders whose images OCR leaves out (see `datasets.ts`). */
   private datasets = new Set<string>()
   private st!: {
@@ -180,6 +184,16 @@ export class Indexer {
     this.opts.onProgress?.({ ...this.progress })
   }
 
+  /** Stop waiting on power, for good: someone asked for an update while this one waited. */
+  goNow() {
+    this.powerOverridden = true
+  }
+
+  /** Why the run waits on power now, if it does. */
+  private powerWait(power: PowerGate | undefined): string | undefined {
+    return this.powerOverridden ? undefined : (power?.reason() ?? undefined)
+  }
+
   private get aborted() {
     return this.opts.signal?.aborted ?? false
   }
@@ -230,6 +244,7 @@ export class Indexer {
       setMeta(this.db, "indexing_started_at", String(this.progress.startedAt))
       this.sweepSecrets()
       const removed = this.scan()
+      this.removed = new Set(removed)
       if (this.aborted) return this.finish("cancelled")
       await this.content()
       if (this.aborted) return this.finish("cancelled")
@@ -244,6 +259,10 @@ export class Indexer {
   private finish(phase: IndexPhase): IndexProgress {
     this.progress.phase = phase
     this.progress.current = ""
+    if (this.progress.waiting !== undefined) {
+      this.progress.waiting = undefined
+      setMeta(this.db, "waiting_for", "")
+    }
     if (phase === "done") {
       const now = Date.now()
       setMeta(this.db, "last_indexed_at", String(now))
@@ -262,8 +281,8 @@ export class Indexer {
   /* ------------------------------------------------------------- scan -- */
 
   /**
-   * Drop the text of files indexed before keys were left out (see `secrets.ts`), once. Files
-   * matched by name lose theirs in the scan; this finds those whose text holds a private key.
+   * Read again, once, the files indexed with private keys in their text before keys were cut
+   * out (see `secrets.ts`). Files matched by name lose their text in the scan.
    */
   private sweepSecrets() {
     if (getMeta(this.db, "secrets_swept") === "1") return
@@ -273,7 +292,8 @@ export class Indexer {
     this.db.transaction(() => {
       for (const c of candidates) {
         const row = this.st.contentGet.get(c.id) as { data: Uint8Array } | null
-        if (row && holdsPrivateKey(decompressText(row.data))) this.dropContent(c.id, c.path, ContentState.Skipped, SECRET_NOTE)
+        // Its text goes now, and comes back without the key in the content phase.
+        if (row && holdsPrivateKey(decompressText(row.data))) this.dropContent(c.id, c.path, ContentState.Pending, null)
       }
       setMeta(this.db, "secrets_swept", "1")
     }).immediate()
@@ -466,7 +486,7 @@ export class Indexer {
    */
   private startEarly(files: Pending[]) {
     // Over the CPU budget, the content phase starts them instead.
-    if (this.opts.inProcess || !files.length || this.cpu.over || (this.earlyFound >= BIG_RUN && this.opts.power?.reason())) return
+    if (this.opts.inProcess || !files.length || this.cpu.over || (this.earlyFound >= BIG_RUN && this.powerWait(this.opts.power))) return
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
@@ -489,21 +509,41 @@ export class Indexer {
     setMeta(this.db, "dataset_folders", "[]")
   }
 
-  /** Find the dataset folders OCR leaves out, among all indexed images (see `datasets.ts`). */
+  /**
+   * Find the dataset folders OCR leaves out (see `datasets.ts`), among the folders of the images
+   * waiting for their contents and those found before: one folder at a time, not every image in
+   * the index. A folder that no longer counts as one has the images it left out read again.
+   */
   private findDatasets() {
-    const paths = (this.db.query("SELECT path FROM files WHERE kind = 'image' AND is_dir = 0").values() as [string][]).map((r) => r[0])
-    const found = datasetFolders(paths, crawlOptionsFor(this.config).roots)
-    this.datasets = new Set(found.map((f) => f.dir))
-    setMeta(this.db, "dataset_folders", JSON.stringify(found))
+    const dirOf = (path: string) => path.slice(0, Math.max(1, path.lastIndexOf("/")))
+    const waiting = this.db.query("SELECT path, ext FROM files WHERE content_state = ? AND kind = 'image'").all(ContentState.Pending) as { path: string; ext: string }[]
+    const before = JSON.parse(getMeta(this.db, "dataset_folders") ?? "[]") as DatasetFolder[]
+    const dirs = new Set([...waiting.filter((w) => OCR_EXTS.has(w.ext)).map((w) => dirOf(w.path)), ...before.map((f) => f.dir)])
+    if (!dirs.size) return
+    const roots = crawlOptionsFor(this.config).roots
+    const inDir = this.db.query("SELECT id, path, content_state AS state, note FROM files WHERE path > ? AND path < ? AND kind = 'image' AND is_dir = 0")
+    const found = new Map(before.map((f) => [f.dir, f]))
+    const readAgain: number[] = []
+    for (const dir of dirs) {
+      // Rows from the folder itself, not its subfolders, nor files gone since.
+      const rows = (inDir.all(dir + "/", dir + "0") as { id: number; path: string; state: number; note: string | null }[]).filter((r) => dirOf(r.path) === dir && !this.removed.has(r.id))
+      const [dataset] = datasetFolders(rows.map((r) => r.path), roots)
+      if (dataset) found.set(dir, dataset)
+      else if (found.delete(dir)) for (const r of rows) if (r.state === ContentState.Skipped && r.note === DATASET_NOTE) readAgain.push(r.id)
+    }
+    const setPending = this.db.query("UPDATE files SET content_state = ? WHERE id = ?")
+    this.db.transaction(() => { for (const id of readAgain) setPending.run(ContentState.Pending, id) }).immediate()
+    const list = [...found.values()].sort((a, b) => (a.dir < b.dir ? -1 : 1))
+    this.datasets = new Set(list.map((f) => f.dir))
+    setMeta(this.db, "dataset_folders", JSON.stringify(list))
   }
 
   private async content() {
     this.readDatasets()
+    if (this.ocrTool && this.config.skipDatasetOcr) this.findDatasets()
     const all = this.db
       .query("SELECT id, path, ext, kind, size, in_fts AS inFts FROM files WHERE content_state = ? ORDER BY mtime DESC")
       .all(ContentState.Pending) as Pending[]
-    // Only runs with images to read look for dataset folders.
-    if (this.ocrTool && this.config.skipDatasetOcr && all.some((p) => OCR_EXTS.has(p.ext) && p.kind === "image")) this.findDatasets()
     this.progress.phase = "content"
     this.progress.contentTotal = all.length
     this.emit(true)
@@ -628,9 +668,11 @@ export class Indexer {
     let ok = false
     try {
       while ((next < pending.length || active) && !sink.failed) {
-        const waiting = power?.reason() ?? undefined
+        const waiting = this.powerWait(power)
         if (waiting !== this.progress.waiting) {
           this.progress.waiting = waiting
+          // Other processes refused the index lock say why it is held (see `zsearch index`).
+          setMeta(this.db, "waiting_for", waiting ?? "")
           this.emit(true)
         }
         // No new jobs while the writer has much to catch up on.

@@ -171,8 +171,9 @@ private struct IndexSettings: View {
                             .disabled(excludeList == (model.config?.exclude ?? []))
                     }
                 }
-                Toggle("Wait with a big first index while on battery", isOn: pauseOnBattery)
-                    .help("Low Power Mode and a hot Mac always make it wait. It picks up where it left off.")
+                Toggle("Pause big automatic updates in Low Power Mode or when the Mac is hot", isOn: pauseOnLowPower)
+                    .help("Updates of 1,000 files or more that start on their own wait and then pick up where they left off. Update Index Now never waits.")
+                Toggle("Pause big automatic updates on battery", isOn: pauseOnBattery)
                 Picker("Update the index", selection: refresh) {
                     Text("Only when I ask").tag(0.0)
                     Text("Every 15 minutes").tag(15.0)
@@ -195,6 +196,10 @@ private struct IndexSettings: View {
                 }
                 HStack {
                     if model.indexing {
+                        if model.activity.progress?.waiting != nil {
+                            Button("Index Now") { model.indexNow() }
+                                .help("Stop waiting for power and read the files now.")
+                        }
                         Button("Stop Indexing") { model.cancelIndex() }
                     } else {
                         Button(model.needsReindex ? "Update Index to Apply Changes" : "Update Index Now") { model.startIndex() }
@@ -240,6 +245,13 @@ private struct IndexSettings: View {
     }
 
     /// Applies to a run already going, within half a minute: no index update needed.
+    private var pauseOnLowPower: Binding<Bool> {
+        Binding(
+            get: { model.config?.pauseOnLowPower ?? true },
+            set: { model.updateConfig(ConfigPatch(pauseOnLowPower: $0), reindex: false) }
+        )
+    }
+
     private var pauseOnBattery: Binding<Bool> {
         Binding(
             get: { model.config?.pauseOnBattery ?? false },

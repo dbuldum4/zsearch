@@ -26,6 +26,8 @@ export interface SearchService {
 export interface IndexHandle {
   done: Promise<IndexOutcome>
   cancel(): void
+  /** Stop waiting on power (see `IndexRun.goNow`). */
+  goNow?(): void
 }
 
 export interface Services {
@@ -35,7 +37,8 @@ export interface Services {
   firstRun: boolean
   search: SearchService
   saveConfig(config: Config): void
-  startIndex(config: Config, handlers: IndexRunHandlers): IndexHandle
+  /** `background`: the run started on its own, and may wait on power (see `IndexRun`). */
+  startIndex(config: Config, handlers: IndexRunHandlers, background?: boolean): IndexHandle
   /** PID of another process currently indexing, or null. */
   indexLockedBy(): number | null
   /** Count what a first index of these folders takes, in the background (setup). */
@@ -60,7 +63,7 @@ export function realServices(config: Config): Services {
     if (live || lockHolder(p.lock) !== null) return false
     if (!configExists()) return
     const current = loadConfig(); client.setConfig(current)
-    live = new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() })
+    live = new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true)
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)
@@ -79,7 +82,7 @@ export function realServices(config: Config): Services {
       for (const key of configKeys()) if (JSON.stringify(value(next, key)) !== JSON.stringify(value(baseline, key))) merged = withConfigSetting(merged, key, value(next, key))
       saveConfig(merged); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
     },
-    startIndex: (cfg, handlers) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers),
+    startIndex: (cfg, handlers, background) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background),
     indexLockedBy: () => lockHolder(p.lock),
     estimate: estimateInBackground,
     open: openWithDefault,

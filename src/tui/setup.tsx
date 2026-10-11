@@ -47,8 +47,10 @@ export function Setup(props: SetupProps) {
   const [error, setError] = createSignal<string | null>(null)
   let input: InputRenderable | undefined
 
-  // How long the first index of the chosen folders takes, counted shortly after each choice.
+  // How long the first index of the chosen folders takes: counted once asked for ("e"), as the
+  // walk can bring up macOS's folder permission prompts, then again after each choice.
   const [estimate, setEstimate] = createSignal<string | null>(null)
+  const [wantsEstimate, setWantsEstimate] = createSignal(false)
   const chosenRoots = (): string[] => {
     if (scope() === "docs") return [...DEFAULT_ROOTS]
     if (scope() === "home") return ["~"]
@@ -58,7 +60,7 @@ export function Setup(props: SetupProps) {
   createEffect(() => {
     const roots = chosenRoots()
     const count = props.estimate
-    if (!count || editing() || !roots.length) return setEstimate(null)
+    if (!count || !wantsEstimate() || editing() || !roots.length) return setEstimate(null)
     const settings: Config = { ...structuredClone(props.config), includeHidden: hidden(), respectGitignore: gitignore() }
     settings.content.enabled = content()
     setEstimate("counting files…")
@@ -157,6 +159,7 @@ export function Setup(props: SetupProps) {
       // Enter on an option toggles it; enter on a button presses it. "s" starts right away.
       activate()
     } else if (k === "s" && !key.ctrl) finish()
+    else if (k === "e" && !key.ctrl && props.estimate) setWantsEstimate(true)
     setError(null)
   })
 
@@ -203,6 +206,7 @@ export function Setup(props: SetupProps) {
     if (editing()) push("input", "custom")
     const est = estimate()
     if (est) push([{ text: `       First index: ${est}`, fg: t().subtle }])
+    else if (props.estimate && !wantsEstimate()) push([{ text: "       Press e to see how long the first index takes", fg: t().subtle }])
     push([])
     push([{ text: "  Options", fg: t().text, bold: true }])
     push(check("content", content(), "Search inside files", "PDF, Word, Excel, PowerPoint, code, text…"), "content")

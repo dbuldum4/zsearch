@@ -17,7 +17,7 @@ import {
   setConfigValue,
   tildify,
 } from "./config.ts"
-import { indexStats, openDb } from "./index/db.ts"
+import { getMeta, indexStats, openDb } from "./index/db.ts"
 import { excludingPath } from "./index/exclude.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
@@ -341,7 +341,8 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   if (save) saveConfig(config)
   const release = acquireLock(p.lock)
   if (!release) {
-    console.error(`zsearch: another zsearch process (pid ${lockHolder(p.lock)}) is updating the index`)
+    const waiting = existsSync(p.db) ? waitingFor(p.db) : ""
+    console.error(`zsearch: another zsearch process (pid ${lockHolder(p.lock)}) is updating the index${waiting ? ` (waiting: ${waiting}; Update Index Now in the app, or Ctrl-R in zsearch, starts it at once)` : ""}`)
     return 1
   }
   const onSignal = () => controller.abort()
@@ -415,6 +416,14 @@ function cmdEstimate(folders: string[], args: Args): number {
   return 0
 }
 
+/** Why the run holding the index lock waits on power, if it does. */
+function waitingFor(dbPath: string): string {
+  try {
+    const db = openDb(dbPath, { readonly: true })
+    try { return getMeta(db, "waiting_for") ?? "" } finally { db.close() }
+  } catch { return "" }
+}
+
 /* ----------------------------------------------------------------- status -- */
 
 function cmdStatus(args: Args): number {
@@ -440,7 +449,10 @@ function cmdStatus(args: Args): number {
   if (s.secrets) console.log(`Not read     ${formatCount(s.secrets)} key or password files, indexed by name only`)
   if (s.datasetImages) console.log(`No OCR       ${formatCount(s.datasetImages)} images in ${formatCount(s.datasetFolders.length)} machine-made dataset folders (\`zsearch config set skipDatasetOcr false\` reads them)`)
   const holder = lockHolder(p.lock)
-  if (holder) console.log(`Indexing     in progress (pid ${holder})`)
+  if (holder) {
+    const waiting = getMeta(db, "waiting_for")
+    console.log(`Indexing     in progress (pid ${holder})${waiting ? `, waiting: ${waiting}` : ""}`)
+  }
   if (flag(args, "errors")) {
     const rows = db.query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path LIMIT 200").all() as { path: string; note: string }[]
     console.log(rows.length ? "\nUnreadable files:" : "\nNo unreadable files.")

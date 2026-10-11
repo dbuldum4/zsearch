@@ -144,14 +144,14 @@ The first launch opens a short setup screen. You can choose these settings later
 - **Entire disk** indexes everything under `/`. It skips pseudo-filesystems, caches and VM images; `oneFileSystem:true` also skips other mounted volumes. System folders (`/usr`, `/opt`, `/etc`, `/Applications`, …) are indexed by name only, and your files are indexed in full. On macOS, give your terminal *Full Disk Access* to cover protected folders.
 - **Custom folders** indexes a comma-separated list such as `~/Documents, ~/code`.
 
-Under the choices, setup shows roughly how long the first index of the chosen folders takes ("12,345 files · about 3 minutes"), from a quick count that opens no files. `zsearch estimate` prints the same for any folders. For a large folder the count stops after a few seconds and the estimate becomes a lower bound.
+Setup can show roughly how long the first index of the chosen folders takes ("12,345 files · about 3 minutes"), from a quick count that opens no files: press <kbd>e</kbd> in the terminal app, or click *How long will this take?* in the Mac app. It counts only when asked, because walking a folder can bring up macOS's folder permission prompts. `zsearch estimate` prints the same for any folders. For a large folder the count stops after a few seconds and the estimate becomes a lower bound.
 
 Indexing runs in two phases:
 
 1. A **scan** walks the folders and records every file and folder. Name search works as soon as the scan has passed a file.
 2. **Contents** are extracted in parallel worker threads and stored in a SQLite FTS5 index, with the most recently modified files first.
 
-In the background (the Mac app, the terminal app and the MCP server, but not `zsearch index`), a big pass of a thousand files or more waits while the computer is in Low Power Mode or running hot, and picks up where it left off. Set `pauseOnBattery` to wait on battery as well.
+An update that starts on its own (the schedule, file changes, an index left out of date) waits while the computer is in Low Power Mode or running hot, if it has a thousand files or more to read, and picks up where it left off. Set `pauseOnBattery` to wait on battery as well, or `pauseOnLowPower` to `false` to never wait (both are in the Mac app's settings too). An update you ask for (Update Index Now, <kbd>Ctrl-R</kbd>, `zsearch index`, MCP's `update_index`) never waits.
 
 Later runs re-read files whose size or modification time changed, or whose content settings changed, and remove deleted files. A rename on the same file system keeps extracted text when device, inode, size and modification time agree. Unavailable roots and folders that cannot be listed keep their existing entries; status reports them so you can restore permissions. Native file-system events trigger a debounced incremental refresh while the TUI, Mac engine or MCP server runs, with the timed scan as a fallback. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change.
 
@@ -214,7 +214,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `liveUpdates` | `true` | Watch roots for changes while a frontend is running; updates still walk the selected roots |
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
 | `workers` | `0` | Extraction threads (`0` = automatic: the CPUs less two, at most 8, within `indexLoad`) |
-| `pauseOnLowPower` | `true` | In the background, a big pass waits in Low Power Mode and while the computer is hot |
+| `pauseOnLowPower` | `true` | A big update that starts on its own waits in Low Power Mode and while the computer is hot |
 | `pauseOnBattery` | `false` | ...and while on battery |
 | `skipDatasetOcr` | `true` | Leave images in machine-made dataset folders out of OCR (they stay findable by name) |
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
@@ -222,7 +222,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
 | `preview` | `true` | Show the preview pane |
 
-Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off).
+Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait.
 
 The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it. App-owned data/config folders use mode 0700 and config, database and journals use 0600. The schema changes rebuild older indexes to correct non-Latin token matching.
 

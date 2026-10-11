@@ -45,7 +45,10 @@ export interface Config {
    * and of its CPU time. Below 100, indexing also reads and writes at a low disk priority.
    */
   indexLoad: number
-  /** Background indexing waits during a big first pass in Low Power Mode or while the computer is hot. */
+  /**
+   * A big index run that started on its own (a schedule, file changes) waits in Low Power Mode or
+   * while the computer is hot. Runs someone asked for never wait.
+   */
   pauseOnLowPower: boolean
   /** ...and while on battery. */
   pauseOnBattery: boolean
