@@ -437,9 +437,17 @@ final class SearchModel {
         return reply.text
     }
 
-    /// Save what to index (first run or File › Choose Folders…) and start indexing.
+    /// Update the index only when asked: no schedule and no file watching.
+    var manualIndexing: Bool {
+        config?.autoRefreshMinutes == 0 && config?.liveUpdates == false
+    }
+
+    /// Save what to index (first run or File › Choose Folders…) and start indexing. With
+    /// "Only when I ask", a later change waits for Update Index, as other settings do.
     func applySetup(roots: [String], readContents: Bool) {
         guard let engine else { return }
+        let waits = !firstRun && manualIndexing
+        if waits { settingsRevision += 1 }
         Task {
             do {
                 let patch = ConfigPatch(roots: roots, content: ContentConfig(enabled: readContents))
@@ -450,7 +458,7 @@ final class SearchModel {
                 }
                 firstRun = false
                 showSetup = false
-                startIndex()
+                if waits { needsReindex = true } else { startIndex() }
             } catch {
                 show(error.localizedDescription)
             }

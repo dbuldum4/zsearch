@@ -157,6 +157,8 @@ public struct Config: Codable, Hashable, Sendable {
     public var followSymlinks: Bool
     /// Read contents inside cloud-synced folders (may download online-only files).
     public var cloudContent: Bool
+    /// Update the index as files change while the app runs. Nil from engines that do not send it.
+    public var liveUpdates: Bool?
     /// A big update the app started on its own waits in Low Power Mode or while the Mac is hot,
     /// and while on battery. Nil from engines older than these settings.
     public var pauseOnLowPower: Bool?
@@ -214,6 +216,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var followSymlinks: Bool?
     public var cloudContent: Bool?
     public var autoRefreshMinutes: Double?
+    public var liveUpdates: Bool?
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
 
@@ -227,6 +230,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         followSymlinks: Bool? = nil,
         cloudContent: Bool? = nil,
         autoRefreshMinutes: Double? = nil,
+        liveUpdates: Bool? = nil,
         pauseOnLowPower: Bool? = nil,
         pauseOnBattery: Bool? = nil
     ) {
@@ -239,6 +243,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.followSymlinks = followSymlinks
         self.cloudContent = cloudContent
         self.autoRefreshMinutes = autoRefreshMinutes
+        self.liveUpdates = liveUpdates
         self.pauseOnLowPower = pauseOnLowPower
         self.pauseOnBattery = pauseOnBattery
     }
@@ -255,6 +260,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             followSymlinks: config.followSymlinks,
             cloudContent: config.cloudContent,
             autoRefreshMinutes: config.autoRefreshMinutes,
+            liveUpdates: config.liveUpdates,
             pauseOnLowPower: config.pauseOnLowPower,
             pauseOnBattery: config.pauseOnBattery
         )

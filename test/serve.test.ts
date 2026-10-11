@@ -137,6 +137,36 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
 
+test("serve: with no schedule and no live updates, the index changes only when asked", async () => {
+  const s = server()
+  await s.until((m) => m.type === "ready")
+  // What the Mac app's "Only when I ask" saves.
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~"], autoRefreshMinutes: 0, liveUpdates: false } })
+  const cfg = (await s.reply(1)).config as { autoRefreshMinutes: number; liveUpdates: boolean }
+  expect([cfg.autoRefreshMinutes, cfg.liveUpdates]).toEqual([0, false])
+  s.send({ id: 2, type: "index" })
+  await s.reply(2)
+  await s.until((m) => m.type === "indexDone")
+
+  corpus.write("notes/manual-only.txt", "quokkatronic marmalade\n")
+  // Live updates would start an update about a second after the change.
+  await Bun.sleep(3000)
+  s.send({ id: 3, type: "search", query: "quokkatronic", mode: "find" })
+  const seen: unknown[] = []
+  const found = await s.until((m) => (seen.push(m.type), m.id === 3))
+  expect(seen).not.toContain("indexProgress")
+  expect((found.response as { hits: unknown[] }).hits).toHaveLength(0)
+
+  s.send({ id: 4, type: "index" })
+  await s.reply(4)
+  await s.until((m) => m.type === "indexDone")
+  s.send({ id: 5, type: "search", query: "quokkatronic", mode: "find" })
+  expect(((await s.reply(5)).response as { hits: unknown[] }).hits).toHaveLength(1)
+
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
 test("serve: only updates that started on their own wait on power, and asking for one ends the wait", async () => {
   for (let i = 0; i < 1100; i++) corpus.write(`bulk/file-${i}.txt`, `bulk word number${i}\n`)
   // The computer as if in Low Power Mode, with an index of its own.

@@ -671,6 +671,9 @@ export class Indexer {
         const waiting = this.powerWait(power)
         if (waiting !== this.progress.waiting) {
           this.progress.waiting = waiting
+          // The writer's open transaction would hold this write up until it timed out: it is
+          // committed only from this loop.
+          await sink.settle()
           // Other processes refused the index lock say why it is held (see `zsearch index`).
           setMeta(this.db, "waiting_for", waiting ?? "")
           this.emit(true)

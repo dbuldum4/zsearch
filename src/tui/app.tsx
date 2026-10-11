@@ -1,7 +1,7 @@
 import type { BoxRenderable, InputRenderable, KeyEvent, MouseEvent } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
-import { type Config, tildify } from "../config.ts"
+import { type Config, manualIndexing, tildify } from "../config.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
@@ -612,7 +612,12 @@ export function App(props: AppProps) {
               firstRun={false}
               width={cols()}
               height={dims().height}
-              onDone={(c, changed) => applySettings(c, changed)}
+              onDone={(c, changed) => {
+                if (changed && manualIndexing(c)) {
+                  applySettings(c, false)
+                  notify("Settings saved · press ^R to update the index")
+                } else applySettings(c, changed)
+              }}
               onCancel={() => setOverlay(null)}
               estimate={svc.estimate}
             />

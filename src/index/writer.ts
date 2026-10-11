@@ -115,6 +115,8 @@ export class ContentWriter {
 export interface ContentSink {
   write(items: ContentItem[], fresh: string[]): void
   commit(): void
+  /** Commit, and wait until the writer holds no open transaction (a failed write counts). */
+  settle(): Promise<void>
   /** Bytes sent but not written yet. */
   readonly backlog: number
   /** A write failed: `close` throws its error. */
@@ -153,6 +155,10 @@ export class InlineSink implements ContentSink {
   commit() {
     this.writer.commit()
     this.onCommit?.()
+  }
+
+  async settle() {
+    this.commit()
   }
 
   async close() {
@@ -267,6 +273,11 @@ export class ThreadSink implements ContentSink {
   commit() {
     this.commits++
     this.post({ type: "commit" })
+  }
+
+  async settle() {
+    this.commit()
+    while (this.commits > 0 && !this.error) await new Promise<void>((r) => this.waiters.push(r))
   }
 
   async close() {
