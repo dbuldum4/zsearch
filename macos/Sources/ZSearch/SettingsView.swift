@@ -179,7 +179,10 @@ private struct IndexSettings: View {
                     Text("Every 4 hours").tag(240.0)
                     Text("Once a day").tag(1440.0)
                 }
-                .help("Except with \u{201C}Only when I ask\u{201D}, the index also updates as files change while zsearch is open.")
+                if (model.config?.autoRefreshMinutes ?? 60) > 0 {
+                    Toggle("Also update as files change", isOn: watchFiles)
+                        .help("Watches the folders while zsearch is open.")
+                }
             } header: {
                 Text("What to index")
             }
@@ -262,16 +265,29 @@ private struct IndexSettings: View {
     /// The picker's tag for watching files with no schedule (`autoRefreshMinutes` 0, live updates on).
     private static let onChangeOnly = -1.0
 
-    /// "Only when I ask" turns off both the schedule and file watching; every other choice watches.
+    /// "Only when I ask" turns off both the schedule and file watching. Moving between schedules
+    /// keeps the watching choice; leaving "Only when I ask" for a schedule turns watching back on.
     private var refresh: Binding<Double> {
         Binding(
             get: {
                 let minutes = model.config?.autoRefreshMinutes ?? 60
                 return minutes == 0 && model.config?.liveUpdates ?? true ? Self.onChangeOnly : minutes
             },
-            set: {
-                model.updateConfig(ConfigPatch(autoRefreshMinutes: max($0, 0), liveUpdates: $0 != 0), reindex: false)
+            set: { choice in
+                let watch: Bool? = switch choice {
+                case 0: false
+                case Self.onChangeOnly: true
+                default: model.manualIndexing ? true : nil
+                }
+                model.updateConfig(ConfigPatch(autoRefreshMinutes: max(choice, 0), liveUpdates: watch), reindex: false)
             }
+        )
+    }
+
+    private var watchFiles: Binding<Bool> {
+        Binding(
+            get: { model.config?.liveUpdates ?? true },
+            set: { model.updateConfig(ConfigPatch(liveUpdates: $0), reindex: false) }
         )
     }
 
