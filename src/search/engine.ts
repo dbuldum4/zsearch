@@ -627,7 +627,8 @@ export class SearchEngine {
     const nameHits = this.catalog.regex(nameRe, q.filters, q.filters.sort ? this.catalog.size : Math.max(limit * 5, 100)).filter((m) => policyOpts(this.catalog.paths[m.idx]!).allowed)
     if (q.filters.sort) nameHits.sort((a, b) => this.compareIds(this.catalog.ids[a.idx]!, this.catalog.ids[b.idx]!, q.filters.sort!))
     if (nameHits.length > limit) nameHits.length = limit
-    const best = new TopK<Ranked>(Math.max(limit * 5, 100), (h) => h.count ?? 0, q.filters.sort ? (a, b) => -this.compareIds(a.id, b.id, q.filters.sort!) : undefined)
+    const sampleLimit = Math.max(limit * 5, 100)
+    const best = new TopK<Ranked>(sampleLimit, (h) => h.count ?? 0, q.filters.sort ? (a, b) => -this.compareIds(a.id, b.id, q.filters.sort!) : undefined)
     let matched = 0
     const expr = reqToFts(req, this.vocab)
     let scanned = 0
@@ -637,7 +638,7 @@ export class SearchEngine {
       if (allParts.some((part) => !part.test(text))) return false
       const { lines, count } = findLines(text, re, 20, 10_000, deadline)
       if (count > 0) { matched++; best.add({ id, lines, count }) }
-      return false
+      return !q.filters.sort && matched >= sampleLimit
     }
     if (expr !== "__no_match__") {
       // Candidate ids from FTS alone (no join), then filtered and ordered newest first with the
@@ -654,18 +655,21 @@ export class SearchEngine {
         const i = cat.indexOf(id)
         // No content-state check: the catalog does not follow content-state changes during an
         // index run, and a file without stored text simply has no row in the batch fetch below.
-        if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters) && this.contentAuthorized(i, policyOpts)) idx.push(i)
+        if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters)) idx.push(i)
       }
       idx.sort((a, b) => cat.mtimes[b]! - cat.mtimes[a]!)
-      candidates = idx.length
       let lastYield = Date.now()
       // Texts are read in batches: one query per 64 files instead of one per file.
       scan: for (let start = 0; start < idx.length; start += FETCH_BATCH) {
         const batch = idx.slice(start, start + FETCH_BATCH).filter((i) => this.contentAuthorized(i, policyOpts)).map((i) => cat.ids[i]!)
+        candidates += batch.length
         const texts = this.batchTexts(batch)
         for (const id of batch) {
           const text = texts.get(id)
-          if (text !== undefined && check(id, text)) break scan
+          if (text !== undefined && check(id, text)) {
+            res.partial = start + FETCH_BATCH < idx.length || id !== batch.at(-1)
+            break scan
+          }
         }
         const now = Date.now()
         if (now > deadline) {

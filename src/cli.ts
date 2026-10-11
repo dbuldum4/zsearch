@@ -273,7 +273,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
       console.log(`     ${c.green(loc.padStart(5))}: ${highlightRanges(l.text, l.ranges, c.match)}`)
     }
   }
-  const summary = `${formatCount(res.hits.length)} of ${formatCount(res.total)} results · ${res.strategy} · ${formatDuration(res.elapsedMs)}${res.partial ? " · partial (time limit)" : ""}`
+  const summary = `${formatCount(res.hits.length)} of ${formatCount(res.total)} results · ${res.strategy} · ${formatDuration(res.elapsedMs)}${res.partial ? " · partial (search budget)" : ""}`
   if (process.stderr.isTTY) console.error(c.dim(summary))
   if (res.notice) console.error(c.yellow(res.notice))
   return res.hits.length ? 0 : 1

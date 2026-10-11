@@ -131,6 +131,11 @@ describe("sweep regressions", () => {
       expect(result.hits).toEqual([])
       expect(result.total).toBe(0)
     }
+    const before = statSync(ignoreFile)
+    writeFileSync(ignoreFile, "*.log\n") // Same inode, size and restored mtime.
+    const { utimesSync } = await import("node:fs")
+    utimesSync(ignoreFile, before.atime, before.mtime)
+    for (const mode of ["find", "fuzzy"] as const) expect((await e.search("PRIVATEZEBRA", mode)).hits).toHaveLength(2)
     rmSync(ignoreFile)
     for (const mode of ["find", "fuzzy"] as const) expect((await e.search("PRIVATEZEBRA", mode)).hits).toHaveLength(2)
   }, { "a.txt": "PRIVATEZEBRA", "b.txt": "PRIVATEZEBRA" }))
@@ -196,6 +201,37 @@ test("nested roots cannot bypass ancestor ignores", async () => fixture(async (d
   expect(readIndexed(e, join(dir, "private", "secret.txt"), "", "find", readOpts)).toBeNull()
   expect((await e.search("PRIVATEZEBRA")).total).toBe(0)
 }, { "private/secret.txt": "PRIVATEZEBRA" }))
+
+test("broad searches rank an oversampled pool and explicit sorting considers later files", async () => {
+  const files = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`note-${i}.txt`, "budget"]))
+  files["note-80.txt"] = "budget ".repeat(20)
+  files["note-200.txt"] = "budget " + "padding ".repeat(100)
+  await fixture(async (dir, _c, e) => {
+    const { utimesSync } = await import("node:fs")
+    for (let i = 0; i < 250; i++) utimesSync(join(dir, `note-${i}.txt`), 1000 - i, 1000 - i)
+    await new Indexer(e.db, _c, { inProcess: true }).run()
+    e.refresh(true)
+    const result = await e.search("budget", "find", { limit: 1 })
+    expect(result.hits[0]?.path).toBe(join(dir, "note-80.txt"))
+    expect(result.partial).toBe(true)
+    expect((await e.search("budget sort:-size", "find", { limit: 1 })).hits[0]?.path).toBe(join(dir, "note-200.txt"))
+  }, files)
+})
+
+test("repointed parent-directory aliases are checked again on the next request", async () => fixture(async (dir, c, e) => {
+  const alias = join(dir, "linked")
+  c.followSymlinks = true
+  symlinkSync(join(dir, "public"), alias)
+  await new Indexer(e.db, c, { inProcess: true }).run()
+  expect(readIndexed(e, join(alias, "a.txt"), "", "find", readOpts)?.source).toBe("index")
+  const outside = join(dir, "..", "outside")
+  mkdirSync(outside); writeFileSync(join(outside, "a.txt"), "OUTSIDEZEBRA")
+  rmSync(alias); symlinkSync(outside, alias)
+  c.namesOnly = [join(dir, "public")]
+  expect(readIndexed(e, join(alias, "a.txt"), "", "find", readOpts)).toBeNull()
+  expect((await e.search("PRIVATEZEBRA")).hits).toEqual([])
+  expect((await e.search("OUTSIDEZEBRA")).hits).toEqual([])
+}, { "public/a.txt": "PRIVATEZEBRA" }))
 
 test("repointed aliases cannot expose their old target and identical stat sizes reindex", async () => fixture(async (dir, c, e) => {
   c.followSymlinks = true

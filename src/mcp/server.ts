@@ -533,7 +533,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         strategy: str("How the query was run"),
         total: { type: "integer", description: "Matching files found (at least)" },
         offset: { type: "integer" },
-        partial: bool("The time limit stopped a full scan early: there may be more matches"),
+        partial: bool("The search budget stopped a full scan early: there may be more matches"),
         notice: str("A warning about the query, such as a filter that was not understood"),
         hits: {
           type: "array",
@@ -603,7 +603,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         })
         if (res.total > offset + hits.length) out.push("", `More results: call again with offset ${offset + hits.length}, or narrow the search.`)
       }
-      if (res.partial) out.push("", "The search stopped at its time limit, so there may be more matches.")
+      if (res.partial) out.push("", "The search stopped at its budget, so there may be more matches.")
       if (res.notice) out.push("", `Note: ${res.notice}`)
       return { text: out.join("\n"), structured }
     },
