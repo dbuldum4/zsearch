@@ -95,6 +95,8 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
     public var contentDone: Int
     public var contentBytes: Int
     public var contentErrors: Int
+    /// Why reading contents waits ("Low Power Mode", "on battery"), while it does.
+    public var waiting: String?
     public var current: String
     public var elapsedMs: Double
     public var error: String?
@@ -104,6 +106,28 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
         guard phase == "content", contentTotal > 0 else { return nil }
         return Double(contentDone) / Double(contentTotal)
     }
+}
+
+/// What a first index of a folder reads, from a count-only walk (`estimate` requests).
+public struct FolderEstimate: Decodable, Hashable, Sendable {
+    public var root: String
+    public var files: Int
+    public var folders: Int
+    public var textFiles: Int
+    public var textBytes: Int
+    public var documents: Int
+    public var ocrImages: Int
+    /// False when the walk ran out of time: the counts and time are then a lower bound.
+    public var complete: Bool
+    /// The first pass, roughly.
+    public var seconds: Double
+}
+
+public struct EstimateReply: Decodable, Hashable, Sendable {
+    public var estimates: [FolderEstimate]
+    public var total: FolderEstimate
+    /// "12,345 files · about 3 minutes", as the engine words it.
+    public var text: String
 }
 
 public struct ContentConfig: Codable, Hashable, Sendable {
@@ -135,6 +159,10 @@ public struct Config: Codable, Hashable, Sendable {
     public var cloudContent: Bool
     /// Update the index as files change while the app runs. Nil from engines that do not send it.
     public var liveUpdates: Bool?
+    /// A big update the app started on its own waits in Low Power Mode or while the Mac is hot,
+    /// and while on battery. Nil from engines older than these settings.
+    public var pauseOnLowPower: Bool?
+    public var pauseOnBattery: Bool?
 }
 
 public struct Ready: Decodable, Hashable, Sendable {
@@ -164,6 +192,9 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
+    /// An update the app started on its own (its schedule): a big one waits in Low Power Mode,
+    /// while the Mac is hot or (optionally) on battery.
+    case backgroundIndex
     /// Empty the index and index everything again.
     case rebuildIndex
     case cancelIndex
@@ -171,6 +202,8 @@ public enum Request: Sendable {
     /// line to show for `files[i]`, as `preview`'s `focusLine`.
     case previews(files: [Int], query: String, mode: Mode, focusLines: [Int?] = [])
     case opened(path: String)
+    /// How long a first index of these folders takes. A newer one supersedes it (`cancelled`).
+    case estimate(roots: [String])
 }
 
 public struct ConfigPatch: Encodable, Hashable, Sendable {
@@ -184,6 +217,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var cloudContent: Bool?
     public var autoRefreshMinutes: Double?
     public var liveUpdates: Bool?
+    public var pauseOnLowPower: Bool?
+    public var pauseOnBattery: Bool?
 
     public init(
         roots: [String]? = nil,
@@ -195,7 +230,9 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         followSymlinks: Bool? = nil,
         cloudContent: Bool? = nil,
         autoRefreshMinutes: Double? = nil,
-        liveUpdates: Bool? = nil
+        liveUpdates: Bool? = nil,
+        pauseOnLowPower: Bool? = nil,
+        pauseOnBattery: Bool? = nil
     ) {
         self.roots = roots
         self.includeHidden = includeHidden
@@ -207,6 +244,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.cloudContent = cloudContent
         self.autoRefreshMinutes = autoRefreshMinutes
         self.liveUpdates = liveUpdates
+        self.pauseOnLowPower = pauseOnLowPower
+        self.pauseOnBattery = pauseOnBattery
     }
 
     /// Every setting the app manages, taken from `config`.
@@ -221,7 +260,9 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             followSymlinks: config.followSymlinks,
             cloudContent: config.cloudContent,
             autoRefreshMinutes: config.autoRefreshMinutes,
-            liveUpdates: config.liveUpdates
+            liveUpdates: config.liveUpdates,
+            pauseOnLowPower: config.pauseOnLowPower,
+            pauseOnBattery: config.pauseOnBattery
         )
     }
 }
@@ -240,6 +281,8 @@ extension Request {
         var files: [Int]?
         var focusLines: [Int?]?
         var rebuild: Bool?
+        var roots: [String]?
+        var background: Bool?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -258,6 +301,8 @@ extension Request {
             w.type = "setConfig"; w.config = patch
         case .index:
             w.type = "index"
+        case .backgroundIndex:
+            w.type = "index"; w.background = true
         case .rebuildIndex:
             w.type = "index"; w.rebuild = true
         case let .previews(files, query, mode, focusLines):
@@ -267,6 +312,8 @@ extension Request {
             w.type = "cancelIndex"
         case let .opened(path):
             w.type = "opened"; w.path = path
+        case let .estimate(roots):
+            w.type = "estimate"; w.roots = roots
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -288,6 +335,7 @@ public enum Message: Hashable, Sendable {
     case indexProgress(IndexProgress)
     case indexDone(IndexDone)
     case refreshed(files: Int, changed: Bool)
+    case estimate(EstimateReply)
     /// A message type this version of the app does not know.
     case unknown(type: String)
 }
@@ -331,6 +379,7 @@ public struct Envelope: Hashable, Sendable {
         case "error": message = .error(try d.decode(ErrorBody.self, from: line).error)
         case "indexProgress": message = .indexProgress(try d.decode(ProgressBody.self, from: line).progress)
         case "indexDone": message = .indexDone(try d.decode(IndexDone.self, from: line))
+        case "estimate": message = .estimate(try d.decode(EstimateReply.self, from: line))
         case "refreshed":
             let r = try d.decode(RefreshedBody.self, from: line)
             message = .refreshed(files: r.files, changed: r.changed)

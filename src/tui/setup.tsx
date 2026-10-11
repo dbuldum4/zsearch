@@ -1,8 +1,10 @@
 import type { InputRenderable, KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { type Config, DEFAULT_ROOTS, home, resolvePath } from "../config.ts"
+import { combine, describeEstimate, ESTIMATE_CANCELLED } from "../index/estimate.ts"
 import { isMac } from "../platform.ts"
+import type { Services } from "./services.ts"
 import { StyledLine } from "./line.tsx"
 import { type Seg, truncate } from "./styled.ts"
 import type { Theme } from "./theme.ts"
@@ -16,6 +18,8 @@ interface SetupProps {
   /** `changed`: whether the index has to be rebuilt/updated. */
   onDone: (config: Config, changed: boolean) => void
   onCancel: () => void
+  /** Count what a first index of the chosen folders takes (see `estimateInBackground`). */
+  estimate?: Services["estimate"]
 }
 
 type Scope = "docs" | "home" | "disk" | "custom"
@@ -42,6 +46,31 @@ export function Setup(props: SetupProps) {
   const [editing, setEditing] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   let input: InputRenderable | undefined
+
+  // How long the first index of the chosen folders takes: counted once asked for ("e"), as the
+  // walk can bring up macOS's folder permission prompts, then again after each choice.
+  const [estimate, setEstimate] = createSignal<string | null>(null)
+  const [wantsEstimate, setWantsEstimate] = createSignal(false)
+  const chosenRoots = (): string[] => {
+    if (scope() === "docs") return [...DEFAULT_ROOTS]
+    if (scope() === "home") return ["~"]
+    if (scope() === "disk") return ["/"]
+    return custom().split(",").map((s) => s.trim()).filter(Boolean)
+  }
+  createEffect(() => {
+    const roots = chosenRoots()
+    const count = props.estimate
+    if (!count || !wantsEstimate() || editing() || !roots.length) return setEstimate(null)
+    const settings: Config = { ...structuredClone(props.config), includeHidden: hidden(), respectGitignore: gitignore() }
+    settings.content.enabled = content()
+    setEstimate("counting files…")
+    let run: ReturnType<NonNullable<typeof count>> | null = null
+    const timer = setTimeout(() => {
+      run = count(roots, settings)
+      run.done.then((list) => setEstimate(describeEstimate(combine(list))), (err: Error) => { if (err.message !== ESTIMATE_CANCELLED) setEstimate(null) })
+    }, 300)
+    onCleanup(() => { clearTimeout(timer); run?.cancel() })
+  })
 
   const t = () => props.theme
   const item = (): Item => ITEMS[cursor()]!
@@ -130,6 +159,7 @@ export function Setup(props: SetupProps) {
       // Enter on an option toggles it; enter on a button presses it. "s" starts right away.
       activate()
     } else if (k === "s" && !key.ctrl) finish()
+    else if (k === "e" && !key.ctrl && props.estimate) setWantsEstimate(true)
     setError(null)
   })
 
@@ -174,6 +204,9 @@ export function Setup(props: SetupProps) {
     push(radio("disk", "Entire disk", isMac ? "/  (grant Full Disk Access for protected folders)" : "/  (system folders: names only)"), "disk")
     push(radio("custom", "Custom folders", scope() === "custom" && !editing() ? truncate(custom(), w() - 30) : "comma-separated, e.g. ~/Documents, ~/code"), "custom")
     if (editing()) push("input", "custom")
+    const est = estimate()
+    if (est) push([{ text: `       First index: ${est}`, fg: t().subtle }])
+    else if (props.estimate && !wantsEstimate()) push([{ text: "       Press e to see how long the first index takes", fg: t().subtle }])
     push([])
     push([{ text: "  Options", fg: t().text, bold: true }])
     push(check("content", content(), "Search inside files", "PDF, Word, Excel, PowerPoint, code, text…"), "content")

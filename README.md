@@ -144,12 +144,18 @@ The first launch opens a short setup screen. You can choose these settings later
 - **Entire disk** indexes everything under `/`. It skips pseudo-filesystems, caches and VM images; `oneFileSystem:true` also skips other mounted volumes. System folders (`/usr`, `/opt`, `/etc`, `/Applications`, …) are indexed by name only, and your files are indexed in full. On macOS, give your terminal *Full Disk Access* to cover protected folders.
 - **Custom folders** indexes a comma-separated list such as `~/Documents, ~/code`.
 
+Setup can show roughly how long the first index of the chosen folders takes ("12,345 files · about 3 minutes"), from a quick count that opens no files: press <kbd>e</kbd> in the terminal app, or click *How long will this take?* in the Mac app. It counts only when asked, because walking a folder can bring up macOS's folder permission prompts. `zsearch estimate` prints the same for any folders. For a large folder the count stops after a few seconds and the estimate becomes a lower bound.
+
 Indexing runs in two phases:
 
 1. A **scan** walks the folders and records every file and folder. Name search works as soon as the scan has passed a file.
 2. **Contents** are extracted in parallel worker threads and stored in a SQLite FTS5 index, with the most recently modified files first.
 
+An update that starts on its own (the schedule, file changes, an index left out of date) waits while the computer is in Low Power Mode or running hot, if it has a thousand files or more to read, and picks up where it left off. Set `pauseOnBattery` to wait on battery as well, or `pauseOnLowPower` to `false` to never wait (both are in the Mac app's settings too). An update you ask for (Update Index Now, <kbd>Ctrl-R</kbd>, `zsearch index`, MCP's `update_index`) never waits.
+
 Later runs re-read files whose size or modification time changed, or whose content settings changed, and remove deleted files. A rename on the same file system keeps extracted text when device, inode, size and modification time agree. Unavailable roots and folders that cannot be listed keep their existing entries; status reports them so you can restore permissions. Native file-system events trigger a debounced incremental refresh while the TUI, Mac engine or MCP server runs, with the timed scan as a fallback. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change.
+
+**Keys and passwords stay out.** Private keys, certificates, key stores, password databases and login files (`id_rsa`, `*.pem`, `*.p12`, `*.p8`, `*.kdbx`, `*.gpg`, `.env` and `*.env`, `.netrc`, `.npmrc`, `credentials.json`, `secrets.yaml` and similar, and anything in `~/.ssh`, `~/.aws` or `~/.gnupg`) are indexed by name only, so you can still find them but their text is never read, previewed or given to MCP clients. A text file holding a private key block is left out the same way. `zsearch status --errors` lists them.
 
 From the command line:
 
@@ -162,6 +168,7 @@ zsearch index --disk                # whole disk
 zsearch index --hidden              # include dotfiles
 zsearch index --rebuild             # start from scratch
 zsearch status                      # what is indexed
+zsearch estimate --home             # how long a first index of ~ takes, roughly
 ```
 
 ### Supported file types
@@ -177,6 +184,8 @@ zsearch status                      # what is indexed
 | Images and scans (Mac app) | PNG, JPEG, HEIC, TIFF, WebP, BMP, GIF, and PDF pages that have no text, read with OCR |
 
 All other files (audio, video, archives, applications, and images outside the Mac app) are indexed by name, folder, size and date.
+
+**Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists such folders; `zsearch config set skipDatasetOcr false` reads them too.
 
 **OCR.** The Mac app bundles a small helper, `zsearch-ocr`, that reads text with Apple's Vision framework. It runs on the Mac, at low priority, and sends nothing anywhere. Images are read after all other files, and a PDF only goes through OCR for its pages without text (at most the first 100). Completed OCR pages are streamed and retained if the document deadline is reached. `zsearch doctor` says whether OCR is available. To use the helper with the terminal app, point `ZSEARCH_OCR` at it (`ZSEARCH_OCR=/Applications/zsearch.app/Contents/Helpers/zsearch-ocr`); turn it off with `zsearch config set content.ocr false`.
 
@@ -205,6 +214,9 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `liveUpdates` | `true` | Watch roots for changes while a frontend is running; updates still walk the selected roots |
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
 | `workers` | `0` | Extraction threads (`0` = automatic: the CPUs less two, at most 8, within `indexLoad`) |
+| `pauseOnLowPower` | `true` | A big update that starts on its own waits in Low Power Mode and while the computer is hot |
+| `pauseOnBattery` | `false` | ...and while on battery |
+| `skipDatasetOcr` | `true` | Leave images in machine-made dataset folders out of OCR (they stay findable by name) |
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
 | `editor` | `""` | Existing editor executable and fixed arguments (defaults to `$VISUAL` / `$EDITOR`); command interpreters are rejected |
 | `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
@@ -212,7 +224,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 
 To update the index only when you ask (the Mac app's **Update Index Now**, `^R` in the terminal app, `zsearch index`, or the MCP `update_index` tool), set `autoRefreshMinutes` to `0` and `liveUpdates` to `false`: `zsearch config set autoRefreshMinutes 0` and `zsearch config set liveUpdates false`, or pick **Only when I ask** under "Update the index" in the Mac app. Changing folders or what to read then waits for the next update too, in both apps. With a schedule picked, the Mac app's **Also update as files change** switch sets `liveUpdates`. Setting up for the first time, and excluding a result, still update the index.
 
-Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off).
+Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait.
 
 The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it. App-owned data/config folders use mode 0700 and config, database and journals use 0600. The schema changes rebuild older indexes to correct non-Latin token matching.
 
@@ -285,6 +297,7 @@ zsearch [query]                 open the interactive search
 zsearch search <query>          print matches and exit (-m find|fuzzy, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json)
+zsearch estimate [folders...]   how long a first index takes, roughly (--docs, --home, --disk, --json)
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256
 zsearch exclude <path>          exclude an indexed file or folder and update

@@ -8,6 +8,11 @@ struct SetupView: View {
     @Environment(SearchModel.self) private var model
     let inSheet: Bool
 
+    private struct EstimateRequest: Equatable {
+        var roots: [String]
+        var asked: Bool
+    }
+
     private enum Choice: Hashable {
         case documents, home, custom
     }
@@ -17,6 +22,9 @@ struct SetupView: View {
     @State private var choice: Choice = .documents
     @State private var folders: [String] = []
     @State private var readContents = true
+    /// How long the first index of the chosen folders takes, roughly, once asked for.
+    @State private var estimate: String?
+    @State private var wantsEstimate = false
 
     private var roots: [String] {
         switch choice {
@@ -57,6 +65,19 @@ struct SetupView: View {
                 }
                 .padding(.leading, 20)
             }
+            HStack {
+                if let estimate {
+                    Text("First index: \(estimate)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("How long will this take?") { wantsEstimate = true }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .disabled(roots.isEmpty)
+                }
+            }
+            .padding(.leading, 20)
             Toggle("Read the text inside files (PDF, Office, code, …)", isOn: $readContents)
             Text("macOS may ask to let zsearch read your Documents and Downloads folders. The index stays on this Mac.")
                 .font(.caption)
@@ -76,6 +97,16 @@ struct SetupView: View {
         .padding(20)
         .frame(width: 460)
         .onAppear(perform: load)
+        // Counted only when asked, and for the chosen folders only: the walk can bring up macOS's
+        // folder permission prompts.
+        .task(id: EstimateRequest(roots: roots, asked: wantsEstimate)) {
+            guard wantsEstimate else { return }
+            estimate = roots.isEmpty ? nil : "counting files…"
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            let text = await model.estimate(roots: roots)
+            if !Task.isCancelled { estimate = text }
+        }
     }
 
     private func load() {

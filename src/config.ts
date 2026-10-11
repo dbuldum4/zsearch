@@ -46,6 +46,18 @@ export interface Config {
    * and of its CPU time. Below 100, indexing also reads and writes at a low disk priority.
    */
   indexLoad: number
+  /**
+   * A big index run that started on its own (a schedule, file changes) waits in Low Power Mode or
+   * while the computer is hot. Runs someone asked for never wait.
+   */
+  pauseOnLowPower: boolean
+  /** ...and while on battery. */
+  pauseOnBattery: boolean
+  /**
+   * Leave images in machine-made dataset folders (hundreds of files named like `frame_000123`)
+   * out of OCR: they stay findable by name.
+   */
+  skipDatasetOcr: boolean
   /** Command used to open files in an editor (defaults to $VISUAL / $EDITOR). */
   editor: string
   /** Default search mode in the TUI. */
@@ -72,6 +84,9 @@ export function defaultConfig(): Config {
     liveUpdates: true,
     workers: 0,
     indexLoad: 70,
+    pauseOnLowPower: true,
+    pauseOnBattery: false,
+    skipDatasetOcr: true,
     editor: "",
     defaultMode: "find",
     preview: true,

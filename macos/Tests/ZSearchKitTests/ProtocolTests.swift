@@ -52,6 +52,8 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try json(.setConfig(ConfigPatch(roots: ["~"]))), #"{"config":{"roots":["~"]},"id":7,"type":"setConfig"}"#)
         XCTAssertEqual(try json(.index), #"{"id":7,"type":"index"}"#)
         XCTAssertEqual(try json(.rebuildIndex), #"{"id":7,"rebuild":true,"type":"index"}"#)
+        XCTAssertEqual(try json(.backgroundIndex), #"{"background":true,"id":7,"type":"index"}"#)
+        XCTAssertEqual(try json(.estimate(roots: ["~/Documents"])), #"{"id":7,"roots":["~/Documents"],"type":"estimate"}"#)
         XCTAssertEqual(try json(.previews(files: [1, 2], query: "q", mode: .find)), #"{"files":[1,2],"id":7,"mode":"find","query":"q","type":"previews"}"#)
         XCTAssertEqual(
             try json(.previews(files: [1, 2], query: "q", mode: .find, focusLines: [551, nil])),
@@ -63,6 +65,19 @@ final class ProtocolTests: XCTestCase {
         }.first)
         XCTAssertTrue(patch.respectGitignore)
         XCTAssertEqual(patch.exclude, [])
+    }
+
+    func testDecodesEstimatesAndWaitingProgress() throws {
+        let folder = #"{"root":"~","files":1200,"folders":30,"textFiles":900,"textBytes":4096,"documents":40,"ocrImages":0,"complete":false,"seconds":75.5}"#
+        let e = try Envelope.decode(Data(#"{"id":3,"type":"estimate","estimates":[\#(folder)],"total":\#(folder),"text":"over 1,200 files · a minute or more"}"#.utf8))
+        guard case let .estimate(reply) = e.message else { return XCTFail("expected an estimate") }
+        XCTAssertEqual(reply.total.files, 1200)
+        XCTAssertFalse(reply.estimates[0].complete)
+        XCTAssertEqual(reply.text, "over 1,200 files · a minute or more")
+
+        let progress = #"{"type":"indexProgress","progress":{"phase":"content","scanned":5,"added":5,"updated":0,"removed":0,"contentTotal":5,"contentDone":1,"contentBytes":0,"contentErrors":0,"waiting":"Low Power Mode","current":"","elapsedMs":10}}"#
+        guard case let .indexProgress(p) = try Envelope.decode(Data(progress.utf8)).message else { return XCTFail("expected progress") }
+        XCTAssertEqual(p.waiting, "Low Power Mode")
     }
 
     func testUnknownMessageTypesAreKept() throws {
