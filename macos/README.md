@@ -34,7 +34,7 @@ The app is built and tested on GitHub Actions ([`.github/workflows/macos-app.yml
 | GitHub Actions, Linux | the same tests, in the `swift:6.2-noble` container |
 | GitHub Actions, macOS | builds the engine, runs the Swift tests against it (`ZSEARCH_ENGINE`), compiles the SwiftUI app, signs it ad hoc, makes `zsearch.dmg` and publishes it |
 
-Every pull request from this repository gets a GitHub-attested pre-release named `preview-pr-<n>-<run-id>-<attempt>`, plus a comment linking to it. The workflow retains that versioned build and replaces the convenient `preview-pr-<n>` alias on each push. The alias is deleted when the PR closes. `main` similarly publishes `preview-main-<run-id>-<attempt>` and a `preview-main` alias. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
+Every pull request from this repository gets a GitHub-attested pre-release named `preview-pr-<n>-<run-id>-<attempt>`, plus a comment linking to it. Each push adds a versioned build and replaces the convenient `preview-pr-<n>` alias. The alias and all of the PR's versioned builds are deleted when the PR closes. `main` similarly publishes `preview-main-<run-id>-<attempt>` and a `preview-main` alias, and keeps its newest 10 versioned builds. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
 
 Keep `Sources/ZSearch` (the macOS-only UI) thin and put logic in `Sources/ZSearchKit`, where it can be tested on Linux. The UI files are wrapped in `#if os(macOS)`, so `swift build` also works on Linux (it builds a stub).
 
@@ -54,7 +54,7 @@ The script stages and verifies `zsearch.app`, including its source commit, befor
 
 **The installer removes `com.apple.quarantine` from the authenticated copy.** It does not use an Apple Developer ID or notarization. Browser downloads and manual copies can still carry quarantine and need **Open Anyway** in System Settings › Privacy & Security. GitHub provenance authenticates the project workflow and exact bytes; it does not establish that the code is harmless or that `dbuldum4` personally reviewed a PR preview.
 
-Older previews without the manifest and attestation bundle cannot be installed through this authenticated path. If a latest alias changes during download, verification stops safely; retry or select the exact versioned build from the release link. See [release security](RELEASE-SECURITY.md) for verification and repository settings.
+Older previews without the manifest and attestation bundle cannot be installed through this authenticated path. Without `--build`, the installer reads the build number from the latest alias and downloads every file from that versioned release, so a push that lands during installation cannot mix two builds. See [release security](RELEASE-SECURITY.md) for verification and repository settings.
 
 `Info.plist` records the commit as `ZSearchCommit`:
 

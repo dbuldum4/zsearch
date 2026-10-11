@@ -37,10 +37,9 @@ for flag in --bundle --cert-identity --source-ref --source-digest --deny-self-ho
   case "$HELP" in *"$flag"*) ;; *) die "update GitHub CLI: brew upgrade gh" ;; esac
 done
 
-TAG="preview-$CHANNEL${BUILD:+-$BUILD}"
 TMP=$(mktemp -d)
 MOUNT="$TMP/mnt"
-STAGE=; LOCK=; COMMITTED=0; MOUNTED=0
+STAGE=; LOCK=; COMMITTED=0; MOUNTED=0; STATE_WRITTEN=0
 cleanup() {
   local status=$1 keep=0
   trap - EXIT HUP INT TERM
@@ -53,6 +52,10 @@ cleanup() {
       echo "error: previous app retained at $STAGE/previous.app; restore it manually" >&2
     fi
   fi
+  # Keep the build history in step with the app that remains installed.
+  if [ -n "$STAGE" ] && [ "$COMMITTED" = 0 ] && [ "$STATE_WRITTEN" = 1 ]; then
+    if [ -f "$STAGE/previous.state" ]; then mv "$STAGE/previous.state" "$STATE" || true; else rm -f "$STATE"; fi
+  fi
   if [ "$MOUNTED" = 1 ]; then hdiutil detach -quiet "$MOUNT" 2>/dev/null || true; fi
   if [ -n "$STAGE" ] && [ "$keep" = 0 ]; then rm -rf "$STAGE"; fi
   if [ -n "$LOCK" ]; then rmdir "$LOCK" 2>/dev/null || true; fi
@@ -64,18 +67,31 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-URL="https://github.com/$REPO/releases/download/$TAG"
 download() {
-  local limit
-  case "$1" in preview.manifest) limit=4096 ;; provenance.jsonl) limit=4194304 ;; *) limit=536870912 ;; esac
+  local tag=$1 name=$2 limit
+  case "$name" in preview.manifest) limit=4096 ;; provenance.jsonl) limit=4194304 ;; *) limit=536870912 ;; esac
   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --silent --show-error \
     --connect-timeout 15 --max-time 600 --max-filesize "$limit" \
-    -o "$TMP/$1" "$URL/$1" || die "could not download authenticated preview $TAG ($1)"
-  [ "$(wc -c < "$TMP/$1")" -le "$limit" ] || die "download exceeds its size budget ($1)"
+    -o "$TMP/$name" "https://github.com/$REPO/releases/download/$tag/$name" ||
+    die "could not download authenticated preview $tag ($name)"
+  [ "$(wc -c < "$TMP/$name")" -le "$limit" ] || die "download exceeds its size budget ($name)"
 }
+if [ -z "$BUILD" ]; then
+  # The latest alias is replaced on every publish. Read only its (untrusted) build
+  # identifier, then fetch every file from that immutable versioned release, so a
+  # republish during installation cannot mix files from two builds.
+  download "preview-$CHANNEL" preview.manifest
+  ALIAS_RUN=; ALIAS_ATTEMPT=
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in run_id=*) ALIAS_RUN=${line#*=} ;; run_attempt=*) ALIAS_ATTEMPT=${line#*=} ;; esac
+  done < "$TMP/preview.manifest"
+  BUILD="$ALIAS_RUN-$ALIAS_ATTEMPT"
+  [[ "$BUILD" =~ ^[1-9][0-9]{0,14}-[1-9][0-9]{0,14}$ ]] || die "could not resolve the latest $CHANNEL preview"
+fi
+TAG="preview-$CHANNEL-$BUILD"
 echo "Downloading $TAG from $REPO"
-download preview.manifest
-download provenance.jsonl
+download "$TAG" preview.manifest
+download "$TAG" provenance.jsonl
 [ "$(wc -c < "$TMP/preview.manifest")" -le 4096 ] || die "manifest is too large"
 [ "$(wc -c < "$TMP/provenance.jsonl")" -le 4194304 ] || die "attestation bundle is too large"
 
@@ -131,7 +147,7 @@ done
 [ -z "$BUILD" ] || [ "$BUILD" = "$RUN_ID-$ATTEMPT" ] || die "wrong requested build"
 if [ "$CHANNEL" = main ]; then [ "$COMMIT" = "$VERIFIED_SHA" ] || die "main build commit mismatch"; fi
 
-download zsearch.dmg
+download "$TAG" zsearch.dmg
 ACTUAL=$(shasum -a 256 "$TMP/zsearch.dmg" | awk '{print $1}')
 [ "$ACTUAL" = "$DIGEST" ] || die "DMG checksum verification failed"
 DMG_PROOF=$(verify "$TMP/zsearch.dmg" --source-digest "$VERIFIED_SHA") || die "DMG provenance verification failed"
@@ -180,7 +196,9 @@ ATTRS=$(xattr -r "$STAGE/zsearch.app") || die "could not inspect app attributes"
 case "$ATTRS" in *com.apple.quarantine*) die "could not remove quarantine" ;; esac
 
 if pgrep -xq ZSearch; then
-  osascript -e 'tell application id "io.github.dbuldum4.zsearch" to quit' >/dev/null
+  if ! osascript -e 'tell application id "io.github.dbuldum4.zsearch" to quit' >/dev/null; then
+    die "could not ask zsearch to quit; quit it and run the installer again"
+  fi
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     pgrep -xq ZSearch || break
     sleep 0.5
@@ -197,6 +215,8 @@ if [ "$NUMBER" -gt "$OLD_NUMBER" ] || { [ "$NUMBER" -eq "$OLD_NUMBER" ] && [ "$A
 else
   printf '%s %s %s\n' "$OLD_NUMBER" "$OLD_ATTEMPT" "$OLD_DIGEST" > "$STAGE/state"
 fi
+if [ -f "$STATE" ]; then cp -p "$STATE" "$STAGE/previous.state"; fi
+STATE_WRITTEN=1
 mv "$STAGE/state" "$STATE"
 COMMITTED=1
 echo "Installed authenticated $CHANNEL build $RUN_ID-$ATTEMPT (commit $COMMIT) to $DEST/zsearch.app"
