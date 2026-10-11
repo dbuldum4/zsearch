@@ -221,6 +221,11 @@ export interface IndexStats {
   errors: number
   skipped: number
   pending: number
+  /** Keys and password files, indexed by name only (see `secrets.ts`). */
+  secrets: number
+  /** Images OCR left out, in machine-made dataset folders (see `datasets.ts`). */
+  datasetImages: number
+  datasetFolders: { dir: string; images: number }[]
   contentBytes: number
   dbBytes: number
   lastIndexedAt: number | null
@@ -236,6 +241,7 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
         SUM(is_dir = 0) AS files, SUM(is_dir = 1) AS folders,
         SUM(content_state = 1) AS withContent, SUM(content_state = 2) AS errors,
         SUM(content_state = 3) AS skipped, SUM(content_state = 4) AS pending,
+        SUM(content_state = 3 AND note = 'secret') AS secrets, SUM(content_state = 3 AND note = 'dataset') AS datasetImages,
         SUM(CASE WHEN content_state = 1 THEN content_len ELSE 0 END) AS contentBytes
       FROM files`,
     )
@@ -260,6 +266,9 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
     errors: counts.errors ?? 0,
     skipped: counts.skipped ?? 0,
     pending: counts.pending ?? 0,
+    secrets: counts.secrets ?? 0,
+    datasetImages: counts.datasetImages ?? 0,
+    datasetFolders: JSON.parse(getMeta(db, "dataset_folders") ?? "[]"),
     contentBytes: counts.contentBytes ?? 0,
     dbBytes,
     lastIndexedAt: last ? Number(last) : null,

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathPolicy } from "../policy.ts"
 import type { CrawlOptions } from "../crawler.ts"
+import { bytesHoldPrivateKey, notKeynote, onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../secrets.ts"
 import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
@@ -35,7 +36,7 @@ export const DEFAULT_EXTRACT: ExtractOptions = {
 
 type ExtractResult =
   | { status: "ok"; text: string; truncated: boolean }
-  | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" }
+  | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" | typeof SECRET_NOTE }
 
 /** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
 type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
@@ -100,6 +101,7 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   if (DOCUMENT_EXTS.has(ext)) {
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
+    if (ext === "key" && notKeynote(await readHead(path, 4))) return { status: "skip", reason: SECRET_NOTE }
     return finish(await extractDocument(path, ext, opts), opts.maxChars)
   }
   if (OCR_EXTS.has(ext) && kind === "image") {
@@ -117,6 +119,11 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   }
   const buf = await readFile(path, opts.maxTextBytes)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
+  if (bytesHoldPrivateKey(buf)) {
+    // Keys are cut out of the text; a file that is all key is a key file.
+    const text = redactPrivateKeys(decodeText(buf))
+    return onlyKeys(text) ? { status: "skip", reason: SECRET_NOTE } : finish(text, opts.maxChars)
+  }
   return { status: "bytes", bytes: buf }
 }
 

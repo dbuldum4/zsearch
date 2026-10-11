@@ -5,6 +5,7 @@ import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
 import { fileMetadata, metadataText } from "./extract/metadata.ts"
 import { pathPolicy } from "./policy.ts"
+import { holdsPrivateKey, onlyKeys, redactPrivateKeys, SECRET_NOTE } from "./secrets.ts"
 
 const encoder = new TextEncoder()
 
@@ -110,8 +111,14 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
         return { id: job.id, status: "ok", chars: text.length - a.wide, body: a.body, compressed, terms: a.report(), truncated: false }
       }
     }
-    const r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
+    let r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
     if (r.status === "skip") return { id: job.id, status: "skip", reason: r.reason }
+    // Documents too: keys are cut out, and a document that is all key is a key file.
+    if (holdsPrivateKey(r.text)) {
+      const text = redactPrivateKeys(r.text)
+      if (onlyKeys(text)) return { id: job.id, status: "skip", reason: SECRET_NOTE }
+      r = { ...r, text }
+    }
     const { body, terms } = indexTerms(r.text)
     return {
       id: job.id,

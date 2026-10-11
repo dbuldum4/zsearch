@@ -4,6 +4,7 @@ import { basename, dirname, join, relative } from "node:path"
 import { type Config, resolvePath } from "../config.ts"
 import { cloudFolders, onlyChildren, SKIP_DIR_NAMES, systemExcludes, systemNamesOnly } from "../platform.ts"
 import type { CrawlOptions } from "./crawler.ts"
+import { secretFile } from "./secrets.ts"
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : prefix + "/")
@@ -129,8 +130,9 @@ export function policyFor(opts: CrawlOptions) {
     if (!opts.followSymlinks && real !== join(canonicalRoots.get(root)!, relative(root, path))) return deny("symbolic links are disabled")
     if (!passes(path, root, st.isDirectory()) || (real !== path && !passes(real, targetRoot, st.isDirectory()))) return deny("file is excluded by current settings")
     const offline = st.size > 4096 && st.blocks === 0
-    const content = !offline && !credentialPath(path) && !credentialPath(real) && !namesOnly.some((p) => under(path, p) || under(real, p))
-    return { allowed: true, content, real, ...(!content ? { reason: "contents are disabled for this folder" } : {}) }
+    const secret = secretFile(path) || secretFile(real)
+    const content = !offline && !secret && !namesOnly.some((p) => under(path, p) || under(real, p))
+    return { allowed: true, content, real, ...(!content ? { reason: secret ? "key or password file: indexed by name only" : "contents are disabled for this folder" } : {}) }
   }
   const decisions = new Map<string, ReturnType<typeof evaluate>>()
   return (path: string) => {
@@ -140,7 +142,5 @@ export function policyFor(opts: CrawlOptions) {
   }
 }
 
-/** MCP never returns common private keys and authentication stores. */
-export function credentialPath(path: string): boolean {
-  return /(?:^|\/)(?:\.ssh|\.aws|\.gnupg|\.kube)(?:\/|$)|(?:^|\/)(?:\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials\.json|id_(?:rsa|dsa|ecdsa|ed25519))(?:$|\.)/i.test(path)
-}
+/** MCP never returns keys, certificates and authentication stores (see `secretFile`). */
+export const credentialPath = secretFile

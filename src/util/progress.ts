@@ -8,6 +8,7 @@ export function progressLine(p: IndexProgress): string {
     case "scan":
       return `Scanning… ${formatCount(p.scanned)} items  ${tildify(p.current)}`
     case "content": {
+      if (p.waiting) return `Waiting: ${p.waiting} · ${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} files read`
       const pct = p.contentTotal ? Math.floor((p.contentDone / p.contentTotal) * 100) : 100
       return `Reading contents ${pct}%  ${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} · ${formatBytes(p.contentBytes)}  ${tildify(p.current)}`
     }

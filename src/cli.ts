@@ -1,3 +1,4 @@
+import { combine, describeEstimate, estimateFolders } from "./index/estimate.ts"
 import { progressLine } from "./util/progress.ts"
 export { progressLine } from "./util/progress.ts"
 import { existsSync, rmSync } from "node:fs"
@@ -16,7 +17,7 @@ import {
   setConfigValue,
   tildify,
 } from "./config.ts"
-import { indexStats, openDb } from "./index/db.ts"
+import { getMeta, indexStats, openDb } from "./index/db.ts"
 import { excludingPath } from "./index/exclude.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
@@ -37,6 +38,7 @@ Usage
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
   zsearch config [get|set|path|reset] [key] [value]
+  zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
   zsearch duplicates [--json]      find identical indexed files
   zsearch exclude <path>          exclude an indexed file or folder
   zsearch doctor                  check optional tools and the index
@@ -180,6 +182,8 @@ export async function main(argv: string[]): Promise<number> {
       }
       case "status":
         return cmdStatus(args)
+      case "estimate":
+        return cmdEstimate(rest, args)
       case "config":
         return cmdConfig(rest)
       case "reset":
@@ -337,7 +341,8 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   if (save) saveConfig(config)
   const release = acquireLock(p.lock)
   if (!release) {
-    console.error(`zsearch: another zsearch process (pid ${lockHolder(p.lock)}) is updating the index`)
+    const waiting = existsSync(p.db) ? waitingFor(p.db) : ""
+    console.error(`zsearch: another zsearch process (pid ${lockHolder(p.lock)}) is updating the index${waiting ? ` (waiting: ${waiting}; Update Index Now in the app, or Ctrl-R in zsearch, starts it at once)` : ""}`)
     return 1
   }
   const onSignal = () => controller.abort()
@@ -390,6 +395,35 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   }
 }
 
+/* --------------------------------------------------------------- estimate -- */
+
+function cmdEstimate(folders: string[], args: Args): number {
+  const config = loadConfig()
+  const roots = flag(args, "disk") ? ["/"] : flag(args, "home") ? ["~"] : flag(args, "docs") ? [...DEFAULT_ROOTS] : folders.length ? folders : config.roots
+  for (const f of roots) if (!existsSync(resolvePath(f))) throw new UsageError(`no such folder: ${f}`)
+  const estimates = estimateFolders(roots, config)
+  if (flag(args, "json")) {
+    console.log(JSON.stringify(estimates, null, 2))
+    return 0
+  }
+  const width = Math.max(...roots.map((r) => r.length))
+  for (const e of estimates) {
+    const parts = [`${formatCount(e.textFiles)} text`, `${formatCount(e.documents)} documents`, ...(e.ocrImages ? [`${formatCount(e.ocrImages)} images to OCR`] : [])]
+    console.log(`${e.root.padEnd(width)}  ${describeEstimate(e)}  (${parts.join(", ")})`)
+  }
+  if (estimates.length > 1) console.log(`${"All".padEnd(width)}  ${describeEstimate(combine(estimates))}`)
+  if (estimates.some((e) => !e.complete)) console.log("The count stopped early in large folders: times there are a lower bound.")
+  return 0
+}
+
+/** Why the run holding the index lock waits on power, if it does. */
+function waitingFor(dbPath: string): string {
+  try {
+    const db = openDb(dbPath, { readonly: true })
+    try { return getMeta(db, "waiting_for") ?? "" } finally { db.close() }
+  } catch { return "" }
+}
+
 /* ----------------------------------------------------------------- status -- */
 
 function cmdStatus(args: Args): number {
@@ -412,12 +446,23 @@ function cmdStatus(args: Args): number {
   console.log(`Contents     ${formatCount(s.withContent)} files with text (${formatBytes(s.contentBytes)}), ${formatCount(s.skipped)} skipped, ${formatCount(s.errors)} unreadable, ${formatCount(s.pending)} pending`)
   console.log(`Updated      ${s.lastIndexedAt ? `${formatAge(s.lastIndexedAt)} (took ${formatDuration(s.lastDurationMs ?? 0)})` : "never completed"}`)
   if (s.unreadableFolders?.length) console.log(`Could not read ${s.unreadableFolders.length} folders (check permissions); indexed files were kept.`)
+  if (s.secrets) console.log(`Not read     ${formatCount(s.secrets)} key or password files, indexed by name only`)
+  if (s.datasetImages) console.log(`No OCR       ${formatCount(s.datasetImages)} images in ${formatCount(s.datasetFolders.length)} machine-made dataset folders (\`zsearch config set skipDatasetOcr false\` reads them)`)
   const holder = lockHolder(p.lock)
-  if (holder) console.log(`Indexing     in progress (pid ${holder})`)
+  if (holder) {
+    const waiting = getMeta(db, "waiting_for")
+    console.log(`Indexing     in progress (pid ${holder})${waiting ? `, waiting: ${waiting}` : ""}`)
+  }
   if (flag(args, "errors")) {
     const rows = db.query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path LIMIT 200").all() as { path: string; note: string }[]
     console.log(rows.length ? "\nUnreadable files:" : "\nNo unreadable files.")
     for (const r of rows) console.log(`  ${tildify(r.path)}: ${r.note}`)
+    const secrets = db.query("SELECT path FROM files WHERE content_state = 3 AND note = 'secret' ORDER BY path LIMIT 200").values() as [string][]
+    if (secrets.length) console.log("\nKey or password files (indexed by name only):")
+    for (const [path] of secrets) console.log(`  ${tildify(path)}`)
+    const datasets = s.datasetImages ? s.datasetFolders : []
+    if (datasets.length) console.log("\nDataset folders (images not read with OCR):")
+    for (const f of datasets) console.log(`  ${tildify(f.dir)}: ${formatCount(f.images)} images`)
   }
   db.close()
   return 0
@@ -508,6 +553,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { search: "search <query> [-m find|fuzzy] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  const usage: Record<string, string> = { search: "search <query> [-m find|fuzzy] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

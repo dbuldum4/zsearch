@@ -365,6 +365,7 @@ struct IndexProgressView: View {
 
     private var text: String {
         guard let p = activity.progress else { return "Starting…" }
+        if p.phase == "content", let waiting = p.waiting { return "Waiting: \(waiting) · resumes on its own" }
         switch p.phase {
         case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
         case "content": return "Reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"

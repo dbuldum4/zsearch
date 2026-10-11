@@ -12,10 +12,10 @@ beforeAll(() => {
 afterAll(() => corpus.cleanup())
 
 /** Start `zsearch serve` and read its replies one JSON line at a time. */
-function server() {
+function server(env: Record<string, string> = {}, data = ".zsearch-data") {
   const proc = Bun.spawn(["bun", MAIN, "serve"], {
     cwd: corpus.home,
-    env: { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, ".zsearch-data") },
+    env: { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, data), ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -118,10 +118,59 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   const st = await s.reply(5)
   expect((st.stats as { files: number }).files).toBeGreaterThan(5)
 
+  // How long a first index would take, counted on a worker.
+  s.send({ id: 7, type: "estimate", roots: ["~/Documents", "~/notes"] })
+  const est = await s.reply(7)
+  expect(est.type).toBe("estimate")
+  expect((est.estimates as { root: string }[]).map((e) => e.root)).toEqual(["~/Documents", "~/notes"])
+  expect((est.total as { files: number; complete: boolean }).files).toBeGreaterThan(2)
+  expect(String(est.text)).toMatch(/files · /)
+  s.send({ id: 8, type: "estimate", roots: [] })
+  expect((await s.reply(8)).type).toBe("error")
+
   s.send("not json")
   expect(String((await s.until((m) => m.type === "error")).error)).toContain("bad request")
   s.send({ id: 6, type: "nope" })
   expect((await s.reply(6)).type).toBe("error")
+
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
+test("serve: only updates that started on their own wait on power, and asking for one ends the wait", async () => {
+  for (let i = 0; i < 1100; i++) corpus.write(`bulk/file-${i}.txt`, `bulk word number${i}\n`)
+  // The computer as if in Low Power Mode, with an index of its own.
+  const s = server({ ZSEARCH_POWER: "low-power" }, ".zsearch-power")
+  await s.until((m) => m.type === "ready")
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~/bulk"] } })
+  await s.reply(1)
+
+  // Asked for: never waits.
+  s.send({ id: 2, type: "index" })
+  expect((await s.reply(2)).type).toBe("ok")
+  const progress: { waiting?: string }[] = []
+  const first = await s.until((m) => {
+    if (m.type === "indexProgress") progress.push(m.progress as { waiting?: string })
+    return m.type === "indexDone"
+  })
+  expect(first.status).toBe("done")
+  expect(progress.some((p) => p.waiting)).toBe(false)
+
+  // Started on its own, with everything to read again: waits...
+  s.send({ id: 3, type: "index", rebuild: true, background: true })
+  expect((await s.reply(3)).type).toBe("ok")
+  const waiting = await s.until((m) => m.type === "indexProgress" && Boolean((m.progress as { waiting?: string }).waiting))
+  expect((waiting.progress as { waiting: string; contentDone: number }).waiting).toBe("Low Power Mode")
+  const held = waiting.progress as { contentDone: number; contentTotal: number }
+  expect(held.contentDone).toBeLessThan(held.contentTotal)
+  // ...until someone asks for an update, which the running one becomes.
+  s.send({ id: 4, type: "index" })
+  expect((await s.reply(4)).type).toBe("ok")
+  const done = await s.until((m) => m.type === "indexDone")
+  expect(done.status).toBe("done")
+  const p = done.progress as { contentDone: number; contentTotal: number; waiting?: string }
+  expect(p.contentDone).toBe(p.contentTotal)
+  expect(p.waiting).toBeUndefined()
 
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)

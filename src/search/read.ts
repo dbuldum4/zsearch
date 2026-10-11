@@ -8,6 +8,7 @@ import { readdirSync } from "node:fs"
 import { decompressText } from "../index/db.ts"
 import { credentialPath, crawlOptionsFor, pathPolicy } from "../index/policy.ts"
 import { decodeText, looksBinary } from "../index/extract/text.ts"
+import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
 import type { SearchEngine } from "./engine.ts"
 import type { Mode } from "./query.ts"
@@ -121,13 +122,14 @@ export function readIndexed(engine: SearchEngine, path: string, query: string, m
     if (stored) {
       text = decompressText(stored.data)
       base.source = "index"
-    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
-      // Only files currently authorized for content can fall back to disk.
+    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1 && row.note !== SECRET_NOTE) {
+      // Only files currently authorized for content can fall back to disk, and never with keys.
       try {
         const buf = boundedFile(policy.real!, 2 * 1024 * 1024)
         if (!looksBinary(buf)) {
-          text = decodeText(buf)
-          base.source = "disk"
+          text = redactPrivateKeys(decodeText(buf))
+          if (onlyKeys(text)) text = null
+          else base.source = "disk"
         }
       } catch {
         // unreadable
@@ -161,6 +163,7 @@ function noTextReason(row: Row): string {
     if (row.note === "too-large") return "file is too large to index its contents"
     if (row.note === "binary") return "binary file"
     if (row.note === "empty") return "empty file"
+    if (row.note === SECRET_NOTE) return "key or password file: indexed by name only"
     return "contents not indexed"
   }
   if (row.content_state === 4) return "contents not indexed yet"

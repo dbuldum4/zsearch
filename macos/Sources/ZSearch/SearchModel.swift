@@ -183,7 +183,7 @@ final class SearchModel {
                 if ready.firstRun {
                     showSetup = true
                 } else if indexIsStale {
-                    startIndex()
+                    startIndex(background: true)
                 }
                 scheduleSearch(delay: 0)
                 startAutoUpdates()
@@ -376,7 +376,7 @@ final class SearchModel {
         let now = Date().timeIntervalSince1970 * 1000
         guard AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: stats.lastIndexedAt, lastAttempt: lastAutoUpdate, now: now) else { return }
         lastAutoUpdate = now
-        startIndex()
+        startIndex(background: true)
     }
 
     func refreshStats() async {
@@ -384,18 +384,25 @@ final class SearchModel {
         if case let .stats(s)? = try? await engine.request(.stats) { stats = s }
     }
 
-    func startIndex(rebuild: Bool = false) {
+    /// `background`: the app started it on its own, so a big one may wait on power.
+    func startIndex(rebuild: Bool = false, background: Bool = false) {
         guard let engine, !indexing else { return }
         indexing = true
         indexedRevision = settingsRevision
         Task {
             do {
-                _ = try await engine.request(rebuild ? .rebuildIndex : .index)
+                _ = try await engine.request(rebuild ? .rebuildIndex : background ? .backgroundIndex : .index)
             } catch {
                 indexing = false
                 show(error.localizedDescription)
             }
         }
+    }
+
+    /// The update going on, which waits on power, carries on now.
+    func indexNow() {
+        guard let engine else { return }
+        Task { _ = try? await engine.request(.index) }
     }
 
     func cancelIndex() {
@@ -420,6 +427,14 @@ final class SearchModel {
                 show(error.localizedDescription)
             }
         }
+    }
+
+    /// How long a first index of these folders takes, in words, or nil if it could not be counted
+    /// (or a newer request superseded this one).
+    func estimate(roots: [String]) async -> String? {
+        guard let engine, !roots.isEmpty else { return nil }
+        guard case let .estimate(reply) = try? await engine.request(.estimate(roots: roots)) else { return nil }
+        return reply.text
     }
 
     /// Save what to index (first run or File › Choose Folders…) and start indexing.
