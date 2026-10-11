@@ -69,7 +69,15 @@ function under(path: string, prefix: string): boolean {
 export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }): Generator<CrawlEntry> {
   const skipNames = opts.skipDirNames ?? SKIP_DIR_NAMES
   const excludePaths = opts.excludePaths.filter(Boolean)
-  const failed = (path: string) => { stats.errors++; (stats.unreadable ??= []).push(path) }
+  const failed = (path: string) => {
+    stats.errors++
+    // Some platforms report both a directory failure and failures below it.
+    // Store each unavailable subtree once for cleanup and permission status.
+    const unreadable = stats.unreadable ?? []
+    if (!unreadable.some((p) => under(path, p))) {
+      stats.unreadable = [...unreadable.filter((p) => !under(p, path)), path]
+    }
+  }
   const userIgnore = opts.excludePatterns.length ? ignore({ allowRelativePaths: true }).add(opts.excludePatterns) : null
   const opaque = opts.opaquePackages ?? isMac
   const visitedReal = new Set<string>()

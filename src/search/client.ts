@@ -31,7 +31,7 @@ export class SearchClient {
     private timeoutMs = 20_000,
   ) {
     this.spawn()
-    this.watchdog = setInterval(() => this.checkStuck(), 1000)
+    this.watchdog = setInterval(() => this.checkStuck(), Math.max(10, Math.min(1000, this.timeoutMs / 2)))
     ;(this.watchdog as { unref?: () => void }).unref?.()
   }
 

@@ -42,15 +42,15 @@ plutil -lint "$APP/Contents/Info.plist"
 
 # Sign inside-out with a stable Developer ID for releases.
 IDENTITY=${ZSEARCH_SIGN_IDENTITY:--}
-SIGN_FLAGS=()
-if [ "$IDENTITY" != "-" ]; then SIGN_FLAGS=(--options runtime --timestamp); fi
+SIGN_FLAGS=(--force)
+if [ "$IDENTITY" != "-" ]; then SIGN_FLAGS+=(--options runtime --timestamp); fi
 if [ "${ZSEARCH_RELEASE:-0}" = "1" ] && [ "$IDENTITY" = "-" ]; then
   echo "error: release builds require ZSEARCH_SIGN_IDENTITY" >&2; exit 1
 fi
 # The engine first, then the bundle.
-codesign --force "${SIGN_FLAGS[@]}" --entitlements "$ROOT/macos/engine-entitlements.plist" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
-codesign --force "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
-codesign --force "${SIGN_FLAGS[@]}" --sign "$IDENTITY" "$APP"
+codesign "${SIGN_FLAGS[@]}" --entitlements "$ROOT/macos/engine-entitlements.plist" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
+codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
+codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 # The bundled engine must still run after signing.

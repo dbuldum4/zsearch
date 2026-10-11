@@ -205,9 +205,11 @@ test("read_file regexes share the worker watchdog and requests recover afterward
   let restarted = false
   client.onRestart = () => { restarted = true }
   try {
+    await client.waitReady()
     const result = await client.read(join(dir, "a.txt"), "re:(a+)+$", "find", readOpts)
     expect(result).toBeNull()
     expect(restarted).toBe(true)
+    await client.waitReady()
     expect((await client.stats())?.stats.files).toBe(1)
   } finally { client.close() }
 }, { "a.txt": "a".repeat(35) + "!" }))
