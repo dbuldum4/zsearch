@@ -20,6 +20,8 @@ zsearch.app/Contents/
 - **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
 - **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
 - **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It opens a floating search panel on the screen with the pointer, which goes away when you open a file, press Esc or click elsewhere; "The shortcut opens" in Settings switches it to the main window. It uses `RegisterEventHotKey`, which needs no accessibility permission.
+- **Sorting and exclusions.** Click name, size, date or path to sort; click again for descending order. The result context menu excludes a file/folder, copies all paths, or folds the preview around matches.
+- **Live refresh.** Native file events trigger a debounced refresh while the engine runs. ⌘R updates, ⌘. cancels and ⇧⌘I rebuilds. The engine retries one unexpected exit after a short delay.
 - **Dock menu** to update or stop indexing, and **open at login**.
 
 ## Building without Xcode
@@ -44,7 +46,7 @@ macos/scripts/install-preview.sh main        # latest main
 macos/scripts/install-preview.sh 12 --open
 ```
 
-The script downloads with `curl`, mounts the DMG and copies `zsearch.app` to `~/Applications`, quitting a running copy first. It needs no admin rights. Files fetched with `curl` are not quarantined, so Gatekeeper does not block the app. If you download the DMG in a browser instead, the first launch is blocked: open System Settings › Privacy & Security and click **Open Anyway** (or run `xattr -dr com.apple.quarantine ~/Applications/zsearch.app`).
+The script downloads with `curl`, mounts the DMG and copies `zsearch.app` to `~/Applications`, quitting a running copy first. It needs no admin rights. It verifies the published SHA-256 checksum and the app signature before replacing an installed copy, and preserves Gatekeeper quarantine. For ad-hoc previews, approve the first launch in System Settings › Privacy & Security › **Open Anyway**.
 
 `Info.plist` records the commit as `ZSearchCommit`:
 
@@ -56,10 +58,15 @@ The script downloads with `curl`, mounts the DMG and copies `zsearch.app` to `~/
 
 Builds are signed ad hoc (`codesign --sign -`), not with a Developer ID, and are not notarized. macOS ties folder permissions (Documents, Downloads, Full Disk Access) to the code signature, and an ad hoc signature changes with every build. A new preview may therefore ask again for access to Documents and Downloads, and a Full Disk Access grant must be renewed after each update.
 
-Signing with a Developer ID and notarizing (Apple Developer Program, $99 a year) fixes both problems. That needs these steps in `build-app.sh`, with the certificate and an App Store Connect API key stored as repository secrets:
+`build-app.sh` supports stable Developer ID signing and notarization. Import your certificate into the build keychain, configure a `notarytool` keychain profile, then run:
 
-1. `codesign --options runtime --timestamp --sign "Developer ID Application: …"` instead of `--sign -`. The engine is a Bun executable and needs the JIT entitlements (`com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`) under the hardened runtime.
-2. `xcrun notarytool submit dist/zsearch.dmg --wait`, then `xcrun stapler staple dist/zsearch.dmg`.
+```sh
+ZSEARCH_RELEASE=1 \
+ZSEARCH_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+ZSEARCH_NOTARY_PROFILE="zsearch-notary" macos/scripts/build-app.sh
+```
+
+Release mode requires both values, enables the hardened runtime and timestamps, signs inside-out with Bun’s JIT/FFI entitlements, submits the DMG, staples the ticket and verifies Gatekeeper acceptance. This requires an Apple Developer account and a macOS host. Preview CI continues to use ad-hoc signing with read-only build credentials; a separate privileged job publishes the completed artifacts.
 
 ## Running from source on a Mac
 

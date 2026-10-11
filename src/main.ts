@@ -2,6 +2,7 @@
 /** zsearch entry point. */
 declare const ZSEARCH_COMPILED: boolean | undefined
 export {}
+process.umask(0o077)
 
 // When running from source (not the compiled binary), JSX files need the Solid transform.
 // The compiled binary is built with the plugin already applied.

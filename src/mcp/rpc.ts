@@ -9,7 +9,7 @@
 import { createInterface } from "node:readline"
 
 /** Newest first. A client asking for another version is answered with the newest. */
-export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 export interface JsonSchema {
   type?: string | string[]
@@ -24,21 +24,21 @@ export interface JsonSchema {
   additionalProperties?: boolean
 }
 
-export interface ToolAnnotations {
+interface ToolAnnotations {
   readOnlyHint?: boolean
   destructiveHint?: boolean
   idempotentHint?: boolean
   openWorldHint?: boolean
 }
 
-export interface ToolContext {
+interface ToolContext {
   /** Aborted when the client cancels the call or the server shuts down. */
   signal: AbortSignal
   /** Report progress, if the client asked for it with a progress token (otherwise a no-op). */
   progress(progress: number, total?: number, message?: string): void
 }
 
-export interface ToolResult {
+interface ToolResult {
   /** What the model reads. */
   text: string
   /** The same result as data, matching the tool's `outputSchema`. */
@@ -82,7 +82,7 @@ export interface ResourceTemplate {
   complete?(argument: string, value: string): Promise<string[]>
 }
 
-export interface PromptMessage {
+interface PromptMessage {
   role: "user" | "assistant"
   content: { type: "text"; text: string } | { type: "resource"; resource: ResourceContents }
 }
@@ -96,21 +96,21 @@ export interface Prompt {
   complete?(argument: string, value: string): Promise<string[]>
 }
 
-export interface ServerInfo {
+interface ServerInfo {
   name: string
   title: string
   version: string
   instructions?: string
 }
 
-export interface ServerParts {
+interface ServerParts {
   tools: Tool[]
   resources?: Resource[]
   templates?: ResourceTemplate[]
   prompts?: Prompt[]
 }
 
-export const LOG_LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"] as const
+const LOG_LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"] as const
 export type LogLevel = (typeof LOG_LEVELS)[number]
 
 /** A failure a tool reports to the model as an `isError` result, in its own words. */

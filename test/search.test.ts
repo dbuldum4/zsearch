@@ -264,14 +264,18 @@ describe("live updates and frecency", () => {
     const before = stored()
     const writer = openDb(join(corpus.home, ".zsearch-data", "index.db"))
     writer.exec("BEGIN IMMEDIATE")
-    const t = performance.now()
+    let retry: (() => void) | undefined
+    engine = new SearchEngine(db, homeConfig(), 24_000_000, {
+      setTimeout: ((callback: () => void) => { retry = callback; return { unref() {} } }) as unknown as typeof setTimeout,
+      clearTimeout,
+    })
     engine.recordOpen(path)
-    expect(performance.now() - t).toBeLessThan(500)
+    expect(retry).toBeDefined()
     expect(names(await search(""))[0]).toBe("notes/todo.md")
     expect(stored()).toBe(before)
     writer.exec("COMMIT")
     writer.close()
-    await Bun.sleep(400)
+    retry!()
     expect(stored()).toBe(before + 1)
     expect(names(await search(""))[0]).toBe("notes/todo.md")
   })

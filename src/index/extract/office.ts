@@ -1,6 +1,6 @@
 import { posix } from "node:path"
 import { ZipReader } from "./zip.ts"
-import { decodeEntities, htmlText, tidy, xmlText } from "./xml.ts"
+import { xmlElements, decodeEntities, htmlText, tidy, xmlText } from "./xml.ts"
 
 const set = (s: string) => new Set(s.split(" "))
 
@@ -68,7 +68,7 @@ function relsOf(zip: ZipReader, part: string): Map<string, { target: string; typ
   const xml = zip.text(relsPath)
   const map = new Map<string, { target: string; type: string }>()
   if (!xml) return map
-  for (const m of xml.matchAll(/<Relationship\b([^>]*)\/?>/g)) {
+  for (const m of xml.matchAll(/<Relationship\b([^<>]*)\/?>/g)) {
     const attrs = m[1]!
     const id = /\bId="([^"]*)"/.exec(attrs)?.[1]
     const target = /\bTarget="([^"]*)"/.exec(attrs)?.[1]
@@ -85,7 +85,7 @@ function slideOrder(zip: ZipReader): string[] | null {
   if (!pres) return null
   const rels = relsOf(zip, "ppt/presentation.xml")
   const order: string[] = []
-  for (const m of pres.matchAll(/<p:sldId\b[^>]*\br:id="([^"]+)"/g)) {
+  for (const m of pres.matchAll(/<p:sldId\b[^<>]*\br:id="([^"]+)"/g)) {
     const r = rels.get(m[1]!)
     if (r && zip.has(r.target)) order.push(r.target)
   }
@@ -117,7 +117,7 @@ export function extractXlsx(buf: Uint8Array, maxChars = 2_000_000): string {
   const shared = sharedStrings(zip.text("xl/sharedStrings.xml"))
   const rels = relsOf(zip, "xl/workbook.xml")
   const sheets: { name: string; part: string }[] = []
-  for (const m of wb.matchAll(/<sheet\b([^>]*)\/?>/g)) {
+  for (const m of wb.matchAll(/<sheet\b([^<>]*)\/?>/g)) {
     const attrs = m[1]!
     const name = decodeEntities(/\bname="([^"]*)"/.exec(attrs)?.[1] ?? "")
     const rid = /\br:id="([^"]*)"/.exec(attrs)?.[1]
@@ -143,37 +143,39 @@ export function extractXlsx(buf: Uint8Array, maxChars = 2_000_000): string {
 function sharedStrings(xml: string | null): string[] {
   if (!xml) return []
   const out: string[] = []
-  for (const si of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g)) {
-    const inner = (si[1] ?? "").replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
-    let s = ""
-    for (const t of inner.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)) s += t[1]
-    out.push(decodeEntities(s))
-  }
+  for (const si of xmlElements(xml, "si")) out.push(xmlText(si.body, { textTags: set("t"), skipTags: set("rPh"), preserveWhitespace: true }))
   return out
 }
 
 function sheetRows(xml: string, shared: string[], budget: number): string {
   const lines: string[] = []
   let size = 0
-  for (const row of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+  for (const row of xmlElements(xml, "row")) {
     const cells: string[] = []
-    for (const c of row[1]!.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-      const attrs = c[1]!
-      const body = c[2] ?? ""
+    let rowSize = 0
+    for (const c of xmlElements(row.body, "c")) {
+      const attrs = c.attrs
+      const body = c.body
       const t = /\bt="([^"]*)"/.exec(attrs)?.[1] ?? "n"
       let value = ""
       if (t === "s") {
         const idx = Number(/<v>([^<]*)<\/v>/.exec(body)?.[1])
         value = Number.isInteger(idx) ? (shared[idx] ?? "") : ""
       } else if (t === "inlineStr") {
-        for (const m of body.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)) value += decodeEntities(m[1]!)
+        for (const m of xmlElements(body, "t")) value += decodeEntities(m.body)
       } else if (t === "b") {
         const v = /<v>([^<]*)<\/v>/.exec(body)?.[1]
         value = v === "1" ? "TRUE" : v === "0" ? "FALSE" : ""
       } else {
         value = decodeEntities(/<v>([^<]*)<\/v>/.exec(body)?.[1] ?? "")
       }
-      if (value) cells.push(value.replace(/[\t\n\r]+/g, " "))
+      if (value) {
+        const remaining = Math.max(0, budget - size - rowSize)
+        if (!remaining) break
+        const cell = value.slice(0, remaining).replace(/[\t\n\r]+/g, " ")
+        cells.push(cell)
+        rowSize += cell.length + 1
+      }
     }
     if (cells.length) {
       const line = cells.join("\t")
@@ -201,13 +203,13 @@ export function extractOdf(buf: Uint8Array): string {
   const zip = new ZipReader(buf)
   const xml = zip.text("content.xml")
   if (xml === null) throw new Error("not an OpenDocument file (content.xml missing)")
-  const body = /<office:body\b[\s\S]*<\/office:body>/.exec(xml)?.[0] ?? xml
+  const body = xmlElements(xml, "office:body").next().value?.body ?? xml
   return xmlText(body, ODF_SPEC)
 }
 
 /** Flat (single XML file) OpenDocument: .fodt/.fods/.fodp */
 export function extractFlatOdf(xml: string): string {
-  const body = /<office:body\b[\s\S]*<\/office:body>/.exec(xml)?.[0] ?? xml
+  const body = xmlElements(xml, "office:body").next().value?.body ?? xml
   return xmlText(body, ODF_SPEC)
 }
 
@@ -222,12 +224,12 @@ export function extractEpub(buf: Uint8Array, maxChars = 2_000_000): string {
   if (opfPath && opf) {
     const base = posix.dirname(opfPath)
     const manifest = new Map<string, string>()
-    for (const m of opf.matchAll(/<item\b([^>]*)\/?>/g)) {
+    for (const m of opf.matchAll(/<item\b([^<>]*)\/?>/g)) {
       const id = /\bid="([^"]+)"/.exec(m[1]!)?.[1]
       const href = /\bhref="([^"]+)"/.exec(m[1]!)?.[1]
       if (id && href) manifest.set(id, posix.normalize(posix.join(base === "." ? "" : base, decodeURIComponent(decodeEntities(href)))))
     }
-    for (const m of opf.matchAll(/<itemref\b[^>]*\bidref="([^"]+)"/g)) {
+    for (const m of opf.matchAll(/<itemref\b[^<>]*\bidref="([^"]+)"/g)) {
       const href = manifest.get(m[1]!)
       if (href && zip.has(href)) docs.push(href)
     }
@@ -247,6 +249,6 @@ export function extractEpub(buf: Uint8Array, maxChars = 2_000_000): string {
 
 /* --------------------------------------------------------------- shared -- */
 
-export function naturalCompare(a: string, b: string): number {
+function naturalCompare(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
 }

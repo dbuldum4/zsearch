@@ -1,9 +1,14 @@
-import { closeSync, openSync, readFileSync, readSync } from "node:fs"
+import { closeSync, fstatSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs"
+import { constants } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { pathPolicy } from "../policy.ts"
+import type { CrawlOptions } from "../crawler.ts"
 import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
 import { ocrImage } from "./ocr.ts"
-import { extractPdf } from "./pdf.ts"
+import { extractPdf, extractPdfBytes } from "./pdf.ts"
 import { decodeText, extractEmail, extractNotebook, looksBinary } from "./text.ts"
 import { htmlText } from "./xml.ts"
 import { ZipReader } from "./zip.ts"
@@ -13,6 +18,10 @@ export interface ExtractOptions {
   maxDocBytes: number
   maxChars: number
   pdfTimeoutMs?: number
+  fileTimeoutMs?: number
+  policy?: CrawlOptions
+  contentEnabled?: boolean
+  metadata?: boolean
   /** The OCR helper, when images and scanned pages are to be read (see `ocrToolPath`). */
   ocrTool?: string | null
 }
@@ -24,27 +33,34 @@ export const DEFAULT_EXTRACT: ExtractOptions = {
   pdfTimeoutMs: 60_000,
 }
 
-export type ExtractResult =
+type ExtractResult =
   | { status: "ok"; text: string; truncated: boolean }
   | { status: "skip"; reason: "binary" | "too-large" | "unsupported" | "empty" }
 
 /** As `ExtractResult`, but a plain text file comes as its bytes: decode them with `textOf`. */
-export type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
+type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
 
 /** Does this file get its contents read at all? Images only with `ocr`. */
-export function wantsContent(ext: string, kind: Kind, ocr = false): boolean {
-  return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || ext === "mbox" || (ocr && OCR_EXTS.has(ext))
+export function wantsContent(ext: string, kind: Kind, ocr = false, metadata = false): boolean {
+  return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || (metadata && kind === "image") || ext === "mbox" || (ocr && OCR_EXTS.has(ext))
 }
 
 // Files are read synchronously: extraction runs on worker threads, where blocking is fine, and
 // an asynchronous read of a small file costs several times as much as the read itself.
-async function readFile(path: string): Promise<Uint8Array> {
-  const b = readFileSync(path)
-  return new Uint8Array(b.buffer, b.byteOffset, b.byteLength)
+async function readFile(path: string, maxBytes: number): Promise<Uint8Array> {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const size = fstatSync(fd).size
+    if (size > maxBytes) throw new Error("file exceeds extraction size budget")
+    const b = new Uint8Array(size)
+    let read = 0
+    while (read < size) { const n = readSync(fd, b, read, size - read, read); if (!n) break; read += n }
+    return b.subarray(0, read)
+  } finally { closeSync(fd) }
 }
 
 async function readHead(path: string, n: number): Promise<Uint8Array> {
-  const fd = openSync(path, "r")
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const buf = new Uint8Array(n)
     const bytesRead = readSync(fd, buf, 0, n, 0)
@@ -75,6 +91,12 @@ export function textOf(bytes: Uint8Array, maxChars: number): ExtractResult {
 
 /** As `extract`, leaving plain text files undecoded. */
 export async function extractRaw(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<RawExtractResult> {
+  if (opts.contentEnabled === false) return { status: "skip", reason: "unsupported" }
+  if (opts.policy) {
+    const policy = pathPolicy(path, opts.policy)
+    if (!policy.allowed || !policy.content) return { status: "skip", reason: "unsupported" }
+    path = policy.real!
+  }
   if (DOCUMENT_EXTS.has(ext)) {
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
@@ -93,15 +115,31 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   if (kind === "other" && size > 8192) {
     if (looksBinary(await readHead(path, 8192))) return { status: "skip", reason: "binary" }
   }
-  const buf = await readFile(path)
+  const buf = await readFile(path, opts.maxTextBytes)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
   return { status: "bytes", bytes: buf }
 }
 
 async function extractDocument(path: string, ext: string, opts: ExtractOptions): Promise<string> {
-  if (ext === "pdf") return extractPdf(path, () => readFile(path), opts.pdfTimeoutMs, opts.ocrTool)
-  const buf = await readFile(path)
+  if (ext === "pdf") return extractPdf(path, () => readFile(path, opts.maxDocBytes), opts.pdfTimeoutMs, opts.ocrTool, opts.metadata)
+  const buf = await readFile(path, opts.maxDocBytes)
   switch (ext) {
+    case "pages":
+    case "numbers":
+    case "key": {
+      if (!ZipReader.isZip(buf)) return ""
+      const zip = new ZipReader(buf)
+      const preview = zip.read("QuickLook/Preview.pdf") ?? zip.read("preview.pdf")
+      if (preview) return extractPdfBytes(preview, opts.pdfTimeoutMs, opts.metadata)
+      const image = opts.ocrTool ? zip.read("QuickLook/Preview.jpg") ?? zip.read("preview.jpg") ?? zip.read("QuickLook/Thumbnail.jpg") : null
+      if (!image || !opts.ocrTool) return ""
+      const scratch = mkdtempSync(join(tmpdir(), "zsearch-iwork-"))
+      try {
+        const imagePath = join(scratch, "preview.jpg")
+        writeFileSync(imagePath, image, { mode: 0o600 })
+        return await ocrImage(opts.ocrTool, imagePath, opts.pdfTimeoutMs ?? 60_000)
+      } finally { rmSync(scratch, { recursive: true, force: true }) }
+    }
     case "docx":
     case "docm":
     case "dotx":
@@ -157,7 +195,7 @@ function legacy(buf: Uint8Array, ext: string): string {
       if (ext === "xls") return extractXls(buf)
       return extractPpt(buf)
     } catch (err) {
-      if ((err as Error).message.includes("encrypted")) throw err
+      if (/encrypted|corrupt piece table|size budget|allocation table|bad (?:mini )?sector size/.test((err as Error).message)) throw err
       return binaryStrings(buf)
     }
   }

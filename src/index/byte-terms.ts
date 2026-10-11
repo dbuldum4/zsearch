@@ -45,7 +45,7 @@ const MAX_DONE = 250_000
 const latin1 = new TextDecoder("latin1")
 const utf8 = new TextDecoder()
 
-export interface ByteTerms {
+interface ByteTerms {
   /** The distinct words, ASCII letters lower-cased, separated by spaces: the FTS body, in UTF-8. */
   body: Uint8Array
   /** How many more bytes the text has than UTF-16 code units: its length is the bytes' less this. */

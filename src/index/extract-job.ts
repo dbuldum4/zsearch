@@ -3,6 +3,8 @@ import { compressBytes, compressText } from "./db.ts"
 import { byteTerms } from "./byte-terms.ts"
 import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
+import { fileMetadata, metadataText } from "./extract/metadata.ts"
+import { pathPolicy } from "./policy.ts"
 
 const encoder = new TextEncoder()
 
@@ -33,6 +35,7 @@ export type ExtractReply =
       compressed: Uint8Array
       terms: string[]
       truncated: boolean
+      metadata?: Record<string, string>
     }
   | { id: number; status: "skip"; reason: string }
   | { id: number; status: "error"; error: string }
@@ -87,7 +90,16 @@ function lineFeeds(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 /** Read a file, extract its text, compress it and list its (new) vocabulary. */
 export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise<ExtractReply> {
   try {
-    const raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts)
+    // Text extraction rechecks policy itself; only metadata needs an earlier read.
+    const policy = opts.metadata && opts.policy ? pathPolicy(job.path, opts.policy) : null
+    if (opts.contentEnabled === false || (policy && (!policy.allowed || !policy.content))) return { id: job.id, status: "skip", reason: "unsupported" }
+    const metadata = opts.metadata ? await fileMetadata(policy?.real ?? job.path, job.ext) : {}
+    const extra = metadataText(metadata)
+    let raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts)
+    if (extra) {
+      const text = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
+      raw = { status: "ok", text: `${extra}\n\n${text.status === "ok" ? text.text : ""}`.slice(0, opts.maxChars), truncated: text.status === "ok" && (text.truncated || text.text.length + extra.length > opts.maxChars) }
+    }
     if (raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
       // UTF-8 text is stored as it is, and its words need no decoding.
       const a = byteTerms(raw.bytes, job.run)
@@ -109,6 +121,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       compressed: compressText(r.text),
       terms: newTerms(terms, job.run),
       truncated: r.truncated,
+      metadata,
     }
   } catch (err) {
     const e = err as NodeJS.ErrnoException

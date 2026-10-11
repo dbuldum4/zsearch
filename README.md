@@ -26,7 +26,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Two search modes, no guessing.** *Find* (the default) looks for the exact text you type in file names and contents; wrap the query in slashes (`/\d{4}-\d{2}/`) for a regular expression. *Fuzzy* is fzf-style name matching that forgives typos. Press <kbd>Tab</kbd> to switch.
 - **It looks inside files.** It reads PDF, DOCX, XLSX, PPTX, ODT, ODS, ODP, RTF, EPUB, EML, Jupyter notebooks, legacy `.doc`, `.xls` and `.ppt`, source code, Markdown, HTML, CSV, JSON, logs and other text. It shows which page, slide, sheet or line matched.
 - **Setup is guided.** On first launch, zsearch asks what to index (Documents and Downloads, home folder, whole disk or chosen folders) and whether to read file contents or include hidden files. Indexing runs in the background with a progress bar, and results appear while it runs.
-- **Updates are incremental.** Only new or changed files are read again, and search picks up the changes without reloading the whole index, so it stays quick with a million files. The index refreshes itself when it is older than an hour; press <kbd>Ctrl-R</kbd> to refresh it now. (Live updates from file-system events are [planned](#planned).)
+- **Updates are incremental.** Only new or changed files are read again, and search picks up the changes without reloading the whole index. While a frontend is running, native file-system events trigger a refresh; an hourly refresh also catches missed events. Press <kbd>Ctrl-R</kbd> to refresh now. Refreshes currently walk the selected roots.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
 - **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
 - **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
@@ -81,7 +81,7 @@ Type to search. Use <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>Enter</kbd> to o
 | **find** with `/regex/` | Wrap the query in slashes, or start it with `re:`, and it runs as a JavaScript regular expression over contents and paths. Nothing else is ever treated as a regex. | Code, dates, emails, structured text |
 | **fuzzy** | Matches file paths the way fzf does: subsequences, with bonuses for word starts, `camelCase`, path separators and runs of consecutive letters, and a preference for the file name over the folders. Typos are forgiven (`mian` finds `main.rs`, `recieve` finds `receive.py`). Content matches are typo-tolerant too. Supports fzf operators: `'exact` `^prefix` `suffix$` `!exclude`. | Finding a file whose name you half remember |
 
-Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. Results are ordered by number of matches, newest files first among equals; a file whose name matches comes first. `f:…` runs one query in fuzzy mode.
+Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. It ranks an oversampled pool of content matches by match count, then combines them with name matches using reciprocal-rank fusion. Opening history and modification time break near ties; a name match is not guaranteed to come first. Ranking happens before the result limit. Broad queries stop after five times the requested matches (at least 100) or their time budget and are marked partial; explicit sorting scans until completion or its time budget. `f:…` runs one query in fuzzy mode.
 
 ## Query syntax
 
@@ -95,7 +95,16 @@ Filters can be combined with any mode:
 | `path:` | `path:2024` | The path contains this text |
 | `size:` | `size:>5mb`, `size:<100k`, `size:1mb..10mb` | File size |
 | `mtime:` | `mtime:<7d`, `mtime:>1y`, `mtime:today`, `mtime:2023`, `after:2024-01-01`, `before:2024-06` | Modification time |
-| `limit:` | `limit:20` | Number of results |
+| `name:` / glob | `name:invoice`, `name:/^IMG_/i`, `*.pdf`, `IMG_????` | File name only; unquoted globs match the complete name |
+| `sort:` | `sort:name`, `sort:-size`, `sort:date`, `sort:path` | Ascending order; prefix with `-` for descending |
+| `created:` | `created:2024`, `created:<7d` | File-system creation date, when available |
+| `tag:` | `tag:Research` | Finder tag, when metadata indexing is enabled |
+| Match controls | `case:on`, `word:on`, `diacritics:off` | Override smart case, require whole words, or ignore Latin accents (Find) |
+| `near:` / `NEAR/n` | `alpha beta near:3`, `alpha NEAR/3 beta` | Find these words in order, with at most three intervening words |
+| `fold:` | `budget fold:on` | Preview only matches and two surrounding lines |
+| `limit:` | `limit:20` | Number of results, capped at 5000 |
+
+Use `all:budget report` to find both words anywhere in a file; `budget OR invoice` joins alternatives and `(budget OR invoice) type:pdf` combines groups. Branches retain the 5000-result and time budgets; a partial response reports truncation. Find suggests similar indexed words when nothing matches. Prefix any filter with `-` to invert it (except `limit:` and `sort:`). `kind:` aliases `type:`, `dir:` aliases `in:`, `modified:`/`changed:` alias `mtime:`, and `since:` aliases `after:`. Time units are `s`, `m`/`min`, `h`, `d`, `w`, `mo`, `y`; `size:=10mb` allows ±10%. Mode prefixes include `f:`/`fuzzy:`, `find:`/`exact:`, and `re:`/`regex:`; regex flags such as `/BUDGET/i` are preserved.
 
 In fuzzy mode, `!word` excludes files whose path contains the word. A query made only of filters, such as `type:pdf mtime:<7d`, lists the matching files with the newest first. An empty query shows the files you opened recently, then the files modified most recently.
 
@@ -108,14 +117,18 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Enter</kbd>, double-click | Open with the default app (or print the path with `-p`) |
 | <kbd>Ctrl-E</kbd> | Open in your editor, at the matching line (`$VISUAL`/`$EDITOR`, or vim, VS Code, Zed, Sublime, Helix…) |
 | <kbd>Ctrl-O</kbd> | Show in Finder or your file manager |
-| <kbd>Ctrl-Y</kbd> | Copy the path |
-| <kbd>Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> | Switch between find and fuzzy |
+| <kbd>Ctrl-Y</kbd> / <kbd>Ctrl-Shift-Y</kbd> | Copy the selected path / all result paths |
+| <kbd>Ctrl-Shift-X</kbd> | Exclude the selected file or folder and update the index |
+| <kbd>Ctrl-Shift-O</kbd> | Cycle name, size, date and path sorting |
+| <kbd>Ctrl-Shift-T</kbd> | Fold the preview around matches |
+| <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> | Switch between find and fuzzy |
 | <kbd>Ctrl-T</kbd> | Show or hide the preview |
 | <kbd>Shift-↑</kbd> <kbd>Shift-↓</kbd>, <kbd>Ctrl-D</kbd> <kbd>Ctrl-U</kbd>, wheel over the preview | Scroll the preview |
 | <kbd>Ctrl-F</kbd> / <kbd>Ctrl-B</kbd> | Jump to the next or previous match in the preview |
 | <kbd>Ctrl-R</kbd> / <kbd>Ctrl-X</kbd> | Update the index / stop indexing |
 | <kbd>Ctrl-S</kbd> | Settings: what to index, hidden files, contents |
-| <kbd>F1</kbd> | Help |
+| <kbd>F1</kbd> / <kbd>Ctrl-/</kbd> | Help |
+| <kbd>Ctrl-C</kbd> | Quit |
 | <kbd>Esc</kbd> | Clear the query; press again to quit |
 
 Files you open through zsearch rank higher next time (frecency), and recently modified files get a small boost.
@@ -126,7 +139,7 @@ The first launch opens a short setup screen. You can choose these settings later
 
 - **Documents and Downloads** (the default) indexes `~/Documents` and `~/Downloads`. A folder that doesn't exist is skipped.
 - **Home folder** indexes everything under `~`. On macOS this includes iCloud Drive and `~/Library/CloudStorage` (indexed by name only), but not the rest of `~/Library`.
-- **Entire disk** indexes everything under `/`. It skips pseudo-filesystems, caches, other mounted volumes and VM images. System folders (`/usr`, `/opt`, `/etc`, `/Applications`, …) are indexed by name only, and your files are indexed in full. On macOS, give your terminal *Full Disk Access* to cover protected folders.
+- **Entire disk** indexes everything under `/`. It skips pseudo-filesystems, caches and VM images; `oneFileSystem:true` also skips other mounted volumes. System folders (`/usr`, `/opt`, `/etc`, `/Applications`, …) are indexed by name only, and your files are indexed in full. On macOS, give your terminal *Full Disk Access* to cover protected folders.
 - **Custom folders** indexes a comma-separated list such as `~/Documents, ~/code`.
 
 Indexing runs in two phases:
@@ -134,7 +147,7 @@ Indexing runs in two phases:
 1. A **scan** walks the folders and records every file and folder. Name search works as soon as the scan has passed a file.
 2. **Contents** are extracted in parallel worker threads and stored in a SQLite FTS5 index, with the most recently modified files first.
 
-Later runs only re-read files whose size or modification time changed, and they remove deleted files. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change.
+Later runs re-read files whose size or modification time changed, or whose content settings changed, and remove deleted files. A rename on the same file system keeps extracted text when device, inode, size and modification time agree. Unavailable roots and folders that cannot be listed keep their existing entries; status reports them so you can restore permissions. Native file-system events trigger a debounced incremental refresh while the TUI, Mac engine or MCP server runs, with the timed scan as a fallback. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change.
 
 From the command line:
 
@@ -156,13 +169,16 @@ zsearch status                      # what is indexed
 | Documents | PDF, DOCX/DOCM/DOTX, ODT, RTF, legacy DOC, EPUB |
 | Spreadsheets | XLSX/XLSM, ODS, legacy XLS (sheets, shared strings, numbers) |
 | Presentations | PPTX, ODP, legacy PPT (slides and speaker notes) |
+| iWork | Single-file Pages, Numbers and Keynote archives with an embedded Quick Look PDF or an image preview (with OCR enabled); other iWork files stay names-only |
 | Mail & notebooks | EML/EMLX (headers, plain text and HTML bodies), Jupyter `.ipynb` |
 | Text | Code in ~100 languages, Markdown, reStructuredText, Org, LaTeX, HTML, XML, JSON, YAML, TOML, CSV, logs, config files, and any file without an extension that turns out to be text |
 | Images and scans (Mac app) | PNG, JPEG, HEIC, TIFF, WebP, BMP, GIF, and PDF pages that have no text, read with OCR |
 
 All other files (audio, video, archives, applications, and images outside the Mac app) are indexed by name, folder, size and date.
 
-**OCR.** The Mac app bundles a small helper, `zsearch-ocr`, that reads text with Apple's Vision framework. It runs on the Mac, at low priority, and sends nothing anywhere. Images are read after all other files, and a PDF only goes through OCR for its pages without text (at most the first 100). `zsearch doctor` says whether OCR is available. To use the helper with the terminal app, point `ZSEARCH_OCR` at it (`ZSEARCH_OCR=/Applications/zsearch.app/Contents/Helpers/zsearch-ocr`); turn it off with `zsearch config set content.ocr false`.
+**OCR.** The Mac app bundles a small helper, `zsearch-ocr`, that reads text with Apple's Vision framework. It runs on the Mac, at low priority, and sends nothing anywhere. Images are read after all other files, and a PDF only goes through OCR for its pages without text (at most the first 100). Completed OCR pages are streamed and retained if the document deadline is reached. `zsearch doctor` says whether OCR is available. To use the helper with the terminal app, point `ZSEARCH_OCR` at it (`ZSEARCH_OCR=/Applications/zsearch.app/Contents/Helpers/zsearch-ocr`); turn it off with `zsearch config set content.ocr false`.
+
+Each extraction worker enforces a per-file deadline and is replaced when a parser gets stuck; cancel terminates running workers and their tracked helper processes. Archives have a 16 MB per-entry, 32 MB total inflation budget and a 2048-part cap. Timed-out files appear in `status --errors` and retry when the file or content settings change.
 
 ## Configuration
 
@@ -174,28 +190,31 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `exclude` | `[]` | Extra gitignore-style patterns (`*.log`, `Downloads/`) or absolute folders (`~/VirtualBox VMs`) |
 | `namesOnly` | `[]` | Folders whose files are indexed by name only |
 | `includeHidden` | `false` | Index dotfiles and dot-folders |
-| `respectGitignore` | `true` | Honour `.gitignore`, `.ignore` and `.zsearchignore` |
-| `followSymlinks` | `false` | Follow symlinked folders (loops are detected) |
+| `respectGitignore` | `true` | Honour `.gitignore` and `.ignore`; `.zsearchignore` always applies |
+| `followSymlinks` | `false` | Follow file and folder links whose resolved targets stay in authorized roots and obey exclusions, ignore rules and names-only policy (loops are detected) |
+| `oneFileSystem` | `false` | Stay on each root’s file system; turn on to skip other mounts |
 | `cloudContent` | `false` | Read contents inside iCloud Drive / CloudStorage (may download files) |
 | `content.enabled` | `true` | Read the text inside files |
 | `content.maxDocumentMB` | `64` | Largest PDF or Office file to read |
 | `content.maxTextMB` | `8` | Largest plain-text file to read |
 | `content.maxChars` | `2000000` | Text kept per file |
+| `content.metadata` | `false` | Index selected EXIF fields, PDF titles and Finder tags (Mac); obeys content privacy settings |
 | `content.ocr` | `true` | Read the text in images and scanned PDF pages, when the OCR helper is available (macOS) |
+| `liveUpdates` | `true` | Watch roots for changes while a frontend is running; updates still walk the selected roots |
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
 | `workers` | `0` | Extraction threads (`0` = automatic: the CPUs less two, at most 8, within `indexLoad`) |
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
-| `editor` | `""` | Editor command (defaults to `$VISUAL` / `$EDITOR`) |
+| `editor` | `""` | Existing editor executable and fixed arguments (defaults to `$VISUAL` / `$EDITOR`); command interpreters are rejected |
 | `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
 | `preview` | `true` | Show the preview pane |
 
-Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` forces the built-in PDF reader. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off).
+Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off).
 
-The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it.
+The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it. App-owned data/config folders use mode 0700 and config, database and journals use 0600. The schema changes rebuild older indexes to correct non-Latin token matching.
 
 ## Use it from Claude and other AI apps (MCP)
 
-`zsearch mcp` runs zsearch as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop, Codex, OpenCode and other MCP clients can search your files and read what is in them. It uses the same index and settings as the terminal app and the Mac app, and everything still stays on your machine: the assistant only sees the results and file text it asks for, and only from the folders you indexed.
+`zsearch mcp` runs zsearch as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so Claude Code, Claude Desktop, Codex, OpenCode and other MCP clients can search your files and read what is in them. It uses the same index and settings as the terminal app and the Mac app, and everything still stays on your machine: the assistant only sees the results and file text it asks for, within your currently authorized roots and content policy. Symlink targets outside those roots, excluded files, names-only contents and credential paths are not exposed. Change indexing scope in the local app or CLI; MCP cannot widen it.
 
 **Claude Code**
 
@@ -248,9 +267,10 @@ Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mc
 | `search` | Find files by name and contents, with everything the query syntax offers: exact text, `regex`, `fuzzy` mode, and filters as arguments (`type`, `exclude_type`, `ext`, `folder`, `path`, `modified`, `after`, `before`, `size`) or in the query (`type:pdf mtime:<30d`). Returns paths, kinds, sizes, dates and the matching lines with line and page numbers; `offset` pages through long result lists |
 | `read_file` | Read an indexed file's text with line numbers: the extracted text of PDFs and Office files (with page, slide and sheet markers), or the file itself for code and text. `query` marks the matches and starts at the first one; `matches_only` returns just the matching lines with context |
 | `index_status` | What is indexed, when it was last updated, indexing progress, and (with `errors`) the files that could not be read |
-| `update_index` | Update the index in the background, index other folders (`roots`), or rebuild it; `wait_seconds` waits for it with progress notifications |
+| `update_index` | Update the locally configured roots in the background, or rebuild the index; `wait_seconds` waits for it with progress notifications |
+| `exclude_path` | Exclude an already indexed file or folder and request a refresh; this only narrows access |
 | `cancel_index` | Stop indexing |
-| `get_config` / `set_config` | Show or change a setting (the same keys as `zsearch config`) |
+| `get_config` / `set_config` | Read settings; change only search mode, preview, worker/load and refresh preferences. Roots, editor and all content/privacy controls require the local app or CLI |
 
 Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and each indexed file's text as `file:///path/to/file`. Prompts: `find_files` (find files about something and say what is in them) and `summarize_file` (with path completion). If the index is older than `autoRefreshMinutes`, the server updates it in the background, as the app does. The server reads only files that are in the index, and never changes them.
 
@@ -258,10 +278,12 @@ Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and
 
 ```text
 zsearch [query]                 open the interactive search
-zsearch search <query>          print matches and exit (-m find|fuzzy, -e regex, -n limit, -l paths only, --json)
+zsearch search <query>          print matches and exit (-m find|fuzzy, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json)
 zsearch config [show|get|set|path|reset]
+zsearch duplicates [--json]      find identical files by size and streaming SHA-256
+zsearch exclude <path>          exclude an indexed file or folder and update
 zsearch doctor                  check SQLite/FTS5, pdftotext, OCR and the index
 zsearch reset                   delete the index
 zsearch serve                   JSON lines on stdin/stdout, for the Mac app (see src/serve.ts)
@@ -271,7 +293,7 @@ zsearch mcp                     MCP server on stdin/stdout, for Claude and other
 `zsearch search` exits with 0 when it finds matches, 1 when it finds none and 2 on errors, the same as `grep`:
 
 ```sh
-zsearch search -l 'type:pdf invoice mtime:<30d' | xargs -I{} cp {} ~/invoices/
+zsearch search -0 'type:pdf invoice mtime:<30d' | xargs -0 -I{} cp {} ~/invoices/
 zsearch search --json -e 'TODO\(\w+\)' | jq '.hits[].path'
 ```
 
@@ -290,26 +312,27 @@ src/
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
-- **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, diacritics removed). It records which column holds each word but not word positions, which keeps it small; exact text is always checked against the stored text. Extracted text is stored once: raw below 1 KB, deflate below 16 KB, zstd above. The vocabulary of every indexed term is kept as compressed, append-only chunks.
-- **Names.** All paths are kept in memory in the search worker and matched with an fzf v1-style algorithm. Each path has a precomputed character bitmask for quick rejection, a bounded top-k keeps only the best results, and the next keystroke searches only the previous matches (as fzf and fff do). The list lives in typed arrays, about 300 MB for a million paths. After an index update the worker reads only the changed rows and a log of removed files, instead of every path again. The recent-files list (shown before you type) is a top-k pass over modification times.
+- **Storage.** There is one SQLite database in WAL mode. A `files` table holds every path. A contentless FTS5 table indexes file names, folder names and contents (`unicode61`, Latin diacritics removed). It records which column holds each word but not word positions, which keeps it small; exact text is always checked against the stored text. Extracted text is stored once: raw below 1 KB, deflate below 16 KB, zstd above. The vocabulary of every indexed term is kept as compressed, append-only chunks.
+- **Names.** All paths are kept in memory in the search worker and matched with an fzf v1-style algorithm. Each path has a precomputed character bitmask for quick rejection, a bounded top-k keeps only the best results, and the next keystroke searches only the previous matches (as fzf and fff do). The list lives in typed arrays, about 300 MB for a million paths. After an index update the worker reads only the changed rows and a log of removed files, instead of every path again. The recent-files list (shown before you type) is a top-k pass over modification times. Decoded-text cache invalidation follows changed/deleted row IDs, and opening history reloads only when it changes.
 - **Find.** Plain text is searched as a literal. A regex is parsed into a boolean condition over the literal strings every match must contain (in the spirit of Russ Cox's trigram index). Each literal is mapped onto index terms (whole token, prefix, suffix or substring), using an in-memory copy of the vocabulary for substring lookups. Only the candidate files are read and scanned with the real regex. Patterns with no usable literal fall back to a time-boxed scan of all stored text.
 - **Ranking.** Name matches and content matches are fused with reciprocal-rank fusion (fuzzy mode ranks content BM25-style: words in the file name, then the folders, then how often they occur in the text). Frecency and recency then adjust the result.
 - **Responsiveness.** Indexing runs in a worker thread with its own pool of extraction workers. Searching runs in another worker, which cancels superseded queries and is restarted by a watchdog if a pathological regex runs too long. The UI thread only draws.
 
 ## Planned
 
-- **Live updates from file-system events.** Today the index catches up on a timer (`autoRefreshMinutes`) or when you ask (<kbd>Ctrl-R</kbd>, ⌘R), and each update walks the indexed folders again. The plan is to watch the folders instead (FSEvents on macOS, inotify on Linux) and index only what changed, seconds after it changes, with the timed walk kept as a safety net for missed events.
+- Index only paths reported by file-system events rather than walking all configured roots on each refresh.
+- Full iWork IWA text parsing; embedded PDF and image previews are supported already.
 
 ## Development
 
 ```sh
 bun install
-bun test --timeout 60000        # unit, TUI and end-to-end tests (~30 s)
+bun test --timeout 60000        # unit, TUI and end-to-end tests (duration depends on enabled end-to-end tests and host)
 bun run typecheck
 bun run build                   # dist/zsearch
 bun run bench                   # index and search benchmark on a generated corpus (--files=N, --compare=old.json)
 bun run bench --corpus=real     # the same, plus real projects (MDN docs, Kubernetes) fetched once into ~/.cache
-bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt)
+bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt, Pillow)
 ```
 
 The end-to-end tests drive the real app in a pseudo-terminal through [pyte](https://github.com/selectel/pyte) (`pip install pyte`). They run against `bun src/main.ts` and, if it has been built, against `dist/zsearch`. TUI component tests use OpenTUI's test renderer. No network access is needed.

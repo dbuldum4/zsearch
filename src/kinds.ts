@@ -122,6 +122,7 @@ export const OCR_EXTS = new Set(["png", "jpg", "jpeg", "heic", "heif", "tif", "t
 
 /** Kinds that need a document extractor. */
 export const DOCUMENT_EXTS = new Set([
+  "pages", "numbers", "key",
   "pdf",
   "docx",
   "docm",
@@ -149,9 +150,6 @@ export const DOCUMENT_EXTS = new Set([
   "ppt",
   "eml",
   "emlx",
-  "pages",
-  "numbers",
-  "key",
   "ipynb",
 ])
 

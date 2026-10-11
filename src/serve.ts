@@ -7,16 +7,17 @@
  * The server exits when stdin closes.
  */
 import { createInterface } from "node:readline"
-import { type Config, configExists, ensureDirs, loadConfig, mergeConfig, saveConfig } from "./config.ts"
+import { type Config, configExists, ensureDirs, loadConfig, validateConfigPatch, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import type { IndexProgress } from "./index/indexer.ts"
 import { lockHolder } from "./index/lock.ts"
+import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 
-export type ServeIn =
+type ServeIn =
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
   | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
@@ -27,7 +28,7 @@ export type ServeIn =
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
 
-export type ServeOut =
+type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
   | { id?: number; type: "results"; response: SearchResponse }
   | { id?: number; type: "preview"; preview: Preview }
@@ -50,6 +51,13 @@ export async function serve(version: string): Promise<number> {
   let config = loadConfig()
   const client = new SearchClient(p.db, config)
   let index: IndexRun | null = null
+  let closed = false
+  const watcher = new RootWatcher(() => {
+    if (firstRun && !configExists()) return
+    if (index || lockHolder(p.lock) !== null) return false
+    startIndex()
+  })
+  watcher.update(config)
 
   const send = (m: ServeOut): void => void process.stdout.write(JSON.stringify(m) + "\n")
   const mode = (m: unknown): Mode => (MODES.includes(m as Mode) ? (m as Mode) : config.defaultMode)
@@ -58,6 +66,10 @@ export async function serve(version: string): Promise<number> {
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
   const startIndex = (id?: number, rebuild = false) => {
+    if (closed) return
+    config = loadConfig()
+    client.setConfig(config)
+    watcher.update(config)
     if (index) return send({ id, type: "error", error: "indexing is already running" })
     const other = lockHolder(p.lock)
     if (other !== null) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
@@ -88,6 +100,10 @@ export async function serve(version: string): Promise<number> {
 
   const handle = async (msg: ServeIn) => {
     const id = typeof msg.id === "number" ? msg.id : undefined
+    const latest = loadConfig()
+    if (JSON.stringify(latest) !== JSON.stringify(config)) {
+      config = latest; client.setConfig(config); watcher.update(config)
+    }
     switch (msg.type) {
       case "search": {
         const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200)
@@ -114,12 +130,16 @@ export async function serve(version: string): Promise<number> {
         return send(reply ? { id, type: "stats", stats: reply.stats } : { id, type: "cancelled" })
       }
       case "config":
+        config = loadConfig()
+        client.setConfig(config)
+        watcher.update(config)
         return send({ id, type: "config", config })
       case "setConfig": {
         // A patch: settings it leaves out keep their current values.
-        config = mergeConfig(config, msg.config)
+        config = validateConfigPatch(loadConfig(), msg.config)
         saveConfig(config)
         client.setConfig(config)
+        watcher.update(config)
         return send({ id, type: "config", config })
       }
       case "index":
@@ -156,6 +176,8 @@ export async function serve(version: string): Promise<number> {
     void task.finally(() => inflight.delete(task))
   }
   // stdin closed: finish what was asked, stop indexing cleanly, and exit.
+  closed = true
+  watcher.close()
   await Promise.all(inflight)
   if (index) {
     const run: IndexRun = index
@@ -164,5 +186,6 @@ export async function serve(version: string): Promise<number> {
     run.kill()
   }
   client.close()
+  watcher.close()
   return 0
 }

@@ -4,7 +4,10 @@ import { type ExtractJob, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { backgroundDisk } from "./load.ts"
 import type { ExtractWorkerIn } from "./pool.ts"
 
+import { observeProcesses } from "../util/process.ts"
+
 declare const self: Worker
+observeProcesses((pid, running) => postMessage({ process: pid, running }))
 
 let opts: ExtractOptions
 /** Jobs not started yet, taken on in order (the pool relies on it when a worker crashes). */
@@ -20,6 +23,7 @@ function pump() {
       head = 0
     }
     running++
+    postMessage({ started: job.id })
     processJob(job, opts).then((reply) => {
       running--
       if (reply.status === "ok") postMessage(reply, [reply.body.buffer as ArrayBuffer, reply.compressed.buffer as ArrayBuffer])

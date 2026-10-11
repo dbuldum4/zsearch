@@ -130,12 +130,14 @@ describe("indexer", () => {
     utimesSync(todo, new Date(), new Date(Date.now() + 5000))
     corpus.write("notes/new-idea.txt", "an idea about solar sailing")
     rmSync(join(corpus.home, "notes", "journal-2024.md"))
+    const oldId = (db.query("SELECT id FROM files WHERE path = ?").get(join(corpus.home, "notes", "recipes", "pancakes.txt")) as { id: number }).id
     renameSync(join(corpus.home, "notes", "recipes", "pancakes.txt"), join(corpus.home, "notes", "recipes", "crepes.txt"))
     const r = await index(db)
-    expect(r.updated).toBe(3) // todo.md plus the two folders whose listing changed
-    expect(r.contentTotal).toBe(3) // only todo, new-idea and crepes are re-read
-    expect(r.added).toBe(2) // new-idea + crepes
-    expect(r.removed).toBe(2) // journal + pancakes
+    expect(r.updated).toBe(4) // todo.md, the rename and the two folders whose listing changed
+    expect(r.contentTotal).toBe(2) // the renamed file keeps its extracted content
+    expect(r.added).toBe(1) // new-idea
+    expect(r.removed).toBe(1) // journal
+    expect((db.query("SELECT id FROM files WHERE path = ?").get(join(corpus.home, "notes", "recipes", "crepes.txt")) as { id: number }).id).toBe(oldId)
     expect(ftsCount(db, "kyoto")).toBe(1)
     expect(ftsCount(db, "lisbon")).toBe(0)
     expect(ftsCount(db, "solar")).toBe(1)

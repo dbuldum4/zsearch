@@ -1,8 +1,8 @@
 import type { Database, Statement } from "bun:sqlite"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
 import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
-import { cloudFolders, ocrToolPath, onlyChildren, systemExcludes, systemNamesOnly } from "../platform.ts"
+import { ocrToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
@@ -12,7 +12,7 @@ import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
 import { ExtractPool } from "./pool.ts"
 import { type ContentItem, type ContentSink, InlineSink, ThreadSink } from "./writer.ts"
 
-export type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "done" | "cancelled" | "error"
+type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "done" | "cancelled" | "error"
 
 export interface IndexProgress {
   phase: IndexPhase
@@ -23,6 +23,7 @@ export interface IndexProgress {
   contentTotal: number
   contentDone: number
   contentBytes: number
+  unreadableFolders?: number
   contentErrors: number
   current: string
   startedAt: number
@@ -30,7 +31,7 @@ export interface IndexProgress {
   error?: string
 }
 
-export interface IndexOptions {
+interface IndexOptions {
   onProgress?: (p: IndexProgress) => void
   signal?: AbortSignal
   /** Run extraction in-process instead of worker threads (tests, tiny indexes). */
@@ -70,43 +71,21 @@ interface Existing {
   id: number
   size: number
   mtime: number
+  dev: number
+  ino: number
   state: number
   isDir: boolean
   kind: string
   inFts: number
+  sourcePath: string
 }
 
 function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix === "/" ? "/" : prefix + "/")
 }
 
-/** Resolve the crawl options from the user's config. */
-export function crawlOptionsFor(config: Config) {
-  const roots = [...new Set(config.roots.map(resolvePath))]
-  const userAbs = config.exclude.filter((p) => p.startsWith("/") || p.startsWith("~")).map(resolvePath)
-  const patterns = config.exclude.filter((p) => !(p.startsWith("/") || p.startsWith("~")))
-  // Never exclude a folder that contains a root the user asked for.
-  const excludes = [...systemExcludes(), ...userAbs].filter((e) => !roots.some((r) => under(r, e)))
-  const wholeDisk = roots.includes("/")
-  const h = home()
-  const namesOnly = [
-    ...config.namesOnly.map(resolvePath),
-    ...(wholeDisk ? systemNamesOnly() : []),
-    // Reading cloud-synced files can download them: names only unless the user opts in.
-    ...(config.cloudContent ? [] : cloudFolders()),
-  ].filter((p) => !under(h, p))
-  return {
-    roots,
-    includeHidden: config.includeHidden,
-    respectGitignore: config.respectGitignore,
-    followSymlinks: config.followSymlinks,
-    oneFileSystem: config.oneFileSystem,
-    excludePatterns: patterns,
-    excludePaths: excludes,
-    onlyChildren: onlyChildren(),
-    namesOnly,
-  }
-}
+import { crawlOptionsFor } from "./policy.ts"
+export { crawlOptionsFor } from "./policy.ts"
 
 export class Indexer {
   private progress: IndexProgress
@@ -166,11 +145,11 @@ export class Indexer {
     }
     const q = (sql: string) => db.prepare(sql)
     this.st = {
-      insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+      insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, created, dev, ino, source_path, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
       updateFile: q(
-        "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, content_state = ?, seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM files) WHERE id = ?",
+        "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, created = ?, dev = ?, ino = ?, source_path = ?, content_state = ? WHERE id = ?",
       ),
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1 WHERE id = ?"),
+      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = '' WHERE id = ?"),
       inFts: q("SELECT in_fts FROM files WHERE id = ?"),
       ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
@@ -275,22 +254,36 @@ export class Indexer {
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
-    for (const r of this.db.query("SELECT id, path, size, mtime, content_state AS state, is_dir, kind, in_fts FROM files").iterate() as IterableIterator<{
+    for (const r of this.db.query("SELECT id, path, size, mtime, dev, ino, source_path, content_state AS state, is_dir, kind, in_fts FROM files").iterate() as IterableIterator<{
       id: number
       path: string
       size: number
       mtime: number
+      dev: number
+      ino: number
+      source_path: string
       state: number
       is_dir: number
       kind: string
       in_fts: number
     }>) {
-      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
+      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
+    }
+    const identities = new Map<string, { path: string; entry: Existing }[]>()
+    for (const [path, entry] of existing) {
+      if (!entry.isDir && entry.ino && !existsSync(path)) {
+        const key = `${entry.dev}:${entry.ino}:${entry.size}:${entry.mtime}`
+        const same = identities.get(key) ?? []; same.push({ path, entry }); identities.set(key, same)
+      }
     }
     const visited = new Set<number>()
+    const contentPolicy = JSON.stringify([this.config.content, this.config.cloudContent, this.ocrTool])
+    const previousPolicy = getMeta(this.db, "content_policy")
+    const policyChanged = previousPolicy !== null && previousPolicy !== contentPolicy
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }
     const crawlOpts = crawlOptionsFor(this.config)
+    const resolveTargets = this.config.followSymlinks || crawlOpts.roots.some((root) => { try { return realpathSync(root) !== root } catch { return false } })
     let batch: (() => void)[] = []
     /** Files the batch makes wait for their contents. */
     let waiting: Pending[] = []
@@ -318,14 +311,32 @@ export class Indexer {
       }
       const kind: Kind = kindOf(e.name, e.isDir)
       const ext = e.isDir ? "" : extOf(e.name)
-      const wants = !e.isDir && contentOn && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null)
+      let sourcePath = e.path
+      if (resolveTargets) {
+        try { sourcePath = realpathSync(e.path) }
+        catch { stats.errors++; (stats.unreadable ??= []).push(e.path); continue }
+      }
+      const storedSource = sourcePath === e.path ? "" : sourcePath
+      const wants = !e.isDir && contentOn && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata)
+      const moved = !existing.has(e.path) && e.ino ? identities.get(`${e.dev}:${e.ino}:${e.size}:${e.mtime}`) : undefined
+      if (moved?.length === 1 && !visited.has(moved[0]!.entry.id) && moved[0]!.entry.kind === kind && moved[0]!.entry.state === ContentState.Indexed && wants && !policyChanged) {
+        const old = moved[0]!; visited.add(old.entry.id); this.progress.updated++
+        batch.push(() => {
+          const body = this.storedBody(old.entry.id)
+          this.ftsDelete(old.entry.id, old.path, body)
+          this.db.query("UPDATE files SET path = ?, name = ?, ext = ?, created = ?, source_path = ? WHERE id = ?").run(e.path, e.name, ext, e.created ?? 0, storedSource, old.entry.id)
+          this.db.query("UPDATE OR IGNORE frecency SET path = ? WHERE path = ?").run(e.path, old.path)
+          const f = this.ftsFields(e.path); this.st.ftsInsert.run(old.entry.id, f.name, f.dirs, body ?? "")
+        })
+        continue
+      }
       const prev = existing.get(e.path)
       if (prev) {
         visited.add(prev.id)
-        const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir
+        const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir && prev.sourcePath === storedSource && (!prev.ino || (prev.ino === e.ino && prev.dev === e.dev))
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
-          if (wants && prev.state === ContentState.None)
+          if (wants && (prev.state === ContentState.None || policyChanged))
             batch.push(() => {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
               waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
@@ -336,7 +347,7 @@ export class Indexer {
         this.progress.updated++
         batch.push(() => {
           if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, ContentState.None, null)
-          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, wants ? ContentState.Pending : ContentState.None, prev.id)
+          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : ContentState.None, prev.id)
           if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
         })
       } else {
@@ -344,7 +355,7 @@ export class Indexer {
         batch.push(() => {
           // Files waiting for their contents get their FTS row once, in the content phase.
           // run() and lastInsertRowid cost about half as much as RETURNING id.
-          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, wants ? ContentState.Pending : ContentState.None, wants ? 0 : 1)
+          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : ContentState.None, wants ? 0 : 1)
           if (!wants) {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
@@ -356,7 +367,10 @@ export class Indexer {
     commit()
     if (this.aborted) return []
     // Files that vanished. Keep entries under roots that are currently unavailable (unmounted drives).
-    const missingRoots = crawlOpts.roots.filter((r) => !existsSync(r))
+    const missingRoots = [...crawlOpts.roots.filter((r) => !existsSync(r)), ...(stats.unreadable ?? [])]
+    this.progress.unreadableFolders = stats.unreadable?.length ?? 0
+    setMeta(this.db, "unreadable_folders", JSON.stringify(stats.unreadable ?? []))
+    if (!stats.errors) setMeta(this.db, "content_policy", contentPolicy)
     const removed: number[] = []
     for (const [path, ex] of existing) {
       if (visited.has(ex.id)) continue
@@ -391,7 +405,7 @@ export class Indexer {
     else
       this.pool = new ExtractPool(
         size,
-        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000, ocrTool: this.ocrTool },
+        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000, policy: crawlOptionsFor(this.config), contentEnabled: c.enabled, metadata: c.metadata, ocrTool: this.ocrTool },
         JOBS_PER_WORKER,
         this.opts.inProcess,
         this.share < 1,
@@ -469,6 +483,8 @@ export class Indexer {
     const file = this.db.filename
     const onCommit = () => this.opts.onCommit?.()
     const sink: ContentSink = this.opts.inProcess || !file || file === ":memory:" ? new InlineSink(this.db, onCommit) : new ThreadSink(file, onCommit, this.share < 1)
+    const onAbort = () => { pool.close(); wake?.() }
+    this.opts.signal?.addEventListener("abort", onAbort, { once: true })
     sink.onProgress = () => wake?.()
     this.known ??= loadVocabTerms(this.db)
     const known = this.known
@@ -502,7 +518,7 @@ export class Indexer {
         }
         const f = this.ftsFields(pending[i]!.path)
         // The terms stay here: copying them to the writer would cost it for nothing.
-        const reply = r.status === "ok" ? { id: r.id, status: r.status, chars: r.chars, body: r.body, compressed: r.compressed, truncated: r.truncated } : r
+        const reply = r.status === "ok" ? { id: r.id, status: r.status, chars: r.chars, body: r.body, compressed: r.compressed, truncated: r.truncated, metadata: r.metadata } : r
         items.push({ reply, name: f.name, dirs: f.dirs, inFts: pending[i]!.inFts })
       }
       const takeLate = () => {
@@ -581,6 +597,7 @@ export class Indexer {
       flush(true)
       ok = true
     } finally {
+      this.opts.signal?.removeEventListener("abort", onAbort)
       pool.close()
       this.pool = null
       if (!ok) sink.abandon()

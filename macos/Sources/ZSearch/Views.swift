@@ -106,6 +106,12 @@ struct ResultsList: View {
     var body: some View {
         @Bindable var model = model
         ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+            HStack {
+                ForEach(["name", "size", "date", "path"], id: \.self) { key in
+                    Button(key.capitalized) { model.sortResults(key) }.buttonStyle(.plain)
+                }
+            }.font(.caption).padding(.horizontal)
             List(model.hits, selection: $model.selection) { hit in
                 ResultRow(hit: hit)
             }
@@ -122,6 +128,9 @@ struct ResultsList: View {
                     }
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
+                    Button("Exclude from Index") { model.exclude(hit) }
+                    Button("Copy All Paths") { model.copyAllPaths() }
+                    Button("Fold Preview Around Matches") { model.toggleFoldedPreview() }
                 }
             } primaryAction: { ids in
                 if let hit = model.hits.first(where: { ids.contains($0.id) }) { model.open(hit) }
@@ -138,6 +147,7 @@ struct ResultsList: View {
                     Text(model.query.isEmpty ? "No recent files" : "No results")
                         .foregroundStyle(.secondary)
                 }
+            }
             }
         }
     }
@@ -225,9 +235,9 @@ struct PreviewPane: View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
         // files swaps the content in place instead of flashing an empty pane.
         if let p = model.preview, !model.hits.isEmpty {
-            let pdf = p.kind == "pdf" ? PDFDocuments.shared.document(for: p) : nil
+            let pdf = p.kind == "pdf" && p.contentAllowed != false ? PDFDocuments.shared.document(for: p) : nil
             // Images, video and audio, and other files without text: Quick Look shows them.
-            let visual = pdf == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
+            let visual = p.contentAllowed != false && pdf == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -331,6 +341,9 @@ struct StatusBar: View {
         var text = "\(s.files.formatted()) files · \(s.folders.formatted()) folders · \(s.withContent.formatted()) with text"
         if let last = s.lastIndexedAt {
             text += " · updated " + Date(timeIntervalSince1970: last / 1000).formatted(.relative(presentation: .named))
+        }
+        if let count = s.unreadableFolders?.count, count > 0 {
+            text += " · couldn't read \(count) folders (check permissions)"
         }
         return text
     }

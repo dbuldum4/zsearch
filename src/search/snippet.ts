@@ -134,40 +134,40 @@ export function termsPattern(words: string[], phrases: string[], prefixLast: boo
   return alts.join("|")
 }
 
-/** Fold a string (lower-case, no diacritics) keeping a map back to original offsets. */
-export function foldWithMap(s: string): { folded: string; map: number[] } {
-  let folded = ""
-  const map: number[] = []
-  for (let i = 0; i < s.length; ) {
-    const cp = s.codePointAt(i)!
+/** Accent variants are compiled once per query; document text stays untouched. */
+const accents = new Map<string, string>()
+for (const [start, end] of [[0xc0, 0x24f], [0x1e00, 0x1eff], [0x2c60, 0x2c7f], [0xa720, 0xa7ff], [0xab30, 0xab6f]]) {
+  for (let cp = start!; cp <= end!; cp++) {
     const ch = String.fromCodePoint(cp)
-    const f = cp < 128 ? ch.toLowerCase() : foldTerm(ch)
-    for (let k = 0; k < f.length; k++) map.push(i)
-    folded += f
-    i += ch.length
+    const folded = foldTerm(ch)
+    if (/^[a-z]$/.test(folded) && ch !== folded) accents.set(folded, (accents.get(folded) ?? folded) + ch)
   }
-  map.push(s.length)
-  return { folded, map }
+}
+const patterns = new Map<string, string>()
+export function diacriticPattern(pattern: string): string {
+  const cached = patterns.get(pattern)
+  if (cached !== undefined) return cached
+  let out = "", bracket = false
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!
+    if (ch === "\\") {
+      out += ch + (pattern[++i] ?? "")
+      if ((pattern[i] === "p" || pattern[i] === "P") && pattern[i + 1] === "{") {
+        const end = pattern.indexOf("}", i + 2)
+        if (end >= 0) { out += pattern.slice(i + 1, end + 1); i = end }
+      }
+    } else if (ch === "[") { bracket = true; out += ch }
+    else if (ch === "]") { bracket = false; out += ch }
+    else if (!bracket && /^[a-z]$/.test(foldTerm(ch))) out += `[${accents.get(foldTerm(ch)) ?? ch}]\\p{M}*`
+    else out += ch
+  }
+  if (patterns.size >= 128) patterns.clear()
+  patterns.set(pattern, out)
+  return out
 }
 
-/**
- * Lines of `text` that contain keyword hits. Matching runs on folded text so that
- * "cafe" highlights "Café"; ranges are mapped back to the original characters.
- */
 export function keywordLines(text: string, pattern: string, maxLines = 50, clip = true, maxMatches = 10_000): { lines: LineMatch[]; count: number } {
-  if (!/[^\x00-\x7f]/.test(text)) return findLines(text, new RegExp(pattern, "giu"), maxLines, maxMatches, Infinity, clip)
-  const { folded, map } = foldWithMap(text)
-  const r = findLines(folded, new RegExp(pattern, "gu"), maxLines, maxMatches, Infinity, false)
-  const lines = r.lines.map((l) => {
-    const off = l.offset ?? 0
-    const origStart = map[off] ?? 0
-    let origEnd = origStart
-    while (origEnd < text.length && text.charCodeAt(origEnd) !== 10 && text.charCodeAt(origEnd) !== 12) origEnd++
-    const ranges = l.ranges.map(([a, b]) => [(map[off + a] ?? origStart) - origStart, (map[off + b] ?? origEnd) - origStart] as [number, number])
-    const c = clip ? clipLine(text.slice(origStart, origEnd), ranges) : { text: text.slice(origStart, origEnd), ranges }
-    return { line: l.line, page: l.page, text: c.text, ranges: c.ranges }
-  })
-  return { lines, count: r.count }
+  return findLines(text, new RegExp(diacriticPattern(pattern), "giu"), maxLines, maxMatches, Infinity, clip)
 }
 
 export function splitLines(text: string): string[] {

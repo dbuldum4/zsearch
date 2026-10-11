@@ -27,15 +27,17 @@ export class CpuBudget {
   /** Recent samples of the time and the CPU time taken, in microseconds, oldest first. */
   private samples: { at: number; cpu: number }[] = []
 
-  constructor(share: number, cores = availableParallelism()) {
+  constructor(share: number, cores = availableParallelism(), private sample = () => {
+    const u = process.cpuUsage()
+    return { at: performance.now() * 1000, cpu: u.user + u.system }
+  }) {
     this.limit = share >= 1 ? Infinity : share * cores
   }
 
   get over(): boolean {
     if (this.limit === Infinity) return false
-    const at = performance.now() * 1000
-    const u = process.cpuUsage()
-    const now = { at, cpu: u.user + u.system }
+    const now = this.sample()
+    const at = now.at
     const s = this.samples
     if (!s.length || at - s[s.length - 1]!.at >= 50_000) s.push(now)
     while (s.length > 2 && at - s[1]!.at >= 1_000_000) s.shift()

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { defaultConfig } from "../src/config.ts"
+import { defaultConfig, saveConfig, withConfigSetting } from "../src/config.ts"
 import { checkArgs, McpServer, type Tool, ToolError } from "../src/mcp/rpc.ts"
 import { buildQuery, CONFIG_KEYS, withSetting } from "../src/mcp/server.ts"
 import { clearIndex, openDb } from "../src/index/db.ts"
@@ -106,7 +106,7 @@ describe("MCP protocol", () => {
     const { s, out } = server()
     await s.receive(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }))
     const call = s.receive(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "echo", arguments: { text: "wait" }, _meta: { progressToken: "tok" } } }))
-    await Bun.sleep(10)
+    await Promise.resolve()
     expect(out.at(-1)).toEqual({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "tok", progress: 1, total: 2, message: "halfway" } })
     await s.receive(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "changed my mind" } }))
     await call
@@ -134,19 +134,17 @@ describe("MCP tool helpers", () => {
 
   test("settings are converted to their type and checked", () => {
     const c = defaultConfig()
-    expect(CONFIG_KEYS).toContain("content.maxTextMB")
-    expect(CONFIG_KEYS).not.toContain("content")
-    expect(withSetting(c, "includeHidden", "yes").includeHidden).toBe(true)
-    expect(withSetting(c, "content.maxTextMB", 4).content.maxTextMB).toBe(4)
-    expect(withSetting(c, "roots", "~/a, ~/b").roots).toEqual(["~/a", "~/b"])
-    expect(withSetting(c, "exclude", ["*.log"]).exclude).toEqual(["*.log"])
-    expect(withSetting(c, "roots", '["~/My, Folder", "~/b"]').roots).toEqual(["~/My, Folder", "~/b"])
-    expect(() => withSetting(c, "roots", "[oops")).toThrow("expects a list of strings")
-    expect(c.includeHidden).toBe(false)
+    expect(CONFIG_KEYS).not.toContain("content.maxTextMB")
+    expect(CONFIG_KEYS).not.toContain("editor")
+    for (const key of ["roots", "exclude", "includeHidden", "followSymlinks", "respectGitignore", "content.enabled", "editor"]) {
+      expect(() => withSetting(c, key, "true")).toThrow("must be changed in the app")
+    }
+    expect(withConfigSetting(c, "roots", '["~/My, Folder", "~/b"]').roots).toEqual(["~/My, Folder", "~/b"])
+    expect(withSetting(c, "preview", "yes").preview).toBe(true)
     expect(() => withSetting(c, "indexLoad", 150)).toThrow("indexLoad must be a whole number from 10 to 100")
     expect(() => withSetting(c, "defaultMode", "regex")).toThrow('must be "find" or "fuzzy"')
-    expect(() => withSetting(c, "includeHidden", 3)).toThrow("expects true or false")
-    expect(() => withSetting(c, "nope", 1)).toThrow('unknown setting "nope"')
+    expect(() => withConfigSetting(c, "includeHidden", 3)).toThrow("expects true or false")
+    expect(() => withSetting(c, "nope", 1)).toThrow('setting "nope"')
   })
 })
 
@@ -196,6 +194,12 @@ afterAll(() => corpus.cleanup())
 
 /** Start `zsearch mcp` and talk JSON-RPC to it. */
 function client() {
+  const local = { ...defaultConfig(), roots: ["~"] }
+  const previous = process.env.ZSEARCH_HOME
+  process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-mcp")
+  saveConfig(local)
+  if (previous === undefined) delete process.env.ZSEARCH_HOME
+  else process.env.ZSEARCH_HOME = previous
   const proc = Bun.spawn(["bun", MAIN, "mcp"], {
     cwd: corpus.home,
     env: { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, ".zsearch-mcp") },
@@ -258,7 +262,7 @@ test("mcp: index, search, read and configure over stdio", async () => {
   const init = await c.start()
   expect(init.serverInfo.name).toBe("zsearch")
   expect(init.instructions).toContain("search")
-  expect([...c.tools.keys()]).toEqual(["search", "read_file", "index_status", "update_index", "cancel_index", "get_config", "set_config"])
+  expect([...c.tools.keys()]).toEqual(["search", "read_file", "index_status", "update_index", "cancel_index", "get_config", "set_config", "exclude_path"])
   for (const t of c.tools.values()) {
     expect(t.inputSchema.type).toBe("object")
     expect(t.description.length).toBeGreaterThan(40)
@@ -271,6 +275,9 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(empty.text).toContain("update_index")
   expect((await c.call("index_status")).data.lastIndexedAt).toBeNull()
 
+  corpus.write("privacy/a.txt", "PRIVATECACHEZEBRA")
+  corpus.write("privacy/b.txt", "PRIVATECACHEZEBRA")
+
   // Files for paging and long reads: match counts that run against modification order, a line
   // longer than one read returns, a big folder, and more matching lines than one read returns.
   for (let i = 1; i <= 10; i++) {
@@ -282,7 +289,8 @@ test("mcp: index, search, read and configure over stdio", async () => {
   corpus.write("long/matches.txt", Array.from({ length: 3000 }, (_, i) => `match me ${i + 1}`).join("\n") + "\n")
 
   // Index the whole (test) home folder, waiting for it, with progress notifications.
-  const indexed = await c.call("update_index", { roots: ["~"], wait_seconds: 60 }, { progressToken: "idx" })
+  expect((await c.call("update_index", { roots: ["~"] })).isError).toBe(true)
+  const indexed = await c.call("update_index", { wait_seconds: 60 }, { progressToken: "idx" })
   expect(indexed.data.status).toBe("done")
   expect(indexed.data.roots).toEqual(["~"])
   expect(indexed.data.files).toBeGreaterThan(10)
@@ -302,6 +310,12 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(budget.data.query).toBe("budget type:sheet")
   expect(budget.data.hits.length).toBeGreaterThan(0)
   expect(budget.data.hits.every((h: Msg) => h.kind === "sheet")).toBe(true)
+
+  // Changing ignore rules protects already-cached pages and resource reads immediately.
+  expect((await c.call("search", { query: "PRIVATECACHEZEBRA", limit: 1 })).data.hits).toHaveLength(1)
+  corpus.write("privacy/.zsearchignore", "*.txt\n")
+  expect((await c.call("search", { query: "PRIVATECACHEZEBRA", limit: 1, offset: 1 })).data.hits).toEqual([])
+  expect((await c.request("resources/read", { uri: `file://${join(corpus.home, "privacy/a.txt")}` })).error.code).toBe(-32002)
 
   // Regex, fuzzy, folder and date filters, paging.
   const re = await c.call("search", { query: "MAX_RETRIES = \\d+", regex: true })
@@ -386,14 +400,17 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(status.data.lastRun.status).toBe("done")
   expect(Array.isArray(status.data.unreadableFiles)).toBe(true)
   expect(status.text).toContain("Folders: ~")
-  const set = await c.call("set_config", { key: "exclude", value: ["*.md"] })
-  expect(set.data).toEqual({ key: "exclude", value: ["*.md"], previous: [], reindexNeeded: true })
-  expect(set.text).toContain("update_index")
+  expect((await c.call("set_config", { key: "exclude", value: ["*.md"] })).isError).toBe(true)
+  const previousHome = process.env.ZSEARCH_HOME
+  process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-mcp")
+  saveConfig({ ...defaultConfig(), roots: ["~"], exclude: ["*.md"] })
+  if (previousHome === undefined) delete process.env.ZSEARCH_HOME
+  else process.env.ZSEARCH_HOME = previousHome
   expect((await c.call("get_config", { key: "exclude" })).data.value).toEqual(["*.md"])
   expect((await c.call("get_config")).data.config.roots).toEqual(["~"])
   expect((await c.call("set_config", { key: "indexLoad", value: 5 })).isError).toBe(true)
   expect((await c.call("set_config", { key: "autoRefreshMinutes", value: "0" })).data.value).toBe(0)
-  expect((await c.call("set_config", { key: "includeHidden", value: false })).data.value).toBe(false)
+  expect((await c.call("set_config", { key: "includeHidden", value: false })).isError).toBe(true)
   // The excluded files leave the index at the next update.
   expect((await c.call("update_index", { wait_seconds: 60 })).data.status).toBe("done")
   expect((await c.call("search", { query: "renew passport" })).data.hits).toEqual([])

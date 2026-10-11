@@ -1,4 +1,5 @@
-import { home, resolvePath } from "../config.ts"
+import { escapeRegExp } from "../util/text.ts"
+import { resolvePath } from "../config.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 
 /** `find`: exact text, or a regex written as `/pattern/` or `re:pattern`. `fuzzy`: fzf-style. */
@@ -6,6 +7,12 @@ export type Mode = "find" | "fuzzy"
 export const MODES: Mode[] = ["find", "fuzzy"]
 
 export interface Filters {
+  not?: Filters[]
+  createdMin?: number
+  createdMax?: number
+  tags?: string[]
+  names?: { source: string; flags: string }[]
+  sort?: string
   exts: Set<string> | null
   kinds: Set<Kind> | null
   notKinds: Set<Kind> | null
@@ -29,6 +36,13 @@ export interface ParsedQuery {
   forcedMode: Mode | null
   /** `text` is a regular expression (`/.../`, `re:`). */
   regex: boolean
+  regexFlags: string
+  all: boolean
+  fold: boolean
+  wholeWord: boolean
+  caseMode?: boolean
+  diacritics?: boolean
+  near?: number
   /** Free-text words (unquoted, not negated). */
   words: string[]
   /** Quoted phrases. */
@@ -41,12 +55,12 @@ export interface ParsedQuery {
   warnings: string[]
 }
 
-export function emptyFilters(): Filters {
+function emptyFilters(): Filters {
   return { exts: null, kinds: null, notKinds: null, inPaths: [], pathContains: [] }
 }
 
 export function hasFilters(f: Filters): boolean {
-  return !!(f.exts || f.kinds || f.notKinds || f.inPaths.length || f.pathContains.length || f.sizeMin !== undefined || f.sizeMax !== undefined || f.mtimeMin !== undefined || f.mtimeMax !== undefined)
+  return !!(f.createdMin !== undefined || f.createdMax !== undefined || f.tags?.length || f.sort || f.names?.length || f.not?.length || f.exts || f.kinds || f.notKinds || f.inPaths.length || f.pathContains.length || f.sizeMin !== undefined || f.sizeMax !== undefined || f.mtimeMin !== undefined || f.mtimeMax !== undefined)
 }
 
 const SIZE_UNITS: Record<string, number> = { b: 1, k: 1024, kb: 1024, m: 1024 ** 2, mb: 1024 ** 2, g: 1024 ** 3, gb: 1024 ** 3, t: 1024 ** 4, tb: 1024 ** 4 }
@@ -91,7 +105,7 @@ function parseWhen(v: string, now: number): [number, number] | null {
   return null
 }
 
-const FILTER_KEYS = new Set(["ext", "type", "kind", "in", "dir", "path", "size", "mtime", "modified", "changed", "after", "before", "since", "limit", "is"])
+const FILTER_KEYS = new Set(["created", "tag", "name", "sort", "case", "word", "diacritics", "near", "fold", "ext", "type", "kind", "in", "dir", "path", "size", "mtime", "modified", "changed", "after", "before", "since", "limit", "is"])
 const MODE_PREFIXES: Record<string, { mode: Mode; regex: boolean }> = {
   "re:": { mode: "find", regex: true },
   "regex:": { mode: "find", regex: true },
@@ -126,7 +140,15 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   const warnings: string[] = []
   let forcedMode: Mode | null = null
   let regex = false
+  let regexFlags = ""
+  let all = false
+  let fold = false
+  let wholeWord = false
+  let caseMode: boolean | undefined
+  let diacritics: boolean | undefined
+  let near: number | undefined
   let s = raw
+  if (/^\s*all:/i.test(raw)) { all = true; s = raw.replace(/^\s*all:/i, ""); forcedMode = "find" }
   const lead = s.trimStart()
   for (const [prefix, m] of Object.entries(MODE_PREFIXES)) {
     if (lead.toLowerCase().startsWith(prefix)) {
@@ -136,17 +158,37 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
       break
     }
   }
+  if (/^\/[\s\S]*\/[a-z]*(?:\s|$)/.test(lead)) { forcedMode = "find"; regex = true }
   // Remove filter tokens, keep the rest of the text verbatim (regexes care about spacing).
   const tokens = tokenize(s)
   const cut: [number, number][] = []
   for (const t of tokens) {
     if (t.quoted) continue
+    const proximity = !regex && forcedMode !== "fuzzy" ? /^NEAR\/(\d+)$/.exec(t.text) : null
+    if (proximity) {
+      const distance = Number(proximity[1])
+      if (distance > 1000) warnings.push("NEAR expects a word distance from 0 to 1000")
+      else { near = distance; all = true; forcedMode = "find" }
+      cut.push([t.start, t.end]); continue
+    }
+    if (!regex && forcedMode !== "fuzzy" && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
+      ;(filters.names ??= []).push({ source: globPattern(t.text), flags: "i" }); cut.push([t.start, t.end]); continue
+    }
     const m = /^(-?)([a-z]+):(.*)$/i.exec(t.text)
     if (!m || !FILTER_KEYS.has(m[2]!.toLowerCase())) continue
     const neg = m[1] === "-"
     const key = m[2]!.toLowerCase()
     const value = m[3]!
     if (!value) continue
+    if (["case", "word", "diacritics", "fold"].includes(key)) {
+      if (!/^(true|false|on|off)$/i.test(value)) warnings.push(`${key} expects on or off`)
+      else { const enabled = /^(true|on)$/i.test(value) !== neg; if (key === "case") caseMode = enabled; else if (key === "word") wholeWord = enabled; else if (key === "fold") fold = enabled; else diacritics = enabled }
+      cut.push([t.start, t.end]); continue
+    }
+    if (key === "near") {
+      const n = Number(value); if (!Number.isInteger(n) || n < 0 || n > 1000) warnings.push("near expects a word distance from 0 to 1000"); else { near = n; all = true }
+      cut.push([t.start, t.end]); continue
+    }
     if (applyFilter(filters, key, value, neg, now, warnings)) cut.push([t.start, t.end])
   }
   let text = ""
@@ -159,11 +201,10 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   const typing = !/\s$/.test(raw)
   text = text.replace(/\s{2,}/g, (w) => (regex ? w : " ")).trim()
 
-  // `/pattern/` is a regex.
-  if (!forcedMode && /^\/.+\/[imsux]*$/.test(text) && text.length > 2) {
-    forcedMode = "find"
-    regex = true
-    text = text.replace(/^\/(.*)\/[imsux]*$/, "$1")
+  // Keep flags, including invalid ones: buildRegex reports them explicitly.
+  const delimited = /^\/([\s\S]+)\/([a-z]*)$/.exec(text)
+  if (delimited && (!forcedMode || regex)) {
+    forcedMode = "find"; regex = true; text = delimited[1]!; regexFlags = delimited[2]!
   }
   const words: string[] = []
   const phrases: string[] = []
@@ -178,11 +219,34 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
       } else words.push(t.text)
     }
   }
-  return { raw, text, filters, forcedMode, regex, words, phrases, negated, typing, warnings }
+  return { raw, text, filters, forcedMode, regex, regexFlags, all, fold, wholeWord, caseMode, diacritics, near, words, phrases, negated, typing, warnings }
 }
 
 function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: number, warnings: string[]): boolean {
+  if (neg && !["type", "kind", "is"].includes(key)) {
+    if (["limit", "sort"].includes(key)) { warnings.push(`${key} cannot be negated`); return true }
+    const inverse = emptyFilters()
+    if (!applyFilter(inverse, key, value, false, now, warnings)) return false
+    ;(f.not ??= []).push(inverse)
+    return true
+  }
   switch (key) {
+    case "created": {
+      const temporary = emptyFilters(); if (!applyFilter(temporary, "mtime", value, false, now, warnings)) return false
+      f.createdMin = temporary.mtimeMin; f.createdMax = temporary.mtimeMax; return true
+    }
+    case "tag":
+      ;(f.tags ??= []).push(value); return true
+    case "name": {
+      const regex = /^\/([\s\S]*)\/([a-z]*)$/.exec(value)
+      const source = regex ? regex[1]! : /[?*]/.test(value) ? globPattern(value) : escapeRegExp(value)
+      const flags = regex ? regex[2]! : "i"
+      try { new RegExp(source, flags) } catch { warnings.push(`invalid name regex: ${value}`); return true }
+      ;(f.names ??= []).push({ source, flags }); return true
+    }
+    case "sort":
+      if (!/^-?(name|size|date|path)$/.test(value)) { warnings.push("sort expects name, size, date, path, optionally prefixed with -"); return true }
+      f.sort = value; return true
     case "ext": {
       const exts = value
         .split(",")
@@ -276,18 +340,7 @@ function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: 
   return false
 }
 
-/** Human readable summary of the active filters, for the status line. */
-export function describeFilters(f: Filters): string {
-  const parts: string[] = []
-  if (f.kinds) parts.push(`type:${[...f.kinds].join(",")}`)
-  if (f.notKinds) parts.push(`-type:${[...f.notKinds].join(",")}`)
-  if (f.exts) parts.push(`ext:${[...f.exts].join(",")}`)
-  const h = home()
-  for (const p of f.inPaths) parts.push(`in:${p.startsWith(h) ? "~" + p.slice(h.length) : p}`)
-  for (const p of f.pathContains) parts.push(`path:${p}`)
-  if (f.sizeMin !== undefined) parts.push(`size>${f.sizeMin}`)
-  if (f.sizeMax !== undefined) parts.push(`size<${f.sizeMax}`)
-  if (f.mtimeMin !== undefined) parts.push(`after ${new Date(f.mtimeMin).toISOString().slice(0, 10)}`)
-  if (f.mtimeMax !== undefined) parts.push(`before ${new Date(f.mtimeMax).toISOString().slice(0, 10)}`)
-  return parts.join(" ")
+
+function globPattern(glob: string): string {
+  return "^" + [...glob].map((c) => c === "*" ? ".*" : c === "?" ? "." : escapeRegExp(c)).join("") + "$"
 }

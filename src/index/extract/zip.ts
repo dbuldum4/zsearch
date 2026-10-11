@@ -2,7 +2,7 @@ import { inflateRawSync } from "node:zlib"
 
 /** Minimal read-only ZIP reader for Office Open XML, OpenDocument and EPUB files. */
 
-export interface ZipEntry {
+interface ZipEntry {
   name: string
   method: number
   compressedSize: number
@@ -10,11 +10,15 @@ export interface ZipEntry {
   localOffset: number
 }
 
-const MAX_ENTRY_BYTES = 256 * 1024 * 1024
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024
+const MAX_TOTAL_BYTES = 32 * 1024 * 1024
+const MAX_PARTS = 2048
 
 export class ZipReader {
   readonly entries = new Map<string, ZipEntry>()
   private view: DataView
+  private inflated = 0
+  private parts = 0
 
   constructor(private buf: Uint8Array) {
     this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
@@ -37,6 +41,7 @@ export class ZipReader {
     }
     if (eocd < 0) throw new Error("not a zip archive (no end of central directory)")
     const count = view.getUint16(eocd + 10, true)
+    if (count > MAX_PARTS) throw new Error("zip archive has too many parts")
     let off = view.getUint32(eocd + 16, true)
     if (off === 0xffffffff) throw new Error("zip64 archives are not supported")
     const dec = new TextDecoder()
@@ -68,15 +73,20 @@ export class ZipReader {
   read(name: string): Uint8Array | null {
     const e = this.entries.get(name)
     if (!e) return null
-    if (e.size > MAX_ENTRY_BYTES) throw new Error(`zip entry too large: ${name}`)
+    if (++this.parts > MAX_PARTS) throw new Error("zip archive read budget exceeded")
+    const budget = Math.min(MAX_ENTRY_BYTES, MAX_TOTAL_BYTES - this.inflated)
+    if (e.size > budget || budget <= 0) throw new Error(`zip inflate budget exceeded: ${name}`)
     const { view, buf } = this
     const lo = e.localOffset
     if (lo + 30 > buf.length || view.getUint32(lo, true) !== 0x04034b50) throw new Error(`corrupt zip entry: ${name}`)
     const start = lo + 30 + view.getUint16(lo + 26, true) + view.getUint16(lo + 28, true)
+    if (start + e.compressedSize > buf.length) throw new Error(`corrupt zip entry: ${name}`)
     const data = buf.subarray(start, start + e.compressedSize)
-    if (e.method === 0) return data
-    if (e.method === 8) return new Uint8Array(inflateRawSync(data, { maxOutputLength: MAX_ENTRY_BYTES }))
-    throw new Error(`unsupported zip compression method ${e.method}`)
+    const out = e.method === 0 ? data : e.method === 8 ? new Uint8Array(inflateRawSync(data, { maxOutputLength: budget })) : null
+    if (!out) throw new Error(`unsupported zip compression method ${e.method}`)
+    if (out.length !== e.size || out.length > budget) throw new Error(`corrupt zip entry size: ${name}`)
+    this.inflated += out.length
+    return out
   }
 
   text(name: string): string | null {

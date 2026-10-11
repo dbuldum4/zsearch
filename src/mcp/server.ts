@@ -8,11 +8,14 @@
  */
 import type { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
-import { progressLine } from "../cli.ts"
-import { type Config, defaultConfig, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
+import { progressLine } from "../util/progress.ts"
+import { type Config, configKeys, withConfigSetting, configExists, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
 import { type IndexStats, openDb } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
+import { pathPolicy, crawlOptionsFor } from "../index/policy.ts"
+import { excludingPath } from "../index/exclude.ts"
+import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 import { pdftotextPath } from "../platform.ts"
@@ -37,7 +40,7 @@ import {
 } from "./rpc.ts"
 
 // Some clients (Codex) weigh the first 512 characters most, so the first paragraph stands alone.
-export const INSTRUCTIONS = `zsearch searches the user's indexed files on this computer, by name and by the text inside them (PDF, Office, EPUB, e-mail, notebooks, code, text). Use \`search\` to find files, then \`read_file\` to read a file's text around the matches. Only indexed folders are searched: \`index_status\` shows which, and \`update_index\` refreshes the index or indexes other folders.
+const INSTRUCTIONS = `zsearch searches the user's indexed files on this computer, by name and by the text inside them (PDF, Office, EPUB, e-mail, notebooks, code, text). Use \`search\` to find files, then \`read_file\` to read a file's text around the matches. Only indexed folders are searched: \`index_status\` shows which, and \`update_index\` refreshes the index using the folders selected in the app or CLI.
 
 - \`search\` finds the exact text you give in file names and contents by default (case-insensitive unless the query has a capital letter); set \`regex\` for a regular expression, or mode "fuzzy" for a file name you only half remember. Narrow results with \`type\` (doc, pdf, sheet, slides, code, image, folder…), \`ext\`, \`folder\`, \`modified\` and \`size\`. An empty query lists recently opened and modified files.
 - \`read_file\` reads the text zsearch extracted, so it works for PDFs and Office files too. Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
@@ -64,12 +67,16 @@ type RunState = { handle: IndexRun; progress: IndexProgress | null; startedAt: n
 type LastRun = { status: "done" | "cancelled" | "error" | "locked"; finishedAt: number; progress?: IndexProgress; error?: string }
 
 /** The engine behind the tools: the search worker, index runs and the settings. */
-export class Host {
+class Host {
   readonly paths = ensureDirs()
   config: Config
   private client: SearchClient
   private queue: Promise<unknown> = Promise.resolve()
   private db: Database | null = null
+  private watcher = new RootWatcher(() => {
+    if (this.run || lockHolder(this.paths.lock) !== null) return false
+    if (configExists()) this.startIndex(false, "auto")
+  })
   run: RunState | null = null
   lastRun: LastRun | null = null
   private listeners = new Set<(p: IndexProgress) => void>()
@@ -88,6 +95,7 @@ export class Host {
 
   /** Start the automatic index updates the `autoRefreshMinutes` setting asks for. */
   startAutoRefresh() {
+    this.watcher.update(this.config)
     const check = () => void this.autoRefresh().catch(() => {})
     check()
     this.timer = setInterval(check, AUTO_CHECK_MS)
@@ -115,7 +123,9 @@ export class Host {
 
   applyConfig(config: Config) {
     this.config = config
+    this.pools.clear()
     this.client.setConfig(config)
+    this.watcher.update(config)
   }
 
   /** One worker request at a time: the worker answers only the newest request of each kind. */
@@ -129,6 +139,7 @@ export class Host {
   }
 
   search(query: string, mode: Mode, limit: number): Promise<SearchResponse> {
+    this.reloadConfig()
     return this.exclusive(() => this.client.search(query, mode, limit))
   }
 
@@ -140,9 +151,19 @@ export class Host {
    * results (for a while, and while the index is unchanged), so pages never overlap or skip.
    */
   async searchPool(query: string, mode: Mode, firstPage: boolean): Promise<SearchResponse> {
+    this.reloadConfig()
     const key = `${mode}\0${query}`
     const cached = this.pools.get(key)
-    if (!firstPage && cached && Date.now() - cached.at < POOL_TTL_MS) return cached.res
+    if (!firstPage && cached && Date.now() - cached.at < POOL_TTL_MS && cached.res.hits.length) {
+      const opts = crawlOptionsFor(this.config)
+      if (cached.res.hits.every((h) => {
+        const policy = pathPolicy(h.path, opts)
+        const row = this.database().query("SELECT path, source_path FROM files WHERE id = ?").get(h.id) as { path: string; source_path: string } | null
+        const contentAllowed = this.config.content.enabled && policy.content && row !== null && row.path === h.path && (!row.source_path || row.source_path === policy.real)
+        const metadataQuery = /(?:^|\s)-?tag:/.test(query)
+        return policy.allowed && (!h.sources.includes("content") || contentAllowed) && (!metadataQuery || (this.config.content.metadata && contentAllowed))
+      })) return { ...cached.res, total: cached.res.hits.length, partial: cached.res.partial || cached.res.total > cached.res.hits.length }
+    }
     const res = await this.search(query, mode, SEARCH_POOL)
     this.pools.delete(key)
     if (!res.error) this.pools.set(key, { res, at: Date.now() })
@@ -155,9 +176,15 @@ export class Host {
    * worker finds and reads it in one step, so an index rebuilt meanwhile cannot swap the file.
    */
   async read(path: string, query: string, mode: Mode, opts: ReadOptions): Promise<ReadResult | null> {
+    this.reloadConfig()
     const reply = await this.exclusive(() => this.client.read(resolvePath(path.trim()), query, mode, opts))
     if (reply.error) throw new ToolError(reply.error)
     return reply.result
+  }
+
+  exclude(path: string): Config {
+    const next = excludingPath(this.database(), this.reloadConfig(), path)
+    saveConfig(next); this.applyConfig(next); return next
   }
 
   stats(): Promise<{ stats: IndexStats }> {
@@ -178,6 +205,7 @@ export class Host {
 
   /** Start an index run with the current settings, unless one is running here or elsewhere. */
   startIndex(rebuild: boolean, reason: RunState["reason"] = "requested"): { status: "started" | "running" } | { status: "busy"; pid: number } {
+    this.reloadConfig()
     if (this.run) return { status: "running" }
     const other = lockHolder(this.paths.lock)
     if (other !== null) return { status: "busy", pid: other }
@@ -247,6 +275,7 @@ export class Host {
   }
 
   async close() {
+    this.watcher.close()
     if (this.timer) clearInterval(this.timer)
     const run = this.run
     if (run) {
@@ -366,6 +395,7 @@ async function indexState(host: Host, opts: { errors?: number } = {}) {
     textBytes: stats.contentBytes,
     skipped: stats.skipped,
     unreadable: stats.errors,
+    unreadableFolders: stats.unreadableFolders ?? [],
     pending: stats.pending,
     indexBytes: stats.dbBytes,
     lastIndexedAt: iso(stats.lastIndexedAt),
@@ -394,6 +424,7 @@ function describeState(s: IndexState): string {
   const out: string[] = []
   out.push(`Folders: ${s.roots.join(", ")}${JSON.stringify([...s.indexedRoots].sort()) !== JSON.stringify(s.roots.map((r) => resolvePath(r)).sort()) && s.indexedRoots.length ? ` (the index was built from ${s.indexedRoots.map(tildify).join(", ")}; update_index applies the new folders)` : ""}`)
   out.push(`Index: ${formatCount(s.files)} files and ${formatCount(s.folders)} folders, ${formatCount(s.withText)} with text (${formatBytes(s.textBytes)}), ${formatBytes(s.indexBytes)} on disk.`)
+  if (s.unreadableFolders.length) out.push(`Could not read ${s.unreadableFolders.length} folders (permission or unavailable); existing entries were kept.`)
   if (s.skipped || s.unreadable || s.pending) out.push(`Contents: ${formatCount(s.skipped)} skipped (binary, too large or empty), ${formatCount(s.unreadable)} unreadable, ${formatCount(s.pending)} not read yet.`)
   if (!s.contentEnabled) out.push("Reading file contents is turned off (content.enabled): only names are searched.")
   out.push(s.lastIndexedAt ? `Last updated: ${formatDate(Date.parse(s.lastIndexedAt))}${s.lastDurationMs ? ` (took ${formatDuration(s.lastDurationMs)})` : ""}${s.stale ? ", due for an update" : ""}.` : "The index has never been completed: call update_index to build it.")
@@ -451,32 +482,10 @@ const STATE_SCHEMA = loose(
 
 /* ----------------------------------------------------------------- tools -- */
 
-/** Settable keys, dotted: every leaf of the settings. */
-export const CONFIG_KEYS: string[] = (() => {
-  const out: string[] = []
-  const walk = (o: Record<string, unknown>, prefix: string) => {
-    for (const [k, v] of Object.entries(o)) {
-      if (typeof v === "object" && v !== null && !Array.isArray(v)) walk(v as Record<string, unknown>, `${prefix}${k}.`)
-      else out.push(prefix + k)
-    }
-  }
-  walk(defaultConfig() as unknown as Record<string, unknown>, "")
-  return out
-})()
-
-/** Settings that change what is indexed, so they take effect at the next index update. */
+/** Remote preferences cannot widen indexing or choose an executable. */
+const LOCAL_SETTINGS = /^(liveUpdates$|editor$|roots$|exclude$|namesOnly$|includeHidden$|respectGitignore$|followSymlinks$|oneFileSystem$|cloudContent$|content\.)/
+export const CONFIG_KEYS = configKeys().filter((key) => !LOCAL_SETTINGS.test(key))
 const INDEX_KEYS = /^(roots|exclude|namesOnly|includeHidden|respectGitignore|followSymlinks|oneFileSystem|cloudContent|content\.)/
-
-/** Checks beyond the value's type, as an error message (null: fine). */
-const CONFIG_RULES: Record<string, (v: unknown) => string | null> = {
-  defaultMode: (v) => (v === "find" || v === "fuzzy" ? null : 'must be "find" or "fuzzy"'),
-  indexLoad: (v) => (Number.isInteger(v) && (v as number) >= 10 && (v as number) <= 100 ? null : "must be a whole number from 10 to 100 (percent)"),
-  workers: (v) => (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 64 ? null : "must be a whole number from 0 (automatic) to 64"),
-  autoRefreshMinutes: (v) => ((v as number) >= 0 ? null : "must be 0 (off) or more"),
-  "content.maxDocumentMB": (v) => ((v as number) > 0 ? null : "must be more than 0"),
-  "content.maxTextMB": (v) => ((v as number) > 0 ? null : "must be more than 0"),
-  "content.maxChars": (v) => (Number.isInteger(v) && (v as number) > 0 ? null : "must be a whole number above 0"),
-}
 
 function getKey(config: Config, key: string): unknown {
   return key.split(".").reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], config)
@@ -484,35 +493,9 @@ function getKey(config: Config, key: string): unknown {
 
 /** A copy of `config` with `key` set to `raw`, converted to the setting's type and checked. */
 export function withSetting(config: Config, key: string, raw: unknown): Config {
-  if (!CONFIG_KEYS.includes(key)) throw new ToolError(`unknown setting "${key}" (settings: ${CONFIG_KEYS.join(", ")})`)
-  const cur = getKey(config, key)
-  let value: unknown = raw
-  if (Array.isArray(cur)) {
-    if (typeof raw === "string") {
-      try {
-        value = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",")
-      } catch {
-        throw new ToolError(`${key} expects a list of strings: a JSON array or comma-separated items`)
-      }
-    }
-    if (!Array.isArray(value) || value.some((x) => typeof x !== "string")) throw new ToolError(`${key} expects a list of strings`)
-    value = (value as string[]).map((s) => s.trim()).filter(Boolean)
-  } else if (typeof cur === "boolean") {
-    if (typeof raw === "string" && /^(true|false|1|0|yes|no|on|off)$/i.test(raw)) value = /^(true|1|yes|on)$/i.test(raw)
-    if (typeof value !== "boolean") throw new ToolError(`${key} expects true or false`)
-  } else if (typeof cur === "number") {
-    if (typeof raw === "string" && raw.trim() !== "") value = Number(raw)
-    if (typeof value !== "number" || !Number.isFinite(value)) throw new ToolError(`${key} expects a number`)
-  } else if (typeof cur === "string") {
-    if (typeof raw !== "string") throw new ToolError(`${key} expects a string`)
-  }
-  const problem = CONFIG_RULES[key]?.(value)
-  if (problem) throw new ToolError(`${key} ${problem}`)
-  const next = structuredClone(config)
-  const parts = key.split(".")
-  const parent = parts.slice(0, -1).reduce<Record<string, unknown>>((o, k) => o[k] as Record<string, unknown>, next as unknown as Record<string, unknown>)
-  parent[parts.at(-1)!] = value
-  return next
+  if (!CONFIG_KEYS.includes(key)) throw new ToolError(`setting "${key}" must be changed in the app or with zsearch config set`)
+  try { return withConfigSetting(config, key, raw) }
+  catch (err) { throw new ToolError((err as Error).message) }
 }
 
 export function tools(host: Host): Tool[] {
@@ -550,7 +533,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         strategy: str("How the query was run"),
         total: { type: "integer", description: "Matching files found (at least)" },
         offset: { type: "integer" },
-        partial: bool("The time limit stopped a full scan early: there may be more matches"),
+        partial: bool("The search budget stopped a full scan early: there may be more matches"),
         notice: str("A warning about the query, such as a filter that was not understood"),
         hits: {
           type: "array",
@@ -620,7 +603,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         })
         if (res.total > offset + hits.length) out.push("", `More results: call again with offset ${offset + hits.length}, or narrow the search.`)
       }
-      if (res.partial) out.push("", "The search stopped at its time limit, so there may be more matches.")
+      if (res.partial) out.push("", "The search stopped at its budget, so there may be more matches.")
       if (res.notice) out.push("", `Note: ${res.notice}`)
       return { text: out.join("\n"), structured }
     },
@@ -673,7 +656,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
     async run(args) {
       host.reloadConfig()
       let raw = String(args.query ?? "").trim()
-      if (raw && args.regex === true) raw = `re:${raw.replace(/^\/(.*)\/$/, "$1")}`
+      if (raw && args.regex === true && !/^\/.+\/[a-z]*$/.test(raw)) raw = `re:${raw}`
       const mode = args.mode as Mode
       const matchesOnly = args.matches_only === true
       if (matchesOnly && !raw) throw new ToolError("matches_only needs a query")
@@ -785,25 +768,16 @@ Give query (the same text or regex as in search) to mark the matching lines and 
   const update: Tool = {
     name: "update_index",
     title: "Update the index",
-    description: `Update the index in the background: find new, changed and deleted files and read the contents of new and changed ones. Give roots to index other folders (this replaces the folders in the settings, like \`zsearch index <folders>\`). Set rebuild to start from an empty index. Set wait_seconds to wait for it to finish (with progress notifications); otherwise it returns at once and index_status shows progress. Search works while indexing runs, on what is indexed so far.`,
+    description: `Update the index in the background: find new, changed and deleted files and read the contents of new and changed ones. Choose indexed folders in the app or CLI. Set rebuild to start from an empty index. Set wait_seconds to wait for it to finish (with progress notifications); otherwise it returns at once and index_status shows progress. Search works while indexing runs, on what is indexed so far.`,
     inputSchema: obj({
-      roots: strList('Folders to index from now on, e.g. ["~/Documents", "~/code"] or ["~"] for the whole home folder'),
       rebuild: bool("Throw away the index and build it again from scratch", false),
       wait_seconds: int("Wait this long for indexing to finish (0: return at once). Many apps stop waiting for a tool after about 60 seconds, so for a long run return at once and follow it with index_status", 0, 600, 0),
     }),
     outputSchema: loose({ status: str("started, running (already), busy (another process is indexing), done, cancelled or error"), ...STATE_SCHEMA.properties }, ["status", "files", "indexing"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     async run(args, ctx) {
-      let config = host.reloadConfig()
-      const roots = strings(args.roots)
-      if (roots.length) {
-        const resolved = roots.map((r) => resolvePath(r))
-        const missing = resolved.filter((r) => !existsSync(r) || !statSync(r).isDirectory())
-        if (missing.length) throw new ToolError(`not a folder: ${missing.join(", ")}`)
-        config = { ...config, roots: resolved.map(tildify) }
-        saveConfig(config)
-        host.applyConfig(config)
-      }
+      host.reloadConfig()
+      if (args.roots !== undefined) throw new ToolError("Index folders must be changed in the app or with zsearch index <folders>")
       const started = host.startIndex(args.rebuild === true)
       if (started.status === "busy") {
         const s = await indexState(host)
@@ -855,8 +829,8 @@ Give query (the same text or regex as in search) to mark the matching lines and 
   const getConfig: Tool = {
     name: "get_config",
     title: "Show settings",
-    description: `Show zsearch's settings (stored in ~/.config/zsearch/config.json and shared with the zsearch terminal app and Mac app), or one setting by its key. Keys: ${CONFIG_KEYS.join(", ")}.`,
-    inputSchema: obj({ key: str("One setting to show (dotted, e.g. content.enabled); omit for all", { enum: CONFIG_KEYS }) }),
+    description: `Show zsearch's settings (stored in ~/.config/zsearch/config.json and shared with the zsearch terminal app and Mac app), or one setting by its key. Keys: ${configKeys().join(", ")}.`,
+    inputSchema: obj({ key: str("One setting to show (dotted, e.g. content.enabled); omit for all", { enum: configKeys() }) }),
     outputSchema: loose({ path: str("The settings file"), config: { type: "object" }, key: str("The setting asked for"), value: { description: "Its value" } }, ["path"]),
     annotations: { readOnlyHint: true, openWorldHint: false },
     async run(args) {
@@ -873,18 +847,10 @@ Give query (the same text or regex as in search) to mark the matching lines and 
   const setConfig: Tool = {
     name: "set_config",
     title: "Change a setting",
-    description: `Change one of zsearch's settings. The settings are shared with the zsearch terminal app and Mac app.
-
-- roots: folders to index; exclude: gitignore-style patterns or folders to skip; namesOnly: folders indexed by name only (lists; a comma-separated string works too)
-- includeHidden, respectGitignore, followSymlinks, oneFileSystem, cloudContent (read iCloud/CloudStorage contents, may download files), content.enabled (read the text inside files), content.ocr (read the text in images and scanned PDF pages; Mac app only): true or false
-- content.maxDocumentMB, content.maxTextMB, content.maxChars: limits on what is read
-- autoRefreshMinutes (0: off), workers (0: automatic), indexLoad (10–100, percent of the computer indexing may use)
-- editor, defaultMode ("find" or "fuzzy"), preview
-
-Settings that change what is indexed apply at the next update_index.`,
+    description: "Change a shared preference: autoRefreshMinutes, workers, indexLoad, defaultMode or preview. Index folders, exclusions, content policy and editor must be changed in the app or CLI.",
     inputSchema: obj(
       {
-        key: str("The setting, dotted (e.g. includeHidden, content.maxTextMB)", { enum: CONFIG_KEYS }),
+        key: str("The preference to change", { enum: CONFIG_KEYS }),
         // A string, not a union of types: some model providers reject unions in tool schemas.
         value: str('The new value as text: true or false, a number, a string, or for a list a JSON array (["~/Documents", "~/code"]) or comma-separated items'),
       },
@@ -911,12 +877,23 @@ Settings that change what is indexed apply at the next update_index.`,
     },
   }
 
-  return [search, readFile, status, update, cancel, getConfig, setConfig]
+  const exclude: Tool = {
+    name: "exclude_path", title: "Exclude an indexed path",
+    description: "Exclude one indexed file or folder. This narrows the shared index policy immediately and requests an index refresh to remove its stored rows.",
+    inputSchema: obj({ path: str("An indexed file or folder path") }, ["path"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async run(args) {
+      const next = host.exclude(String(args.path))
+      const indexing = host.startIndex(false)
+      return { text: `Excluded ${args.path}. Index refresh: ${indexing.status}.`, structured: { exclude: next.exclude, indexing } }
+    },
+  }
+  return [search, readFile, status, update, cancel, getConfig, setConfig, exclude]
 }
 
 /* ------------------------------------------------------------- resources -- */
 
-export const QUERY_SYNTAX = `# zsearch query syntax
+const QUERY_SYNTAX = `# zsearch query syntax
 
 ## Modes
 - **find** (default): the exact text you type, in file contents and paths. Several words are one piece of text, in that order. Smart case: case-sensitive only if the query has a capital letter. \`"Quotes"\` around the whole query are optional.
@@ -930,11 +907,22 @@ export const QUERY_SYNTAX = `# zsearch query syntax
 | \`type:\` / \`is:\` | \`type:doc\`, \`type:sheet\`, \`type:slides\`, \`type:code\`, \`type:image\`, \`type:folder\`, \`-type:pdf\` | Kind of file |
 | \`in:\` | \`in:~/Documents\`, \`in:"~/My Folder"\` | Inside a folder (relative paths start at the home folder) |
 | \`path:\` | \`path:2024\` | The path contains this text |
+| \`name:\` / glob | \`name:invoice\`, \`name:/^IMG_/i\`, \`*.pdf\`, \`IMG_????\` | File name only; unquoted globs match the complete name |
 | \`size:\` | \`size:>5mb\`, \`size:<100k\`, \`size:1mb..10mb\` | File size |
 | \`mtime:\` | \`mtime:<7d\`, \`mtime:>1y\`, \`mtime:today\`, \`mtime:2023\`, \`after:2024-01-01\`, \`before:2024-06\` | Modification time |
 | \`limit:\` | \`limit:20\` | Number of results |
+| \`sort:\` | \`sort:name\`, \`sort:-size\`, \`sort:date\`, \`sort:path\` | Sort results; a minus reverses the order |
+| \`created:\` | \`created:2024\`, \`created:<7d\` | Creation time, where the filesystem supplies it |
+| \`tag:\` | \`tag:urgent\` | Finder tags, when content.metadata is enabled locally |
+| Match controls | \`case:on\`, \`word:on\`, \`diacritics:off\` | Override smart case, match whole words, or ignore Latin accents |
+| \`near:\` / \`NEAR/n\` | \`alpha beta near:3\`, \`alpha NEAR/3 beta\` | Words in order, with at most three intervening words |
+| \`fold:\` | \`fold:on\` | Preview matching lines and their neighbors |
 
 Kinds: ${KINDS}. Aliases: ${Object.keys(KIND_ALIASES).join(", ")}.
+
+Use \`all:budget report\` for both words anywhere in a file. \`budget OR invoice\` joins alternatives; \`(budget OR invoice) type:pdf\` groups them. Regex flags such as \`/BUDGET/i\` override smart case. Branches retain the 5000-result cap and time budget; truncated responses are marked partial.
+
+Prefix a filter with \`-\` to invert it, except \`limit:\` and \`sort:\`. Aliases: \`kind:\` for \`type:\`, \`dir:\` for \`in:\`, \`modified:\`/\`changed:\` for \`mtime:\`, \`since:\` for \`after:\`. Time units: s, m/min, h, d, w, mo, y. \`size:=10mb\` allows ±10%. \`limit:\` is capped at 5000. Mode prefixes: f:/fuzzy:, find:/exact:, re:/regex:.
 
 A query made only of filters lists the matching files, newest first. An empty query lists recently opened, then recently modified files.
 `

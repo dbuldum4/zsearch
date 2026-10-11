@@ -7,7 +7,7 @@ import { StyledLine } from "./line.tsx"
 import { type Seg, truncate } from "./styled.ts"
 import type { Theme } from "./theme.ts"
 
-export interface SetupProps {
+interface SetupProps {
   config: Config
   theme: Theme
   firstRun: boolean

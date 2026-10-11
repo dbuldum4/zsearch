@@ -153,9 +153,11 @@ private struct IndexSettings: View {
                 Toggle("Read text in images and scanned PDFs", isOn: ocr)
                     .disabled(model.config?.content.enabled != true)
                     .help("Recognizes text in screenshots, photos and scans (OCR), after the other files are read.")
+                Toggle("Index photo metadata, Finder tags and PDF titles", isOn: metadata)
+                    .disabled(model.config?.content.enabled != true)
                 Toggle("Include hidden files and folders", isOn: flag(\.includeHidden) { ConfigPatch(includeHidden: $0) })
                 Toggle("Skip what .gitignore files exclude", isOn: flag(\.respectGitignore) { ConfigPatch(respectGitignore: $0) })
-                Toggle("Follow symbolic links to folders", isOn: flag(\.followSymlinks) { ConfigPatch(followSymlinks: $0) })
+                Toggle("Follow symbolic links within indexed folders", isOn: flag(\.followSymlinks) { ConfigPatch(followSymlinks: $0) })
                 Toggle("Read files in iCloud Drive and other cloud folders", isOn: flag(\.cloudContent) { ConfigPatch(cloudContent: $0) })
                     .help("Reading an online-only file downloads it.")
                 VStack(alignment: .leading, spacing: 4) {
@@ -232,6 +234,16 @@ private struct IndexSettings: View {
         Binding(
             get: { model.config?[keyPath: path] ?? false },
             set: { model.updateConfig(patch($0), reindex: true) }
+        )
+    }
+
+    private var metadata: Binding<Bool> {
+        Binding(
+            get: { model.config?.content.metadata ?? false },
+            set: { on in
+                guard let content = model.config?.content else { return }
+                model.updateConfig(ConfigPatch(content: ContentConfig(enabled: content.enabled, metadata: on)), reindex: true)
+            }
         )
     }
 
