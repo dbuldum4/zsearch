@@ -76,15 +76,21 @@ test("creation dates, tags and folded previews", async () => corpus(async (e) =>
 test("native changes are debounced and retried while an index is busy", async () => corpus(async (e, root) => {
   let calls = 0
   let resolve!: () => void
-  const notified = new Promise<void>((r) => { resolve = r })
+  let reject!: (error: Error) => void
+  const notified = new Promise<void>((r, fail) => { resolve = r; reject = fail })
   const watcher = new RootWatcher(() => { calls++; if (calls === 1) return false; resolve() }, 10)
   watcher.update(e.config)
+  // Native watcher registration can finish after update() returns on macOS.
+  // Continue creating changes until a real event arrives rather than assuming
+  // the very first synchronous write is observed. The busy retry remains real.
+  let changes = 0
+  const signal = setInterval(() => writeFileSync(join(root, `new-${++changes}.txt`), "newly created"), 50)
+  const timeout = setTimeout(() => reject(new Error(`No native watcher notification for ${root}`)), 10_000)
   try {
     writeFileSync(join(root, "new.txt"), "newly created")
-    const timeout = setTimeout(() => resolve(), 2000)
-    await notified; clearTimeout(timeout)
+    await notified
     expect(calls).toBeGreaterThanOrEqual(2)
-  } finally { watcher.close() }
+  } finally { clearInterval(signal); clearTimeout(timeout); watcher.close() }
 }))
 
 function zip(parts: { name: string; text: Uint8Array; declared?: number }[]): Uint8Array {
