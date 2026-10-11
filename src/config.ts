@@ -37,6 +37,7 @@ export interface Config {
   content: ContentConfig
   /** Refresh the index in the background when it is older than this (0 = never). */
   autoRefreshMinutes: number
+  /** Update the index as files in the roots change, while a frontend is running. */
   liveUpdates: boolean
   /** Extraction worker threads (0 = automatic). */
   workers: number
@@ -75,6 +76,14 @@ export function defaultConfig(): Config {
     defaultMode: "find",
     preview: true,
   }
+}
+
+/**
+ * The index changes only when the user asks: no schedule, no file watching, and settings
+ * changes wait for the next update instead of starting one.
+ */
+export function manualIndexing(config: Config): boolean {
+  return config.autoRefreshMinutes === 0 && !config.liveUpdates
 }
 
 export function home(): string {

@@ -133,6 +133,8 @@ public struct Config: Codable, Hashable, Sendable {
     public var followSymlinks: Bool
     /// Read contents inside cloud-synced folders (may download online-only files).
     public var cloudContent: Bool
+    /// Update the index as files change while the app runs. Nil from engines that do not send it.
+    public var liveUpdates: Bool?
 }
 
 public struct Ready: Decodable, Hashable, Sendable {
@@ -181,6 +183,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var followSymlinks: Bool?
     public var cloudContent: Bool?
     public var autoRefreshMinutes: Double?
+    public var liveUpdates: Bool?
 
     public init(
         roots: [String]? = nil,
@@ -191,7 +194,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         respectGitignore: Bool? = nil,
         followSymlinks: Bool? = nil,
         cloudContent: Bool? = nil,
-        autoRefreshMinutes: Double? = nil
+        autoRefreshMinutes: Double? = nil,
+        liveUpdates: Bool? = nil
     ) {
         self.roots = roots
         self.includeHidden = includeHidden
@@ -202,6 +206,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.followSymlinks = followSymlinks
         self.cloudContent = cloudContent
         self.autoRefreshMinutes = autoRefreshMinutes
+        self.liveUpdates = liveUpdates
     }
 
     /// Every setting the app manages, taken from `config`.
@@ -215,7 +220,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             respectGitignore: config.respectGitignore,
             followSymlinks: config.followSymlinks,
             cloudContent: config.cloudContent,
-            autoRefreshMinutes: config.autoRefreshMinutes
+            autoRefreshMinutes: config.autoRefreshMinutes,
+            liveUpdates: config.liveUpdates
         )
     }
 }

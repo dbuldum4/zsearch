@@ -173,11 +173,13 @@ private struct IndexSettings: View {
                 }
                 Picker("Update the index", selection: refresh) {
                     Text("Only when I ask").tag(0.0)
+                    Text("When files change").tag(Self.onChangeOnly)
                     Text("Every 15 minutes").tag(15.0)
                     Text("Every hour").tag(60.0)
                     Text("Every 4 hours").tag(240.0)
                     Text("Once a day").tag(1440.0)
                 }
+                .help("Except with \u{201C}Only when I ask\u{201D}, the index also updates as files change while zsearch is open.")
             } header: {
                 Text("What to index")
             }
@@ -257,10 +259,19 @@ private struct IndexSettings: View {
         )
     }
 
+    /// The picker's tag for watching files with no schedule (`autoRefreshMinutes` 0, live updates on).
+    private static let onChangeOnly = -1.0
+
+    /// "Only when I ask" turns off both the schedule and file watching; every other choice watches.
     private var refresh: Binding<Double> {
         Binding(
-            get: { model.config?.autoRefreshMinutes ?? 60 },
-            set: { model.updateConfig(ConfigPatch(autoRefreshMinutes: $0), reindex: false) }
+            get: {
+                let minutes = model.config?.autoRefreshMinutes ?? 60
+                return minutes == 0 && model.config?.liveUpdates ?? true ? Self.onChangeOnly : minutes
+            },
+            set: {
+                model.updateConfig(ConfigPatch(autoRefreshMinutes: max($0, 0), liveUpdates: $0 != 0), reindex: false)
+            }
         )
     }
 
