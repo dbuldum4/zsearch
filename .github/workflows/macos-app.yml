@@ -87,7 +87,10 @@ jobs:
         with:
           name: zsearch-macos-${{ github.event.pull_request.head.sha || github.sha }}
           path: preview
-      # This privileged job never checks out or executes pull-request code.
+      # This job never checks out the repository or runs its scripts. For pull requests,
+      # GitHub takes this workflow file from the PR's merge ref, so a same-repository PR
+      # can change this job: PR previews only prove who could push, and the installer
+      # accepts main builds only from the refs/heads/main identity.
       - name: Prepare release manifest
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -156,6 +159,14 @@ jobs:
             printf 'Authenticated macOS preview: https://github.com/%s/releases/tag/%s\n\nInstall from a trusted checkout with GitHub CLI installed:\n\n    macos/scripts/install-preview.sh %s --build %s-%s\n' \
               "$GITHUB_REPOSITORY" "$versioned" "$PR_NUMBER" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > comment.md
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          else
+            # Keep the newest 10 versioned main builds.
+            gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' |
+              awk -F- '/^preview-main-[0-9]+-[0-9]+$/ { print $3, $4, $0 }' | sort -k1,1n -k2,2n |
+              head -n -10 | cut -d' ' -f3 | while read -r old; do
+                gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes ||
+                  echo "::warning::could not delete $old"
+              done
           fi
 
   install-smoke:
@@ -180,9 +191,8 @@ jobs:
           codesign --verify --deep --strict "$ZSEARCH_APP_DIR/zsearch.app"
           attrs=$(xattr -r "$ZSEARCH_APP_DIR/zsearch.app")
           if [[ "$attrs" == *com.apple.quarantine* ]]; then echo 'Quarantine unexpectedly present' >&2; exit 1; fi
-          # Reinstalling the identical authenticated build is safe and idempotent.
-          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" \
-            --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # The latest alias resolves to this same build, so reinstalling is idempotent.
+          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}"
       - name: Reject modified metadata and an unrelated publisher with the real verifier
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -205,11 +215,18 @@ jobs:
   cleanup:
     permissions:
       contents: write
-    name: Delete the preview release
+    name: Delete the preview releases
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - run: gh release delete "preview-pr-$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+      # Deletes the alias and every versioned build of the closed PR, with their tags.
+      - run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' |
+            { grep -E "^preview-pr-$PR_NUMBER(-[0-9]+-[0-9]+)?\$" || true; } | while read -r tag; do
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes ||
+                echo "::warning::could not delete $tag"
+            done
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

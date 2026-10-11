@@ -24,7 +24,9 @@ def value(flag): return args[args.index(flag)+1]
 if name=='uname': print('Darwin')
 elif name=='curl':
     target=pathlib.Path(value('-o'))
-    source=remote/args[-1].rsplit('/',1)[-1]
+    tag,file=args[-1].rsplit('/',2)[-2:]
+    # A release folder (remote/<tag>/) overrides the shared fixture files.
+    source=remote/tag/file if (remote/tag/file).exists() else remote/file
     if not source.exists(): sys.exit(22)
     shutil.copyfile(source,target)
 elif name=='gh':
@@ -62,7 +64,9 @@ elif name=='xattr':
         if args[0]=='-dr': sys.exit(1)
         print('com.apple.quarantine')
     elif failure=='attributes': sys.exit(1)
-elif name=='pgrep': sys.exit(0 if failure=='running' else 1)
+elif name=='pgrep': sys.exit(0 if failure in ['running','quit-denied'] else 1)
+elif name=='osascript' and failure=='quit-denied':
+    sys.stderr.write('execution error: Not authorized to send Apple events (-1743)\\n'); sys.exit(1)
 elif name in ['osascript','sleep','open']: pass
 elif name=='mv':
     source,dest=args[-2:]
@@ -71,6 +75,11 @@ elif name=='mv':
         if failure=='interrupt': os.kill(os.getppid(),signal.SIGTERM)
         sys.exit(1)
     if failure=='state' and pathlib.Path(source).name=='state': sys.exit(1)
+    if failure=='state-interrupt' and pathlib.Path(source).name=='state':
+        # The rename completes, then the signal arrives before the install commits.
+        subprocess.run([os.environ['REAL_MV']]+args,check=True)
+        os.kill(os.getppid(),signal.SIGTERM)
+        sys.exit(0)
     if failure=='restore' and pathlib.Path(source).name=='previous.app': sys.exit(1)
     os.execv(os.environ['REAL_MV'],['mv']+args)
 else: sys.exit(1)
@@ -129,13 +138,48 @@ describe("authenticated preview installer", () => {
     expect(readdirSync(f.dest).some((n) => n.startsWith(".zsearch-stage.") || n === ".zsearch-install-lock")).toBe(false)
   }))
 
-  for (const failure of ["manifest-proof", "dmg-proof", "copy", "codesign", "staged-signature", "quarantine", "attributes", "running", "swap", "state", "interrupt"]) {
+  for (const failure of ["manifest-proof", "dmg-proof", "copy", "codesign", "staged-signature", "quarantine", "attributes", "running", "quit-denied", "swap", "state", "interrupt", "state-interrupt"]) {
     test(`${failure} leaves the previous app intact`, () => fixture((f) => {
       expect(f.install({ MOCK_FAIL: failure }).status).not.toBe(0)
       expect(f.version()).toBe("old")
       expect(existsSync(join(f.dest, ".zsearch-preview-state/main"))).toBe(false)
     }))
   }
+
+  test("the latest alias resolves to its versioned build before anything is verified", () => fixture((f) => {
+    // A newer build replaced the alias's files while this install was running.
+    mkdirSync(join(f.remote, "preview-main"))
+    writeFileSync(join(f.remote, "preview-main/zsearch.dmg"), "a newer DMG")
+    writeFileSync(join(f.remote, "preview-main/provenance.jsonl"), "a newer bundle")
+    const result = f.install()
+    expect(result.stderr).toBe("")
+    expect(result.status).toBe(0)
+    const urls = f.calls().filter((c) => c.command === "curl").map((c) => c.args.at(-1)!)
+    expect(urls[0]).toEndWith("/releases/download/preview-main/preview.manifest")
+    expect(urls.slice(1).map((u) => u.split("/").slice(-2).join("/"))).toEqual(["preview-main-100-1/preview.manifest", "preview-main-100-1/provenance.jsonl", "preview-main-100-1/zsearch.dmg"])
+  }))
+
+  test("an alias without a build identifier is rejected", () => fixture((f) => {
+    mkdirSync(join(f.remote, "preview-main"))
+    writeFileSync(join(f.remote, "preview-main/preview.manifest"), "format=1\nrun_id=$(touch injected)\nrun_attempt=1\n")
+    expect(f.install().stderr).toContain("could not resolve the latest main preview")
+    expect(f.calls().filter((c) => c.command === "curl")).toHaveLength(1)
+  }))
+
+  test("a denied quit request explains what to do", () => fixture((f) => {
+    expect(f.install({ MOCK_FAIL: "quit-denied" }).stderr).toContain("quit it and run the installer again")
+  }))
+
+  test("an interrupt after the state write restores the previous build history", () => fixture((f) => {
+    expect(f.install().status).toBe(0)
+    writeFileSync(join(f.remote, "zsearch.app/version"), "newer")
+    f.manifest({ run_number: "11" })
+    expect(f.install({ MOCK_FAIL: "state-interrupt" }).status).toBe(143)
+    expect(f.version()).toBe("new")
+    expect(readFileSync(join(f.dest, ".zsearch-preview-state/main"), "utf8")).toBe(`10 1 ${digest}\n`)
+    f.manifest()
+    expect(f.install().status).toBe(0)
+  }))
 
   test("tampered DMG fails before mounting", () => fixture((f) => {
     writeFileSync(join(f.remote, "zsearch.dmg"), "tampered DMG")

@@ -74,23 +74,35 @@ test("creation dates, tags and folded previews", async () => corpus(async (e) =>
 }))
 
 test("native changes are debounced and retried while an index is busy", async () => corpus(async (e, root) => {
-  let calls = 0
-  let resolve!: () => void
-  let reject!: (error: Error) => void
-  const notified = new Promise<void>((r, fail) => { resolve = r; reject = fail })
-  const watcher = new RootWatcher(() => { calls++; if (calls === 1) return false; resolve() }, 10)
-  watcher.update(e.config)
-  // Native watcher registration can finish after update() returns on macOS.
-  // Continue creating changes until a real event arrives rather than assuming
-  // the very first synchronous write is observed. The busy retry remains real.
+  // Native watcher registration can finish after update() returns on macOS, so keep
+  // writing (slower than the debounce) until the first event arrives. Then stop and let
+  // late events settle: after the busy call, the only thing that can call back is the retry.
+  let phase: "warmup" | "settle" | "busy" | "retry" = "warmup"
+  let warmed!: () => void, retried!: () => void
+  const ready = new Promise<void>((r) => { warmed = r }), done = new Promise<void>((r) => { retried = r })
+  const watcher = new RootWatcher(() => {
+    if (phase === "warmup") { phase = "settle"; warmed() }
+    else if (phase === "busy") { phase = "retry"; return false }
+    else if (phase === "retry") retried()
+  }, 100)
+  const within = (promise: Promise<void>, ms: number, message: () => string) => {
+    let timer!: ReturnType<typeof setTimeout>
+    const expired = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(message())), ms) })
+    return Promise.race([promise, expired]).finally(() => clearTimeout(timer))
+  }
   let changes = 0
-  const signal = setInterval(() => writeFileSync(join(root, `new-${++changes}.txt`), "newly created"), 50)
-  const timeout = setTimeout(() => reject(new Error(`No native watcher notification for ${root}`)), 10_000)
+  const write = () => writeFileSync(join(root, `new-${++changes}.txt`), "newly created")
+  watcher.update(e.config)
+  const signal = setInterval(write, 250)
   try {
-    writeFileSync(join(root, "new.txt"), "newly created")
-    await notified
-    expect(calls).toBeGreaterThanOrEqual(2)
-  } finally { clearInterval(signal); clearTimeout(timeout); watcher.close() }
+    write()
+    await within(ready, 10_000, () => `No native watcher notification for ${root}`)
+    clearInterval(signal)
+    await Bun.sleep(500)
+    phase = "busy"
+    write()
+    await within(done, 3_000, () => phase === "busy" ? "No notification for the busy change" : "The busy change was not retried")
+  } finally { clearInterval(signal); watcher.close() }
 }))
 
 function zip(parts: { name: string; text: Uint8Array; declared?: number }[]): Uint8Array {
