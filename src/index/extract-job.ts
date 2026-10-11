@@ -90,7 +90,8 @@ function lineFeeds(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 /** Read a file, extract its text, compress it and list its (new) vocabulary. */
 export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise<ExtractReply> {
   try {
-    const policy = opts.policy ? pathPolicy(job.path, opts.policy) : null
+    // Text extraction rechecks policy itself; only metadata needs an earlier read.
+    const policy = opts.metadata && opts.policy ? pathPolicy(job.path, opts.policy) : null
     if (opts.contentEnabled === false || (policy && (!policy.allowed || !policy.content))) return { id: job.id, status: "skip", reason: "unsupported" }
     const metadata = opts.metadata ? await fileMetadata(policy?.real ?? job.path, job.ext) : {}
     const extra = metadataText(metadata)

@@ -1,8 +1,8 @@
 # Sweep implementation and verification
 
-Implemented on top of PR #10's `599137b` (which includes `main` at `a140a11`). No release or deployment was performed.
+Implemented on top of PR #10's `599137b` (which includes `main` at `a140a11`). PR #9 and #10 are merged into main; PR #11's CI produces an ad-hoc-signed preview.
 
-The ranked findings have code fixes. Linux behavior is covered by regression tests. Native macOS UI, Vision OCR, TCC permissions, Developer ID signing, and notarization have source changes but could not be exercised on this Linux host.
+The ranked findings have code fixes. Linux behavior is covered by regression tests. Native macOS CI compiles the app, passes real-engine Swift integration and image/PDF Vision OCR fixtures, and builds and verifies the signed DMG. Interactive UI, TCC permissions, Developer ID signing and notarization still require manual Mac verification.
 
 ## Ranked findings
 
@@ -63,12 +63,14 @@ Full iWork IWA parsing, path-specific event refreshes and a notarized release ar
 ## Verification
 
 - Bun 1.4.2: TypeScript checks with unused-local/parameter checks and the Linux binary build pass.
-- Complete Bun suite with pyte and both source/binary terminal tests: 215 passed, 2 skipped, 0 failed across 15 files (60.88 seconds). The two skips require the real Mac OCR helper.
+- Complete Bun suite with pyte and both source/binary terminal tests: 217 passed, 2 skipped, 0 failed across 15 files (79.53 seconds). The two skips require the real Mac OCR helper.
 - Swift 6.2 on Linux: 29 tests pass, including the real bundled-engine protocol integration. Linux compiles the UI/OCR stubs; this does not validate AppKit, SwiftUI, PDFKit or Vision code.
+- Native macOS CI: full Bun tests pass, 29 Swift tests pass with the real engine, the app/DMG build and signature verification pass, and all seven OCR tests pass, including a real image and scanned PDF.
 - Alpine Bun 1.4.2: kernel-lock acquisition, second-acquisition rejection, holder detection and release pass.
-- Workflow YAML, shell syntax and `git diff --check` pass. Real GitHub publication and Apple signing services were not invoked.
+- Workflow YAML, shell syntax and `git diff --check` pass. CI preview publication passes; Apple's Developer ID and notarization services were not invoked.
 - Snippet microbenchmark: seven runs per sample, 50,000 matching lines. A 2,150,000-character ASCII sample had a 14.1 ms median; the 2,250,000-character curly-quote sample had an 11.6 ms median on this host. This measures snippet matching, not end-to-end search or million-file latency.
 - The mandated independent security review was completed once. Its additional editor lookup, repointed-alias, cached paging, nested-root ignore, counts/suggestions/metadata privacy, read-regex watchdog, XML whitespace/spreadsheet, pdf.js cancellation and musl compatibility findings were addressed with focused checks.
+- CI follow-up fixes cover explicitly selected macOS root aliases, duplicate unreadable subtree reports, Bash 3.2 signing arrays and short watchdog deadlines. Policy compilation and directory ignore parsing are shared within each synchronous search stage, then discarded between requests, after asynchronous yields and before returning results. Fresh ignore-file changes are tested in Find, Fuzzy and cached MCP pages. Text extraction avoids a redundant policy check when metadata is disabled.
 
 Security invariants are enforced in shared policy code: a remote assistant cannot select broader index inputs or an editor command; links cannot escape root/target exclusions; current content restrictions apply to stored text as well as disk reads; extraction work has bounded input/output and archive expansion plus a terminable worker deadline. These controls do not provide a separate OS memory quota per worker. Native permission prompts and signed-release behavior remain platform verification limits.
 

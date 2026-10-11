@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
-import { crawlOptionsFor, pathPolicy } from "../index/policy.ts"
+import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import type { Kind } from "../kinds.ts"
 import { escapeRegExp, foldTerm, ftsQuote, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
@@ -244,10 +244,10 @@ export class SearchEngine {
   }
 
   private done(res: SearchResponse, t0: number): SearchResponse {
-    const policyOpts = crawlOptionsFor(this.config)
+    const policyOpts = policyFor(crawlOptionsFor(this.config))
     const returned = res.hits.length
     res.hits = res.hits.filter((hit) => {
-      const policy = pathPolicy(hit.path, policyOpts)
+      const policy = policyOpts(hit.path)
       if (!policy.allowed) return false
       const i = this.catalog.indexOf(hit.id)
       const contentAllowed = i !== undefined && this.contentAuthorized(i, policyOpts)
@@ -264,15 +264,15 @@ export class SearchEngine {
     return res
   }
 
-  private contentAuthorized(i: number, opts = crawlOptionsFor(this.config)): boolean {
+  private contentAuthorized(i: number, check = policyFor(crawlOptionsFor(this.config))): boolean {
     if (!this.config.content.enabled) return false
-    const policy = pathPolicy(this.catalog.paths[i]!, opts)
+    const policy = check(this.catalog.paths[i]!)
     return policy.allowed && policy.content && (!this.catalog.sourcePaths.has(this.catalog.ids[i]!) || this.catalog.sourcePaths.get(this.catalog.ids[i]!) === policy.real)
   }
 
   private visibleTerm(term: string): boolean {
     if (!this.config.content.enabled) return false
-    const opts = crawlOptionsFor(this.config)
+    const opts = policyFor(crawlOptionsFor(this.config))
     try {
       for (const [id] of this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : ${ftsQuote(term)}`) as number[][]) {
         const i = this.catalog.indexOf(id)
@@ -450,10 +450,11 @@ export class SearchEngine {
    */
   private rankMatches(ids: number[], groups: TermGroup[], filters: Filters, limit: number): Ranked[] {
     const cat = this.catalog
+    const check = policyFor(crawlOptionsFor(this.config))
     const idx: number[] = []
     for (const id of ids) {
       const i = cat.indexOf(id)
-      if (i !== undefined && cat.passes(i, filters) && this.contentAuthorized(i)) idx.push(i)
+      if (i !== undefined && cat.passes(i, filters) && this.contentAuthorized(i, check)) idx.push(i)
     }
     if (!idx.length || !groups.length) return []
     const res = groups.map((g) => {
@@ -613,7 +614,7 @@ export class SearchEngine {
   }
 
   private async runGrep(q: ParsedQuery, limit: number, res: SearchResponse, isRegex: boolean, opts: SearchOptions) {
-    const policyOpts = crawlOptionsFor(this.config)
+    let policyOpts = policyFor(crawlOptionsFor(this.config))
     const revision = this.revision
     const configAtStart = this.config
     const { re, req } = this.buildRegex(q, isRegex)
@@ -623,7 +624,7 @@ export class SearchEngine {
     const allParts = q.all && q.near === undefined ? [...q.words, ...q.phrases].map((w) => new RegExp(q.diacritics === false ? diacriticPattern(escapeRegExp(w)) : escapeRegExp(w), re.flags.replace("g", ""))) : []
     const nameSource = allParts.length ? allParts.map((p) => `(?=[\\s\\S]*${p.source})`).join("") + "[\\s\\S]*" : re.source
     const nameRe = new RegExp(nameSource, re.flags.replace("g", "").replace("m", ""))
-    const nameHits = this.catalog.regex(nameRe, q.filters, q.filters.sort ? this.catalog.size : Math.max(limit * 5, 100)).filter((m) => pathPolicy(this.catalog.paths[m.idx]!, policyOpts).allowed)
+    const nameHits = this.catalog.regex(nameRe, q.filters, q.filters.sort ? this.catalog.size : Math.max(limit * 5, 100)).filter((m) => policyOpts(this.catalog.paths[m.idx]!).allowed)
     if (q.filters.sort) nameHits.sort((a, b) => this.compareIds(this.catalog.ids[a.idx]!, this.catalog.ids[b.idx]!, q.filters.sort!))
     if (nameHits.length > limit) nameHits.length = limit
     const best = new TopK<Ranked>(Math.max(limit * 5, 100), (h) => h.count ?? 0, q.filters.sort ? (a, b) => -this.compareIds(a.id, b.id, q.filters.sort!) : undefined)
@@ -660,7 +661,7 @@ export class SearchEngine {
       let lastYield = Date.now()
       // Texts are read in batches: one query per 64 files instead of one per file.
       scan: for (let start = 0; start < idx.length; start += FETCH_BATCH) {
-        const batch = idx.slice(start, start + FETCH_BATCH).map((i) => cat.ids[i]!)
+        const batch = idx.slice(start, start + FETCH_BATCH).filter((i) => this.contentAuthorized(i, policyOpts)).map((i) => cat.ids[i]!)
         const texts = this.batchTexts(batch)
         for (const id of batch) {
           const text = texts.get(id)
@@ -674,6 +675,8 @@ export class SearchEngine {
         if (now - lastYield > 40) {
           // Let newer requests in; abandon this scan if one superseded it.
           await new Promise((r) => setImmediate(r))
+          // Ignore files and aliases may have changed while another request ran.
+          policyOpts = policyFor(crawlOptionsFor(this.config))
           lastYield = Date.now()
           if (opts.cancelled?.() || revision !== this.revision || this.config !== configAtStart) {
             res.partial = true
@@ -757,11 +760,11 @@ export class SearchEngine {
         return { id, e, score: e.score * (1 + boost) }
       })
       .sort((a, b) => q.filters.sort ? this.compareIds(a.id, b.id, q.filters.sort) : b.score - a.score)
-    const policyOpts = crawlOptionsFor(this.config)
+    const policyOpts = policyFor(crawlOptionsFor(this.config))
     const top = ranked.filter(({ id, e }) => {
       const i = this.catalog.indexOf(id)
       if (i === undefined) return false
-      const policy = pathPolicy(this.catalog.paths[i]!, policyOpts)
+      const policy = policyOpts(this.catalog.paths[i]!)
       if (!policy.allowed) return false
       if (usesMetadata(q.filters) && (!this.config.content.metadata || !this.contentAuthorized(i, policyOpts))) return false
       if (!this.contentAuthorized(i, policyOpts)) { e.sources.delete("content"); e.lines = undefined; e.count = 0 }

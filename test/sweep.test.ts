@@ -122,6 +122,19 @@ describe("sweep regressions", () => {
     expect((await e.search("PRIVATEZEBRA")).hits).toEqual([])
   }, { "private.txt": "PRIVATEZEBRA" }))
 
+  test("search stages never retain ignore rules between requests", async () => fixture(async (dir, _c, e) => {
+    for (const mode of ["find", "fuzzy"] as const) expect((await e.search("PRIVATEZEBRA", mode)).hits).toHaveLength(2)
+    const ignoreFile = join(dir, ".zsearchignore")
+    writeFileSync(ignoreFile, "*.txt\n")
+    for (const mode of ["find", "fuzzy"] as const) {
+      const result = await e.search("PRIVATEZEBRA", mode)
+      expect(result.hits).toEqual([])
+      expect(result.total).toBe(0)
+    }
+    rmSync(ignoreFile)
+    for (const mode of ["find", "fuzzy"] as const) expect((await e.search("PRIVATEZEBRA", mode)).hits).toHaveLength(2)
+  }, { "a.txt": "PRIVATEZEBRA", "b.txt": "PRIVATEZEBRA" }))
+
   test("content commits advance sequence and unrelated cached text survives", async () => fixture(async (dir, c, e) => {
     const before = Number(getMeta(e.db, "change_seq"))
     const ids = e.db.query("SELECT id FROM files ORDER BY path").values() as number[][]
