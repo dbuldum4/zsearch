@@ -143,6 +143,9 @@ struct PanelShortcuts: View {
             Button("Copy Path") { model.copySelectedPath() }.keyboardShortcut("c", modifiers: [.command, .shift])
         }
         Group {
+            Button("Find") { model.mode = .find }.keyboardShortcut("1")
+            Button("Fuzzy") { model.mode = .fuzzy }.keyboardShortcut("2")
+            Button("Meaning") { model.mode = .semantic }.keyboardShortcut("3")
             Button("Next Result") { model.moveSelection(by: 1) }.keyboardShortcut("j")
             Button("Previous Result") { model.moveSelection(by: -1) }.keyboardShortcut("k")
             Button("Open Main Window") { model.showMainWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
