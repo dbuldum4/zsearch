@@ -124,8 +124,14 @@ export class Embedder {
       let pos = 4
       for (const p of parts) { out.set(p, pos); pos += p.length }
       const stdin = this.proc.stdin as import("bun").FileSink
-      stdin.write(out)
-      await stdin.flush()
+      try {
+        stdin.write(out)
+        await stdin.flush()
+      } catch {
+        // The helper quit (a model it can't load, say): say what it said rather than "broken pipe".
+        await Promise.race([this.exited, Bun.sleep(200)])
+        throw new Error(this.why())
+      }
       const msg = await this.readMessage()
       const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength)
       if (msg[0] !== 0) throw new Error(decoder.decode(msg.subarray(5, 5 + view.getUint32(1, true))))

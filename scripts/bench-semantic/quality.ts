@@ -12,7 +12,7 @@
  * 8-bit agrees with 16-bit on less than --min-overlap of the top 10, or if packing passages
  * into one model call moves any vector below DigUp's 0.999 cosine.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { chunkText, documentPrompt, queryPrompt, titleOf } from "../../src/semantic/chunk.ts"
@@ -25,7 +25,7 @@ const MODEL = args.get("model")
 const TOOL = args.get("tool") ?? embedToolPath()
 const DISTRACTORS = Number(args.get("distractors") ?? 2000)
 const MIN_OVERLAP = Number(args.get("min-overlap") ?? 0.99)
-if (!MODEL || !TOOL) {
+if (!MODEL || !existsSync(MODEL) || !TOOL) {
   console.error("usage: bun scripts/bench-semantic/quality.ts --model=MODEL.gguf [--tool=dist/zsearch-embed] [--distractors=2000]")
   process.exit(2)
 }

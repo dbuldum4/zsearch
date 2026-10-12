@@ -48,7 +48,9 @@ jobs:
           path: .models
           key: embeddinggemma-${{ hashFiles('src/semantic/model.ts') }}
       - name: Download the model (text part)
-        run: bun src/cli.ts semantic install --no-images
+        run: |
+          bun src/main.ts semantic install --no-images
+          test -s "$ZSEARCH_MODELS/embeddinggemma-2-Q8_0.gguf"
         env:
           ZSEARCH_HOME: ${{ runner.temp }}/zsearch-home
       - name: Results with 8-bit and 16-bit vectors
