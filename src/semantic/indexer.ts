@@ -160,8 +160,8 @@ interface Pending {
   total: number
   to: number
   rows: { n: number; hash: Uint8Array; start: number; end: number }[]
-  /** Hashes still waiting for a vector. */
-  waiting: Set<string>
+  /** Hashes still waiting for a vector (embedded in this group or one before it). */
+  waiting: Map<string, Uint8Array>
   note?: string
 }
 
@@ -399,7 +399,7 @@ export class SemanticIndexer {
           continue
         }
         const title = titleOf(file.name)
-        const p: Pending = { file, total: chunks.length, to, rows: [], waiting: new Set() }
+        const p: Pending = { file, total: chunks.length, to, rows: [], waiting: new Map() }
         for (let n = from; n < to; n++) {
           const c = chunks[n]!
           if (!hasWords(c.text)) continue
@@ -407,10 +407,10 @@ export class SemanticIndexer {
           const hash = hashText(prompt)
           const key = hex(hash)
           p.rows.push({ n, hash, start: c.start, end: c.end })
-          if (inFlight.has(key)) { p.waiting.add(key); this.progress.reused++; continue }
+          if (inFlight.has(key)) { p.waiting.set(key, hash); this.progress.reused++; continue }
           if (hasVector.get(hash)) { this.progress.reused++; continue }
           inFlight.add(key)
-          p.waiting.add(key)
+          p.waiting.set(key, hash)
           needs.push({ prompt, hash })
           chars += prompt.length
         }
@@ -441,8 +441,9 @@ export class SemanticIndexer {
           })
         }
         waitingFiles.push(...pending)
-        for (const p of waitingFiles) for (const key of done) p.waiting.delete(key)
-        // A file waiting on a passage another group embeds is stored once that one is in.
+        // A file waiting on a passage another group embeds (the one before, while this one was
+        // read) is stored once that one is in.
+        for (const p of waitingFiles) for (const [key, hash] of p.waiting) if (done.has(key) || hasVector.get(hash)) p.waiting.delete(key)
         for (let i = 0; i < waitingFiles.length;) {
           const p = waitingFiles[i]!
           if (p.waiting.size) { i++; continue }
@@ -458,6 +459,8 @@ export class SemanticIndexer {
       this.opts.onCommit?.()
       group = following
     }
+    // Every passage asked for is in by now; a file still waiting would be finished by the next run.
+    if (waitingFiles.length) throw new Error(`${waitingFiles.length} files were left waiting for their passages`)
     return true
   }
 
@@ -505,7 +508,7 @@ export class SemanticIndexer {
             const hash = hashes[k]
             const note = !hash ? "unreadable" : errors.get(hex(hash))
             const rows = hash && !note ? [{ n: 0, hash, start: -1, end: -1 }] : []
-            this.storeFile(store, { file: f, total: 1, to: 1, rows, waiting: new Set(), note })
+            this.storeFile(store, { file: f, total: 1, to: 1, rows, waiting: new Map(), note })
             stats.files.add(f.id)
           })
         })()

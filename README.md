@@ -109,6 +109,17 @@ Reading files for meaning is the slow part, so zsearch does much less of it than
 - Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
 - Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
 
+On a 4-core Linux CPU with a stand-in model the size of EmbeddingGemma (random weights, so the timings count but the results don't), 189 text files with 10 copies among them:
+
+| | DigUp's way | zsearch |
+| --- | --- | --- |
+| First index | 602 passages, 190k tokens, 125.5 s | 562 passages embedded and 67 reused, 153k tokens, 96.4 s |
+| After editing 5 files | 10 passages, 1.9 s | 6 embedded, 4 reused, 1.6 s |
+| After `zsearch index --rebuild` | everything again, about 125 s | nothing embedded, 0.1 s |
+
+The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together made no difference on the CPU, and the Metal numbers on a Mac are still to be measured. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
+
+
 It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), 8-bit with a scale each.
 
 ## Query syntax
