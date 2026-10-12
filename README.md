@@ -394,6 +394,7 @@ bun run bench                   # index and search benchmark on a generated corp
 bun run bench --corpus=real     # the same, plus real projects (MDN docs, Kubernetes) fetched once into ~/.cache
 scripts/build-embed.sh          # dist/zsearch-embed, the embedding helper (llama.cpp; needs CMake and a C++ compiler)
 bun scripts/bench-semantic/bench.ts --model=…gguf   # reading for meaning, against the way DigUp does it
+bun scripts/bench-semantic/quality.ts --model=…gguf # what 8-bit vectors cost in results, against 16-bit
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt, Pillow)
 ```
 
