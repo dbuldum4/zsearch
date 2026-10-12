@@ -1,5 +1,6 @@
 import { type ExtractOptions, extractRaw, textOf } from "./extract/index.ts"
-import { compressBytes, compressText } from "./db.ts"
+import { compressBytes, encodeText, textHash } from "./db.ts"
+import type { OcrMemo } from "./extract/ocr.ts"
 import { byteTerms } from "./byte-terms.ts"
 import { indexTerms } from "../util/text.ts"
 import type { Kind } from "../kinds.ts"
@@ -20,6 +21,8 @@ export interface ExtractJob {
   size: number
   ext: string
   kind: Kind
+  /** What OCR read in this file before, if it was read (see `ocr_cache`). */
+  ocr?: string
 }
 
 export type ExtractReply =
@@ -34,6 +37,10 @@ export type ExtractReply =
        */
       body: Uint8Array
       compressed: Uint8Array
+      /** Identifies the text (see `textHash`): files with the same text share it. */
+      hash: Uint8Array
+      /** What OCR read, compressed, when it read the whole file now: kept for later runs. */
+      ocr?: Uint8Array
       terms: string[]
       truncated: boolean
       metadata?: Record<string, string>
@@ -63,6 +70,13 @@ function newTerms(terms: Iterable<string>, run: string): string[] {
     reported.add(t)
     out.push(t)
   }
+  return out
+}
+
+/** The buffers of an extracted file's reply, which go to another thread without a copy. */
+export function replyBuffers(r: { body: Uint8Array; compressed: Uint8Array; hash: Uint8Array; ocr?: Uint8Array }): ArrayBuffer[] {
+  const out = [r.body.buffer as ArrayBuffer, r.compressed.buffer as ArrayBuffer, r.hash.buffer as ArrayBuffer]
+  if (r.ocr) out.push(r.ocr.buffer as ArrayBuffer)
   return out
 }
 
@@ -96,7 +110,8 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
     if (opts.contentEnabled === false || (policy && (!policy.allowed || !policy.content))) return { id: job.id, status: "skip", reason: "unsupported" }
     const metadata = opts.metadata ? await fileMetadata(policy?.real ?? job.path, job.ext) : {}
     const extra = metadataText(metadata)
-    let raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts)
+    const memo: OcrMemo = { cached: job.ocr }
+    let raw = await extractRaw(job.path, job.size, job.ext, job.kind, opts, memo)
     if (extra) {
       const text = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
       raw = { status: "ok", text: `${extra}\n\n${text.status === "ok" ? text.text : ""}`.slice(0, opts.maxChars), truncated: text.status === "ok" && (text.truncated || text.text.length + extra.length > opts.maxChars) }
@@ -108,7 +123,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
         if (!a.body.length && blank(raw.bytes)) return { id: job.id, status: "skip", reason: "empty" }
         const text = lineFeeds(raw.bytes)
         const compressed = compressBytes(text)
-        return { id: job.id, status: "ok", chars: text.length - a.wide, body: a.body, compressed, terms: a.report(), truncated: false }
+        return { id: job.id, status: "ok", chars: text.length - a.wide, body: a.body, compressed, hash: textHash(text), terms: a.report(), truncated: false }
       }
     }
     let r = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
@@ -120,12 +135,16 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       r = { ...r, text }
     }
     const { body, terms } = indexTerms(r.text)
+    const bytes = encodeText(r.text)
     return {
       id: job.id,
       status: "ok",
       chars: r.text.length,
       body: encoder.encode(body),
-      compressed: compressText(r.text),
+      compressed: compressBytes(bytes),
+      hash: textHash(bytes),
+      // Text with a key in it is not kept for later, even though the key is cut out of what is stored.
+      ...(memo.fresh !== undefined && !holdsPrivateKey(memo.fresh) ? { ocr: compressBytes(encodeText(memo.fresh)) } : {}),
       terms: newTerms(terms, job.run),
       truncated: r.truncated,
       metadata,

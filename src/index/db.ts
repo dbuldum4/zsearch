@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-const SCHEMA_VERSION = 9
+const SCHEMA_VERSION = 10
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -22,6 +22,48 @@ export const ContentState = {
  */
 const REMOVED_TABLE = "CREATE TABLE IF NOT EXISTS removed (n INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL)"
 export const REMOVED_KEPT = 100_000
+
+/**
+ * What OCR read in images and scanned PDF pages, by file identity: OCR takes a fraction of a
+ * second per image or page, and a rebuilt index reads it from here instead. Kept across schema
+ * changes; rows whose file is no longer indexed go at the end of each run (see `pruneOcrCache`).
+ */
+const OCR_CACHE_TABLE = `CREATE TABLE IF NOT EXISTS ocr_cache (
+  id INTEGER PRIMARY KEY, dev INTEGER NOT NULL, ino INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+  version INTEGER NOT NULL, data BLOB NOT NULL
+)`
+const OCR_CACHE_KEY = "CREATE UNIQUE INDEX IF NOT EXISTS ocr_cache_key ON ocr_cache(dev, ino, size, mtime)"
+
+/**
+ * Stored texts are kept once however many files hold them (copies are common in Downloads):
+ * `texts` holds them, `content_map` says which file has which, with the text's hash. `content`
+ * is a view of both with the layout of the table it replaced, (file id, compressed text), so
+ * readers and deletes need not know. A text no file holds any more is deleted with its last row.
+ */
+function createContentTables(db: Database, texts: boolean) {
+  if (texts) db.exec("CREATE TABLE texts (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+  db.exec("CREATE TABLE content_map (id INTEGER PRIMARY KEY, text INTEGER NOT NULL, hash BLOB)")
+  if (!texts) db.exec("INSERT INTO content_map(id, text) SELECT id, id FROM texts")
+  db.exec("CREATE INDEX content_map_text ON content_map(text)")
+  db.exec("CREATE INDEX content_map_hash ON content_map(hash)")
+  const unused = "DELETE FROM texts WHERE id = OLD.text AND NOT EXISTS (SELECT 1 FROM content_map WHERE text = OLD.text);"
+  db.exec(`CREATE TRIGGER content_map_delete AFTER DELETE ON content_map BEGIN ${unused} END`)
+  db.exec(`CREATE TRIGGER content_map_update AFTER UPDATE OF text ON content_map WHEN OLD.text <> NEW.text BEGIN ${unused} END`)
+  db.exec("CREATE VIEW content(id, data) AS SELECT m.id, t.data FROM content_map m JOIN texts t ON t.id = m.text")
+  db.exec("CREATE TRIGGER content_delete INSTEAD OF DELETE ON content BEGIN DELETE FROM content_map WHERE id = OLD.id; END")
+  // Texts written without a hash are not shared; the indexer hashes them later (see `TEXT_HASHES`).
+  db.exec(`CREATE TRIGGER content_insert INSTEAD OF INSERT ON content BEGIN
+    DELETE FROM content_map WHERE id = NEW.id;
+    INSERT INTO texts(data) VALUES (NEW.data);
+    INSERT INTO content_map(id, text) VALUES (NEW.id, last_insert_rowid());
+  END`)
+}
+
+/**
+ * Set while some stored texts have no hash (an index upgraded from version 9): the indexer
+ * hashes them, shares the ones held twice and re-indexes their long words (see `upgradeTexts`).
+ */
+export const TEXT_HASHES = "texts_unhashed"
 
 function versionAtLeast(v: string, major: number, minor: number): boolean {
   const [a = 0, b = 0] = v.split(".").map(Number)
@@ -43,10 +85,15 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
   db.exec("PRAGMA synchronous = NORMAL")
   db.exec("PRAGMA temp_store = MEMORY")
   db.exec("PRAGMA cache_size = -32000")
+  // The log is copied into the database and started over at checkpoints, but keeps its largest
+  // size on disk unless told otherwise: after a big run, that can be as much as the index.
+  db.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`)
   if (path !== ":memory:") for (const suffix of ["-wal", "-shm"]) if (existsSync(path + suffix)) chmodSync(path + suffix, 0o600)
   if (!opts.readonly) migrate(db, opts)
   return db
 }
+
+const JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
 
 function migrate(db: Database, opts: OpenOptions) {
   db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -54,11 +101,28 @@ function migrate(db: Database, opts: OpenOptions) {
   if (version === SCHEMA_VERSION) {
     // Added after version 8 without a rebuild: older indexes get it here.
     db.exec(REMOVED_TABLE)
+    db.exec(OCR_CACHE_TABLE)
+    db.exec(OCR_CACHE_KEY)
+    return
+  }
+  // Version 10 shares texts held twice, shortens long words in the full-text index and compresses
+  // texts harder: a version 9 index is upgraded in place rather than read again. The classic
+  // FTS delete protocol needs every row's words exactly as indexed, so those indexes are rebuilt.
+  if (version === 9 && getMeta(db, "fts_delete") === "contentless" && !opts.manualFtsDelete) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE content RENAME TO texts")
+      createContentTables(db, false)
+      db.exec(OCR_CACHE_TABLE)
+      db.exec(OCR_CACHE_KEY)
+      setMeta(db, TEXT_HASHES, "1")
+      setMeta(db, "schema_version", String(SCHEMA_VERSION))
+    })()
     return
   }
   db.transaction(() => {
+    const views = new Set((db.query("SELECT name FROM sqlite_master WHERE type = 'view'").all() as { name: string }[]).map((r) => r.name))
     // "chunks" held semantic search vectors before version 6; "vocab" was one row per term before version 7.
-    for (const t of ["fts", "fts_v", "files", "content", "chunks", "vocab", "vocab_chunks", "removed"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
+    for (const t of ["fts", "fts_v", "files", "content", "content_map", "texts", "chunks", "vocab", "vocab_chunks", "removed"]) db.exec(`DROP ${views.has(t) ? "VIEW" : "TABLE"} IF EXISTS ${t}`)
     db.exec(`CREATE TABLE files (
       id INTEGER PRIMARY KEY,
       path TEXT NOT NULL UNIQUE,
@@ -88,7 +152,9 @@ function migrate(db: Database, opts: OpenOptions) {
         UPDATE files SET seq = (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'change_seq') WHERE id = NEW.id;
       END`)
     }
-    db.exec("CREATE TABLE content (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+    createContentTables(db, true)
+    db.exec(OCR_CACHE_TABLE)
+    db.exec(OCR_CACHE_KEY)
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
     const contentlessDelete = !opts.manualFtsDelete && versionAtLeast(sqliteVersion, 3, 43)
     // detail=column keeps which columns hold a term but not its positions: about a third of the
@@ -114,7 +180,10 @@ function migrate(db: Database, opts: OpenOptions) {
   compact(db)
 }
 
-/** Empty the index (files, texts, vocabulary) in place, so that the next run rebuilds it. */
+/**
+ * Empty the index (files, texts, vocabulary) in place, so that the next run rebuilds it. What OCR
+ * read stays for that run, which drops what it no longer indexes (see `pruneOcrCache`).
+ */
 export function clearIndex(db: Database): void {
   db.transaction(() => {
     if (getMeta(db, "fts_delete") === "manual") {
@@ -123,7 +192,9 @@ export function clearIndex(db: Database): void {
     } else {
       db.exec("INSERT INTO fts(fts) VALUES ('delete-all')")
     }
-    db.exec("DELETE FROM content")
+    db.exec("DELETE FROM texts")
+    db.exec("DELETE FROM content_map")
+    setMeta(db, TEXT_HASHES, "")
     db.exec("DELETE FROM files")
     db.exec("DELETE FROM vocab_chunks")
     db.exec("DELETE FROM removed")
@@ -139,12 +210,71 @@ export function clearIndex(db: Database): void {
  */
 function compact(db: Database): void {
   try {
-    db.exec("VACUUM")
+    vacuum(db)
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
   } catch {
     // Busy: the free pages are reused by the next writes instead.
   }
 }
+
+/** VACUUM copies the database into a temporary one: on disk, or a big index would take as much memory. */
+function vacuum(db: Database) {
+  db.exec("PRAGMA temp_store = FILE")
+  try {
+    db.exec("VACUUM")
+  } finally {
+    db.exec("PRAGMA temp_store = MEMORY")
+  }
+}
+
+/** Free pages worth giving back, at least: below this, the next writes reuse them anyway. */
+const VACUUM_FREE_SHARE = 0.1
+const VACUUM_FREE_BYTES = 4 * 1024 * 1024
+
+/**
+ * Tidy the index after a run that wrote much of it. With `optimizeFts`, the full-text index is
+ * merged into one segment: FTS5 merges as it goes, but leaves many segments behind, which
+ * queries read one by one, and the pages of the merged ones free. Free pages are then given back
+ * to the file system when they are a good share of the file, which VACUUM does by rewriting it.
+ * With `rewritten`, it does in any case: rows rewritten in place leave pages part empty, which
+ * only VACUUM packs again. Returns whether it did.
+ */
+export function compactIndex(db: Database, optimizeFts: boolean, rewritten = false): boolean {
+  try {
+    if (optimizeFts) db.exec("INSERT INTO fts(fts) VALUES ('optimize')")
+    const pages = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count
+    const free = (db.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
+    const size = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
+    if (!rewritten && (free < pages * VACUUM_FREE_SHARE || free * size < VACUUM_FREE_BYTES)) return false
+    vacuum(db)
+    // Readers still open keep the log at its size until their next transaction; the size limit
+    // trims it at a later checkpoint then.
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    return true
+  } catch {
+    // Busy, or out of disk space for the copy: the free pages are reused by the next writes.
+    return false
+  }
+}
+
+/**
+ * Drop OCR results whose file is no longer indexed with its text: deleted, changed, excluded,
+ * or with contents turned off since. With OCR off (`ocr` false), all of them go: a PDF with
+ * text of its own stays indexed without what OCR read on its scanned pages.
+ */
+export function pruneOcrCache(db: Database, ocr: boolean): void {
+  if (!db.query("SELECT 1 FROM ocr_cache LIMIT 1").get()) return
+  if (!ocr) {
+    db.exec("DELETE FROM ocr_cache")
+    return
+  }
+  db.query(
+    "DELETE FROM ocr_cache WHERE (dev, ino, size, mtime) NOT IN (SELECT dev, ino, size, mtime FROM files WHERE content_state = ?)",
+  ).run(ContentState.Indexed)
+}
+
+/** Version of what `ocr_cache` holds: bump when the OCR helper reads differently. */
+export const OCR_CACHE_VERSION = 1
 
 export function getMeta(db: Database, key: string): string | null {
   const row = db.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null
@@ -162,7 +292,9 @@ const decoder = new TextDecoder()
  * Searches decompress every candidate, and both codecs cost tens of microseconds per call, so
  * small texts stay raw, mid-sized ones use deflate (cheapest per call) and large ones zstd
  * (fastest per byte). On a mixed corpus this stores about half the bytes of raw text.
- * Deflate's level 1 compresses about twice as fast as level 4, for texts about a fifth larger.
+ * Higher levels cost only compression time: both codecs decompress as fast. On text files,
+ * deflate at 6 stores mid-sized texts in about 30% of their size (42% at 1), and zstd at 9 large
+ * ones in about 18% (20% at 3), still compressing at over 50 MB/s.
  */
 const RAW_BELOW = 1024
 const ZSTD_FROM = 16 * 1024
@@ -178,10 +310,19 @@ export function compressText(text: string): Uint8Array {
   return compressBytes(encoder.encode(text))
 }
 
+/** Identifies a stored text, to keep it once: SHA-256 of its UTF-8 bytes, cut to 128 bits. */
+export function textHash(raw: Uint8Array): Uint8Array {
+  return Uint8Array.from(new Bun.CryptoHasher("sha256").update(raw).digest().subarray(0, 16))
+}
+
+export function encodeText(text: string): Uint8Array<ArrayBuffer> {
+  return encoder.encode(text)
+}
+
 /** `compressText` of the text these UTF-8 bytes hold. */
 export function compressBytes(raw: Uint8Array<ArrayBuffer>): Uint8Array {
   if (raw.length >= RAW_BELOW) {
-    const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 3 }) : Bun.deflateSync(raw, { level: 1 })
+    const z = raw.length >= ZSTD_FROM ? Bun.zstdCompressSync(raw, { level: 9 }) : Bun.deflateSync(raw, { level: 6 })
     if (z.length < raw.length) return withHeader(raw.length >= ZSTD_FROM ? 1 : 2, z)
   }
   return withHeader(0, raw)

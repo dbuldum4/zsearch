@@ -2,10 +2,16 @@ import type { Database, Statement } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
 import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
+
+/** A text that may have long words (see `shortWord`); a few that do not are re-indexed for nothing. */
+const LONG_WORD_IN_TEXT = /(?<![A-Za-z0-9])[A-Za-z0-9]{32,64}(?![A-Za-z0-9])/
+
+/** Packages with a preview inside, which OCR reads when it is a picture. */
+const IWORK_EXTS = new Set(["pages", "numbers", "key"])
 import { ocrToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
-import { ContentState, decompressText, getMeta, loadVocabTerms, REMOVED_KEPT, setMeta } from "./db.ts"
+import { compactIndex, compressBytes, ContentState, decompressText, encodeText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta, TEXT_HASHES, textHash } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
 import { DATASET_NOTE, type DatasetFolder, datasetFolders } from "./datasets.ts"
@@ -59,6 +65,9 @@ interface Pending {
   size: number
   /** It has an FTS row already, from an earlier run. */
   inFts: number
+  dev: number
+  ino: number
+  mtime: number
 }
 
 /** Extraction jobs queued per worker: a deep queue keeps them busy while this thread is not. */
@@ -173,7 +182,7 @@ export class Indexer {
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
       ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
       contentGet: q("SELECT data FROM content WHERE id = ?"),
-      contentDel: q("DELETE FROM content WHERE id = ?"),
+      contentDel: q("DELETE FROM content_map WHERE id = ?"),
       fileDel: q("DELETE FROM files WHERE id = ?"),
       logRemoved: q("INSERT INTO removed(id) VALUES (?)"),
     }
@@ -252,14 +261,30 @@ export class Indexer {
       await this.content()
       if (this.aborted) return this.finish("cancelled")
       this.cleanup(removed)
-      return this.finish("done")
+      const upgraded = await this.upgradeTexts()
+      if (this.aborted) return this.finish("cancelled")
+      return this.finish("done", upgraded !== null || this.rewroteMuch(), upgraded !== null)
     } catch (err) {
       this.progress.error = (err as Error).message
       return this.finish("error")
     }
   }
 
-  private finish(phase: IndexPhase): IndexProgress {
+  /**
+   * The run read a good share of the indexed texts again (a first run, or a rebuild): merging
+   * the full-text index rewrites all of it, which is worth it then.
+   */
+  private rewroteMuch(): boolean {
+    if (this.progress.contentDone < BIG_RUN) return false
+    const indexed = (this.db.query("SELECT count(*) AS n FROM files WHERE content_state = ?").get(ContentState.Indexed) as { n: number }).n
+    return this.progress.contentDone * 4 >= indexed
+  }
+
+  /**
+   * `bigWrite`: the run rewrote much of the full-text index, which is merged afterwards.
+   * `rewritten`: it rewrote stored texts in place, and the file is packed again afterwards.
+   */
+  private finish(phase: IndexPhase, bigWrite = false, rewritten = false): IndexProgress {
     this.progress.phase = phase
     this.progress.current = ""
     if (this.progress.waiting !== undefined) {
@@ -273,6 +298,8 @@ export class Indexer {
       setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
       // Readers follow the removed files from this log; only its recent part is needed.
       this.db.query("DELETE FROM removed WHERE n <= (SELECT MAX(n) FROM removed) - ?").run(REMOVED_KEPT)
+      pruneOcrCache(this.db, this.ocrTool !== null)
+      compactIndex(this.db, bigWrite, rewritten)
       this.db.exec("PRAGMA optimize")
     }
     this.db.exec("PRAGMA wal_checkpoint(PASSIVE)")
@@ -396,7 +423,7 @@ export class Indexer {
           if (wants && (prev.state === ContentState.None || policyChanged))
             batch.push(() => {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
-              waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
+              waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
             })
           else if (!wants && prev.state !== idle) batch.push(() => this.dropContent(prev.id, e.path, idle, idleNote))
           continue
@@ -406,7 +433,7 @@ export class Indexer {
           if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, idle, idleNote)
           this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, prev.id)
           if (secret) this.st.setState.run(idle, 0, idleNote, prev.id)
-          if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts })
+          if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
         })
       } else {
         this.progress.added++
@@ -418,7 +445,7 @@ export class Indexer {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
             if (secret) this.st.setState.run(idle, 0, idleNote, Number(lastInsertRowid))
-          } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0 })
+          } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
         })
       }
       if (batch.length >= 2000 || Date.now() - lastCommit > 250) commit()
@@ -480,8 +507,18 @@ export class Indexer {
   private extract(pool: ExtractPool, p: Pending): Promise<ExtractReply> {
     if (this.datasets.size && OCR_EXTS.has(p.ext) && p.kind === "image" && this.datasets.has(p.path.slice(0, Math.max(1, p.path.lastIndexOf("/")))))
       return Promise.resolve({ id: p.id, status: "skip", reason: DATASET_NOTE })
-    return pool.run({ id: p.id, path: p.path, ext: p.ext, kind: p.kind, size: p.size, run: this.runId })
+    return pool.run({ id: p.id, path: p.path, ext: p.ext, kind: p.kind, size: p.size, run: this.runId, ocr: this.cachedOcr(p) })
   }
+
+  /** What OCR read in this file before, when it is the same file still (see `ocr_cache`). */
+  private cachedOcr(p: Pending): string | undefined {
+    if (!this.ocrTool || !p.ino || !(OCR_EXTS.has(p.ext) || p.kind === "pdf" || IWORK_EXTS.has(p.ext))) return undefined
+    this.ocrGet ??= this.db.prepare("SELECT data FROM ocr_cache WHERE dev = ? AND ino = ? AND size = ? AND mtime = ? AND version = ?")
+    const row = this.ocrGet.get(p.dev, p.ino, p.size, p.mtime, OCR_CACHE_VERSION) as { data: Uint8Array } | null
+    return row ? decompressText(row.data) : undefined
+  }
+
+  private ocrGet: Statement | null = null
 
   /**
    * Start extracting files the scan just committed, while it goes on: the workers would wait
@@ -545,7 +582,7 @@ export class Indexer {
     this.readDatasets()
     if (this.ocrTool && this.config.skipDatasetOcr) this.findDatasets()
     const all = this.db
-      .query("SELECT id, path, ext, kind, size, in_fts AS inFts FROM files WHERE content_state = ? ORDER BY mtime DESC")
+      .query("SELECT id, path, ext, kind, size, in_fts AS inFts, dev, ino, mtime FROM files WHERE content_state = ? ORDER BY mtime DESC")
       .all(ContentState.Pending) as Pending[]
     this.progress.phase = "content"
     this.progress.contentTotal = all.length
@@ -617,8 +654,9 @@ export class Indexer {
         }
         const f = this.ftsFields(pending[i]!.path)
         // The terms stay here: copying them to the writer would cost it for nothing.
-        const reply = r.status === "ok" ? { id: r.id, status: r.status, chars: r.chars, body: r.body, compressed: r.compressed, truncated: r.truncated, metadata: r.metadata } : r
-        items.push({ reply, name: f.name, dirs: f.dirs, inFts: pending[i]!.inFts })
+        const reply = r.status === "ok" ? { id: r.id, status: r.status, chars: r.chars, body: r.body, compressed: r.compressed, hash: r.hash, ocr: r.ocr, truncated: r.truncated, metadata: r.metadata } : r
+        const p = pending[i]!
+        items.push({ reply, name: f.name, dirs: f.dirs, inFts: p.inFts, identity: { dev: p.dev, ino: p.ino, size: p.size, mtime: p.mtime } })
       }
       const takeLate = () => {
         for (const i of lateDone.splice(0).sort((a, b) => pending[a]!.id - pending[b]!.id)) take(i)
@@ -719,6 +757,70 @@ export class Indexer {
 
   /** Content terms already in the vocabulary, loaded the first time contents are stored. */
   private known: Set<string> | null = null
+
+  /* ---------------------------------------------------------- upgrade -- */
+
+  /**
+   * Bring texts stored before version 10 up to date, a few at a time (see `TEXT_HASHES`): hash
+   * them, keep the ones held twice once, compress them as texts are now, and re-index the
+   * files whose texts have long words, which go in short now (see `shortWord`). Nothing is read
+   * from the files again. Returns whether it re-indexed any, or null when there was nothing to
+   * do. A run cancelled meanwhile leaves the rest to the next one.
+   */
+  private async upgradeTexts(): Promise<boolean | null> {
+    if (getMeta(this.db, TEXT_HASHES) !== "1") return null
+    this.progress.phase = "cleanup"
+    this.emit(true)
+    const q = (sql: string) => this.db.prepare(sql)
+    const next = q("SELECT DISTINCT text FROM content_map WHERE hash IS NULL LIMIT 64")
+    const get = q("SELECT data FROM texts WHERE id = ?")
+    const holders = q("SELECT m.id, f.path, f.in_fts AS inFts FROM content_map m JOIN files f ON f.id = m.id WHERE m.text = ?")
+    const same = q("SELECT text FROM content_map WHERE hash = ? AND text <> ? LIMIT 1")
+    const share = q("UPDATE content_map SET text = ?, hash = ? WHERE text = ?")
+    const setHash = q("UPDATE content_map SET hash = ? WHERE text = ?")
+    const setData = q("UPDATE texts SET data = ? WHERE id = ?")
+    const orphans = q("DELETE FROM content_map WHERE text = ?")
+    let reindexed = false
+    for (;;) {
+      if (this.aborted) return reindexed
+      const batch = next.values() as number[][]
+      if (!batch.length) break
+      this.db.transaction(() => {
+        for (const [text] of batch) {
+          const row = get.get(text!) as { data: Uint8Array } | null
+          if (!row) {
+            orphans.run(text!)
+            continue
+          }
+          const t = decompressText(row.data)
+          if (LONG_WORD_IN_TEXT.test(t)) {
+            const body = ftsBody(t)
+            for (const h of holders.all(text!) as { id: number; path: string; inFts: number }[]) {
+              if (!h.inFts) continue
+              const f = this.ftsFields(h.path)
+              this.st.ftsDeleteRow.run(h.id)
+              this.st.ftsInsert.run(h.id, f.name, f.dirs, body)
+              reindexed = true
+            }
+          }
+          const bytes = encodeText(t)
+          const hash = textHash(bytes)
+          const other = same.get(hash, text!) as { text: number } | null
+          // The files move to the other copy; this one goes with its last file.
+          if (other) share.run(other.text, hash, text!)
+          else {
+            setHash.run(hash, text!)
+            const z = compressBytes(bytes)
+            if (z.length < row.data.length) setData.run(z, text!)
+          }
+        }
+      }).immediate()
+      // Within the share of the computer indexing may use, and letting other work in.
+      await new Promise((r) => setTimeout(r, this.cpu.over ? 20 : 0))
+    }
+    setMeta(this.db, TEXT_HASHES, "")
+    return reindexed
+  }
 
   /* ---------------------------------------------------------- cleanup -- */
 

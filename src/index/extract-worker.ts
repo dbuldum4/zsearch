@@ -1,6 +1,6 @@
 /** Worker entry: runs extraction jobs off the indexer thread. */
 import type { ExtractOptions } from "./extract/index.ts"
-import { type ExtractJob, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
+import { type ExtractJob, JOBS_AT_ONCE, processJob, replyBuffers } from "./extract-job.ts"
 import { backgroundDisk } from "./load.ts"
 import type { ExtractWorkerIn } from "./pool.ts"
 
@@ -26,7 +26,7 @@ function pump() {
     postMessage({ started: job.id })
     processJob(job, opts).then((reply) => {
       running--
-      if (reply.status === "ok") postMessage(reply, [reply.body.buffer as ArrayBuffer, reply.compressed.buffer as ArrayBuffer])
+      if (reply.status === "ok") postMessage(reply, replyBuffers(reply))
       else postMessage(reply)
       pump()
     })
