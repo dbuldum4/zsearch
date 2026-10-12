@@ -7,4 +7,3 @@ coverage/
 .build/
 .swiftpm/
 native/embed/vendor/
-.models/
