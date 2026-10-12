@@ -5,7 +5,7 @@
  * (see there).
  */
 import { isUtf8 } from "node:buffer"
-import { uniqueTerms } from "../util/text.ts"
+import { shortenBody, uniqueTerms } from "../util/text.ts"
 
 /**
  * Per byte: 0 between words, BAD for NUL (which extraction drops), else the byte the word holds:
@@ -81,6 +81,8 @@ export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
   let cont = 0
   let lead4 = 0
   let asciiWord = false
+  /** A distinct ASCII word long enough to go in short (see `shortWord`). */
+  let long = false
   if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return null
   const n = buf.length
   let i = 0
@@ -122,6 +124,7 @@ export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
       j = (j + 1) & mask
     }
     if (dup) continue
+    if (!wide && len >= 32 && len <= 64) long = true
     const s = j << 2
     seen[s] = gen
     seen[s + 1] = h
@@ -172,7 +175,9 @@ export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
     }
     return fresh
   }
-  return { body: out.slice(0, outLen), wide: cont - lead4, report }
+  // Words are compared whole above, and reported whole: they are made short only now.
+  const body = long ? new TextEncoder().encode(shortenBody(utf8.decode(out.subarray(0, outLen)))) : out.slice(0, outLen)
+  return { body, wide: cont - lead4, report }
 }
 
 const ASCII_TERM = /^[a-z0-9]+$/

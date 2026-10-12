@@ -8,7 +8,7 @@ import { bytesHoldPrivateKey, notKeynote, onlyKeys, redactPrivateKeys, SECRET_NO
 import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
-import { ocrImage } from "./ocr.ts"
+import { ocrImage, type OcrMemo } from "./ocr.ts"
 import { extractPdf, extractPdfBytes } from "./pdf.ts"
 import { decodeText, extractEmail, extractNotebook, looksBinary } from "./text.ts"
 import { htmlText } from "./xml.ts"
@@ -91,7 +91,7 @@ export function textOf(bytes: Uint8Array, maxChars: number): ExtractResult {
 }
 
 /** As `extract`, leaving plain text files undecoded. */
-export async function extractRaw(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT): Promise<RawExtractResult> {
+export async function extractRaw(path: string, size: number, ext: string, kind: Kind, opts: ExtractOptions = DEFAULT_EXTRACT, memo?: OcrMemo): Promise<RawExtractResult> {
   if (opts.contentEnabled === false) return { status: "skip", reason: "unsupported" }
   if (opts.policy) {
     const policy = pathPolicy(path, opts.policy)
@@ -102,13 +102,13 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
     if (ext === "key" && notKeynote(await readHead(path, 4))) return { status: "skip", reason: SECRET_NOTE }
-    return finish(await extractDocument(path, ext, opts), opts.maxChars)
+    return finish(await extractDocument(path, ext, opts, memo), opts.maxChars)
   }
   if (OCR_EXTS.has(ext) && kind === "image") {
     if (!opts.ocrTool) return { status: "skip", reason: "unsupported" }
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
-    return finish(await ocrImage(opts.ocrTool, path, opts.pdfTimeoutMs ?? 60_000), opts.maxChars)
+    return finish(await ocrImage(opts.ocrTool, path, opts.pdfTimeoutMs ?? 60_000, memo), opts.maxChars)
   }
   if (!wantsContent(ext, kind)) return { status: "skip", reason: "unsupported" }
   if (size > opts.maxTextBytes) return { status: "skip", reason: "too-large" }
@@ -127,8 +127,8 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   return { status: "bytes", bytes: buf }
 }
 
-async function extractDocument(path: string, ext: string, opts: ExtractOptions): Promise<string> {
-  if (ext === "pdf") return extractPdf(path, () => readFile(path, opts.maxDocBytes), opts.pdfTimeoutMs, opts.ocrTool, opts.metadata)
+async function extractDocument(path: string, ext: string, opts: ExtractOptions, memo?: OcrMemo): Promise<string> {
+  if (ext === "pdf") return extractPdf(path, () => readFile(path, opts.maxDocBytes), opts.pdfTimeoutMs, opts.ocrTool, opts.metadata, memo)
   const buf = await readFile(path, opts.maxDocBytes)
   switch (ext) {
     case "pages":
@@ -144,7 +144,7 @@ async function extractDocument(path: string, ext: string, opts: ExtractOptions):
       try {
         const imagePath = join(scratch, "preview.jpg")
         writeFileSync(imagePath, image, { mode: 0o600 })
-        return await ocrImage(opts.ocrTool, imagePath, opts.pdfTimeoutMs ?? 60_000)
+        return await ocrImage(opts.ocrTool, imagePath, opts.pdfTimeoutMs ?? 60_000, memo)
       } finally { rmSync(scratch, { recursive: true, force: true }) }
     }
     case "docx":
