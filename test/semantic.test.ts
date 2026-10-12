@@ -257,6 +257,24 @@ describe("semantic index and search", () => {
     expect(without.hits.map((h) => h.display)).not.toContain("notes/deploy.txt")
   })
 
+  test("a prefix many long words share only matches files holding it", async () => {
+    // More long words start with the prefix than are listed one by one, so the index is asked for
+    // their first characters only; a file whose word differs after those must not count.
+    const many = Array.from({ length: 70 }, (_, i) => `abcdefabcdefa${i.toString(36).padStart(2, "0")}${"x".repeat(49)}`)
+    corpus.write("notes/many.txt", `${many.join(" ")}\n`)
+    corpus.write("notes/other.txt", `abcdefabcdefb${"y".repeat(51)}\n`)
+    await new Indexer(db, config, { inProcess: true }).run()
+    const e = new SearchEngine(db, config)
+    e.embedQuery = null
+    const r = await e.search("abcdefabcdefa", "semantic")
+    const shown = r.hits.map((h) => h.display)
+    expect(shown).toContain("notes/many.txt")
+    expect(shown).not.toContain("notes/other.txt")
+    rmSync(join(corpus.home, "notes/many.txt"))
+    rmSync(join(corpus.home, "notes/other.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
+  })
+
   test("without the model it says so and shows word matches", async () => {
     const e = new SearchEngine(db, config)
     e.embedQuery = null

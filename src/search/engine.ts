@@ -426,7 +426,19 @@ export class SearchEngine {
     const matching = (column: string, term: string, prefix: boolean): number[] => {
       try {
         // The same expression find builds for a word, so the index's way of keeping words applies.
-        return (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`${column} : ${ftsWords([term], prefix)}`) as number[][]).map((r) => r[0]!)
+        const fts = this.ftsWords([term], prefix)
+        const ids = (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`${column} : ${fts.expr}`) as number[][]).map((r) => r[0]!)
+        if (!fts.broad) return ids
+        // A prefix many long words share matches by their first characters only: check the rest.
+        const check = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(term)}`, "iu")
+        return ids.filter((id) => {
+          if (column !== "body") {
+            const i = this.catalog.indexOf(id)
+            return i !== undefined && check.test(this.catalog.paths[i]!)
+          }
+          const stored = this.storedText(id)
+          return stored !== null && check.test(stored)
+        })
       } catch {
         return []
       }
