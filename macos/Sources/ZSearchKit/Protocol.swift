@@ -100,12 +100,23 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
     public var current: String
     public var elapsedMs: Double
     public var error: String?
+    /// The semantic pass (search by meaning), after the contents are read.
+    public var meaning: MeaningProgress?
 
-    /// 0...1 while reading contents, nil while scanning.
+    /// 0...1 while reading contents or for meaning, nil while scanning.
     public var fraction: Double? {
+        if phase == "meaning", let m = meaning, m.total > 0 { return Double(m.done) / Double(m.total) }
         guard phase == "content", contentTotal > 0 else { return nil }
         return Double(contentDone) / Double(contentTotal)
     }
+}
+
+public struct MeaningProgress: Decodable, Hashable, Sendable {
+    public var total: Int
+    public var done: Int
+    public var embedded: Int
+    public var reused: Int
+    public var error: String?
 }
 
 /// What a first index of a folder reads, from a count-only walk (`estimate` requests).
@@ -163,6 +174,60 @@ public struct Config: Codable, Hashable, Sendable {
     /// and while on battery. Nil from engines older than these settings.
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
+    /// Search by meaning. Nil from engines without it.
+    public var semantic: SemanticConfig?
+}
+
+public struct SemanticConfig: Codable, Hashable, Sendable {
+    public var enabled: Bool
+    /// Also embed what photos and screenshots show (needs the image encoder).
+    public var images: Bool
+    /// Also embed source code and data files.
+    public var code: Bool
+
+    public init(enabled: Bool, images: Bool, code: Bool) {
+        self.enabled = enabled
+        self.images = images
+        self.code = code
+    }
+}
+
+/// What search by meaning has: its setting, model, helper and index (`semanticStatus` replies).
+public struct SemanticStatus: Decodable, Hashable, Sendable {
+    public struct Model: Decodable, Hashable, Sendable {
+        public var text: Bool
+        public var media: Bool
+        public var textBytes: Int
+        public var mediaBytes: Int
+    }
+
+    public struct Index: Decodable, Hashable, Sendable {
+        public var files: Int
+        public var passages: Int
+        public var vectors: Int
+        public var partial: Int
+        public var bytes: Int
+        /// Milliseconds since 1970.
+        public var lastRunAt: Double?
+        public var error: String?
+    }
+
+    public var enabled: Bool
+    public var images: Bool
+    public var code: Bool
+    public var helper: String?
+    public var modelDir: String
+    public var model: Model
+    /// Why reading files for meaning doesn't run, or nil when it does.
+    public var blocked: String?
+    public var index: Index?
+}
+
+/// How far the model download is (`semanticDownload` events).
+public struct DownloadProgress: Decodable, Hashable, Sendable {
+    public var file: String
+    public var received: Int
+    public var total: Int
 }
 
 public struct Ready: Decodable, Hashable, Sendable {
@@ -180,7 +245,7 @@ public struct IndexDone: Decodable, Hashable, Sendable {
 }
 
 public enum Mode: String, Codable, CaseIterable, Sendable {
-    case find, fuzzy
+    case find, fuzzy, semantic
 }
 
 /// A request to the engine. `id` is added by `EngineConnection`.
@@ -204,6 +269,12 @@ public enum Request: Sendable {
     case opened(path: String)
     /// How long a first index of these folders takes. A newer one supersedes it (`cancelled`).
     case estimate(roots: [String])
+    case semanticStatus
+    /// Download the model (with the image encoder, if `images`) and turn search by meaning on.
+    case semanticInstall(images: Bool)
+    case semanticCancelInstall
+    /// Turn search by meaning off and delete its model and index.
+    case semanticRemove
 }
 
 public struct ConfigPatch: Encodable, Hashable, Sendable {
@@ -219,6 +290,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var liveUpdates: Bool?
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
+    public var semantic: SemanticConfig?
 
     public init(
         roots: [String]? = nil,
@@ -232,7 +304,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         autoRefreshMinutes: Double? = nil,
         liveUpdates: Bool? = nil,
         pauseOnLowPower: Bool? = nil,
-        pauseOnBattery: Bool? = nil
+        pauseOnBattery: Bool? = nil,
+        semantic: SemanticConfig? = nil
     ) {
         self.roots = roots
         self.includeHidden = includeHidden
@@ -246,6 +319,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.liveUpdates = liveUpdates
         self.pauseOnLowPower = pauseOnLowPower
         self.pauseOnBattery = pauseOnBattery
+        self.semantic = semantic
     }
 
     /// Every setting the app manages, taken from `config`.
@@ -262,7 +336,8 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             autoRefreshMinutes: config.autoRefreshMinutes,
             liveUpdates: config.liveUpdates,
             pauseOnLowPower: config.pauseOnLowPower,
-            pauseOnBattery: config.pauseOnBattery
+            pauseOnBattery: config.pauseOnBattery,
+            semantic: config.semantic
         )
     }
 }
@@ -283,6 +358,7 @@ extension Request {
         var rebuild: Bool?
         var roots: [String]?
         var background: Bool?
+        var images: Bool?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -314,6 +390,14 @@ extension Request {
             w.type = "opened"; w.path = path
         case let .estimate(roots):
             w.type = "estimate"; w.roots = roots
+        case .semanticStatus:
+            w.type = "semanticStatus"
+        case let .semanticInstall(images):
+            w.type = "semanticInstall"; w.images = images
+        case .semanticCancelInstall:
+            w.type = "semanticCancelInstall"
+        case .semanticRemove:
+            w.type = "semanticRemove"
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -336,6 +420,8 @@ public enum Message: Hashable, Sendable {
     case indexDone(IndexDone)
     case refreshed(files: Int, changed: Bool)
     case estimate(EstimateReply)
+    case semantic(SemanticStatus)
+    case semanticDownload(DownloadProgress)
     /// A message type this version of the app does not know.
     case unknown(type: String)
 }
@@ -357,6 +443,7 @@ public struct Envelope: Hashable, Sendable {
     private struct ConfigBody: Decodable { var config: Config }
     private struct ProgressBody: Decodable { var progress: IndexProgress }
     private struct ErrorBody: Decodable { var error: String }
+    private struct SemanticBody: Decodable { var status: SemanticStatus }
     private struct RefreshedBody: Decodable {
         var files: Int
         var changed: Bool
@@ -380,6 +467,8 @@ public struct Envelope: Hashable, Sendable {
         case "indexProgress": message = .indexProgress(try d.decode(ProgressBody.self, from: line).progress)
         case "indexDone": message = .indexDone(try d.decode(IndexDone.self, from: line))
         case "estimate": message = .estimate(try d.decode(EstimateReply.self, from: line))
+        case "semantic": message = .semantic(try d.decode(SemanticBody.self, from: line).status)
+        case "semanticDownload": message = .semanticDownload(try d.decode(DownloadProgress.self, from: line))
         case "refreshed":
             let r = try d.decode(RefreshedBody.self, from: line)
             message = .refreshed(files: r.files, changed: r.changed)

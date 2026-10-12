@@ -23,7 +23,7 @@ public enum QueryFilters {
     ]
 
     static let regexPrefixes = ["re:", "regex:"]
-    static let modePrefixes = ["re:", "regex:", "find:", "exact:", "grep:", "fuzzy:", "f:"]
+    static let modePrefixes = ["re:", "regex:", "find:", "exact:", "grep:", "fuzzy:", "f:", "semantic:", "meaning:", "s:"]
 
     struct Token {
         var range: Range<String.Index>

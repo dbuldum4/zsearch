@@ -2,9 +2,12 @@ import { escapeRegExp } from "../util/text.ts"
 import { resolvePath } from "../config.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 
-/** `find`: exact text, or a regex written as `/pattern/` or `re:pattern`. `fuzzy`: fzf-style. */
-export type Mode = "find" | "fuzzy"
-export const MODES: Mode[] = ["find", "fuzzy"]
+/**
+ * `find`: exact text, or a regex written as `/pattern/` or `re:pattern`. `fuzzy`: fzf-style.
+ * `semantic`: by meaning, with an embedding model (src/semantic), when it is installed.
+ */
+export type Mode = "find" | "fuzzy" | "semantic"
+export const MODES: Mode[] = ["find", "fuzzy", "semantic"]
 
 export interface Filters {
   not?: Filters[]
@@ -114,6 +117,9 @@ const MODE_PREFIXES: Record<string, { mode: Mode; regex: boolean }> = {
   "grep:": { mode: "find", regex: false },
   "fuzzy:": { mode: "fuzzy", regex: false },
   "f:": { mode: "fuzzy", regex: false },
+  "semantic:": { mode: "semantic", regex: false },
+  "meaning:": { mode: "semantic", regex: false },
+  "s:": { mode: "semantic", regex: false },
 }
 
 interface Token {
@@ -164,14 +170,14 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   const cut: [number, number][] = []
   for (const t of tokens) {
     if (t.quoted) continue
-    const proximity = !regex && forcedMode !== "fuzzy" ? /^NEAR\/(\d+)$/.exec(t.text) : null
+    const proximity = !regex && forcedMode !== "fuzzy" && forcedMode !== "semantic" ? /^NEAR\/(\d+)$/.exec(t.text) : null
     if (proximity) {
       const distance = Number(proximity[1])
       if (distance > 1000) warnings.push("NEAR expects a word distance from 0 to 1000")
       else { near = distance; all = true; forcedMode = "find" }
       cut.push([t.start, t.end]); continue
     }
-    if (!regex && forcedMode !== "fuzzy" && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
+    if (!regex && forcedMode !== "fuzzy" && forcedMode !== "semantic" && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
       ;(filters.names ??= []).push({ source: globPattern(t.text), flags: "i" }); cut.push([t.start, t.end]); continue
     }
     const m = /^(-?)([a-z]+):(.*)$/i.exec(t.text)

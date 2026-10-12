@@ -373,15 +373,19 @@ describe("configuration", () => {
     expect((c as unknown as Record<string, unknown>).bogus).toBeUndefined()
     expect(setConfigValue(defaultConfig(), "exclude", "*.log, tmp/").exclude).toEqual(["*.log", "tmp/"])
     expect(() => setConfigValue(defaultConfig(), "content", "x")).toThrow()
-    expect(() => setConfigValue(defaultConfig(), "semantic.enabled", "true")).toThrow()
+    expect(setConfigValue(defaultConfig(), "semantic.enabled", "true").semantic.enabled).toBe(true)
   })
 
   test("configs from versions with semantic search still load", async () => {
     const { defaultConfig, mergeConfig } = await import("../src/config.ts")
     const c = mergeConfig(defaultConfig(), { defaultMode: "semantic", semantic: { enabled: true, model: "x" }, includeHidden: true })
+    // The old semantic search used other models: its settings don't turn this one on.
     expect(c.defaultMode).toBe("find")
     expect(c.includeHidden).toBe(true)
-    expect("semantic" in c).toBe(false)
+    expect(c.semantic).toEqual(defaultConfig().semantic)
+    const now = mergeConfig(defaultConfig(), { defaultMode: "semantic", semantic: { enabled: true } })
+    expect(now.defaultMode).toBe("semantic")
+    expect(now.semantic.enabled).toBe(true)
     for (const old of ["auto", "exact", "regex"]) expect(mergeConfig(defaultConfig(), { defaultMode: old }).defaultMode).toBe("find")
     expect(mergeConfig(defaultConfig(), { defaultMode: "fuzzy" }).defaultMode).toBe("fuzzy")
   })

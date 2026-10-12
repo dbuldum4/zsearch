@@ -4,6 +4,8 @@ import { clearIndex, openDb } from "./db.ts"
 import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 import { PowerGate } from "./power.ts"
+import { embedToolPath } from "../semantic/helper.ts"
+import { SemanticIndexer, semanticAvailable } from "../semantic/indexer.ts"
 
 declare const self: Worker
 
@@ -42,22 +44,42 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     const db = openDb(msg.dbPath)
     if (msg.rebuild) clearIndex(db)
     let lastCommit = 0
+    const onCommit = () => {
+      const now = Date.now()
+      if (now - lastCommit < 200) return
+      lastCommit = now
+      send({ type: "commit" })
+    }
     // Big runs that started on their own wait on power. The settings are read again with the
     // power state: switching pausing off resumes a run.
+    const power = msg.background ? new PowerGate(() => (configExists() ? loadConfig() : msg.config)) : undefined
     const indexer = new Indexer(db, msg.config, {
       signal: controller.signal,
-      power: msg.background ? new PowerGate(() => (configExists() ? loadConfig() : msg.config)) : undefined,
+      power,
       onProgress: (progress) => send({ type: "progress", progress }),
-      onCommit: () => {
-        const now = Date.now()
-        if (now - lastCommit < 200) return
-        lastCommit = now
-        send({ type: "commit" })
-      },
+      onCommit,
     })
     running = indexer
     if (goNow) indexer.goNow()
     const result = await indexer.run()
+    // Then search by meaning: embed what the run read, under the same cancel, power and priority rules.
+    const tool = embedToolPath()
+    if (result.phase === "done" && !semanticAvailable(msg.config, tool)) {
+      const started = Date.now()
+      const base = result.elapsedMs
+      const semantic = new SemanticIndexer(db, msg.config, tool, {
+        signal: controller.signal,
+        power,
+        goNow: () => goNow,
+        low: msg.background || undefined,
+        onCommit,
+        onProgress: (p) => send({ type: "progress", progress: { ...result, phase: "meaning", current: p.current, waiting: p.waiting, elapsedMs: base + Date.now() - started, meaning: { total: p.total, done: p.done, embedded: p.embedded, reused: p.reused } } }),
+      })
+      const summary = await semantic.run()
+      result.elapsedMs = base + Date.now() - started
+      result.meaning = { total: summary.files, done: summary.files, embedded: summary.embedded, reused: summary.reused, error: summary.error }
+      if (summary.status === "cancelled") result.phase = "cancelled"
+    }
     db.close()
     // Release before reporting: the parent terminates this worker as soon as it hears "done",
     // which could otherwise leave the lock behind and refuse the next run.

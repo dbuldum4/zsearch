@@ -12,11 +12,16 @@ import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
-import { diacriticPattern, findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
+import { clipLine, diacriticPattern, findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { TopK } from "../util/top-k.ts"
 import { retryClock, type RetryClock } from "../util/clock.ts"
+import { embedToolPath } from "../semantic/helper.ts"
+import { installedModel } from "../semantic/model.ts"
+import { CODE_WORD_WEIGHT, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, WORD_WEIGHT } from "../semantic/search.ts"
+import { semanticDbPath } from "../semantic/store.ts"
+import { mainGeneration } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -217,7 +222,7 @@ export class SearchEngine {
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
     try {
-      const expression = booleanQuery(rawQuery)
+      const expression = effective === "semantic" ? null : booleanQuery(rawQuery)
       if (expression) return await this.searchExpression(expression, rawQuery, mode, opts, t0)
       if (!q.text && !q.phrases.length) {
         if (hasFilters(q.filters)) {
@@ -233,11 +238,12 @@ export class SearchEngine {
         return this.done(res, t0)
       }
       if (effective === "fuzzy") await this.runFuzzy(q, limit, res)
+      else if (effective === "semantic") await this.runSemantic(q, limit, res, opts)
       else await this.runGrep(q, limit, res, q.regex, opts)
     } catch (err) {
       res.error = (err as Error).message
     }
-    if (!res.error && !res.hits.length && !q.regex && q.words.length) {
+    if (!res.error && !res.hits.length && !q.regex && q.words.length && effective !== "semantic") {
       const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
       if (alternatives.some((w, i) => w !== q.words[i])) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
     }
@@ -325,6 +331,166 @@ export class SearchEngine {
     if (!operators) lists.push({ name: "text", weight: 0.6, items: this.keywordMatches(q, limit, q.typing, true), source: "content" })
     res.strategy = operators ? "fuzzy names" : "fuzzy names + typo-tolerant text"
     this.fuse(lists, limit, res, q)
+  }
+
+  /* ---------------------------------------------------------- semantic -- */
+
+  /** The semantic index, loaded on the first search by meaning. */
+  private vectors: SemanticVectors | null = null
+  private queryEmbedder: QueryEmbedder | null = null
+  /** Turns a query into its vector (tests pass their own). Null: the helper or the model is missing. */
+  embedQuery: ((text: string) => Promise<Float32Array>) | null | undefined
+
+  private queryVectorFn(): ((text: string) => Promise<Float32Array>) | null {
+    if (this.embedQuery !== undefined) return this.embedQuery
+    const tool = embedToolPath()
+    const model = installedModel().text
+    if (!tool || !model) return null
+    if (this.queryEmbedder === null) this.queryEmbedder = new QueryEmbedder(tool, model)
+    const embedder = this.queryEmbedder
+    return (text) => embedder.embed(text)
+  }
+
+  /** Stop the query helper and let go of the vectors (the worker is shutting down, or idle). */
+  closeSemantic() {
+    this.queryEmbedder?.close()
+    this.queryEmbedder = null
+    this.vectors?.close()
+    this.vectors = null
+  }
+
+  /**
+   * Search by meaning, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
+   * stands out for the query, and files holding at least half of its words. Without the model, or
+   * before files have vectors, only the words count, and a notice says why.
+   */
+  private async runSemantic(q: ParsedQuery, limit: number, res: SearchResponse, opts: SearchOptions) {
+    const notices: string[] = []
+    // While typing, wait a moment: the next key press would make this query's vector wasted work.
+    if (q.typing && opts.cancelled) {
+      await Bun.sleep(150)
+      if (opts.cancelled()) { res.partial = true; res.strategy = "meaning"; return }
+    }
+    const text = [...q.words, ...q.phrases].join(" ")
+    const cat = this.catalog
+    const check = policyFor(crawlOptionsFor(this.config))
+    const usable = (id: number): number | undefined => {
+      const i = cat.indexOf(id)
+      return i !== undefined && cat.passes(i, q.filters) ? i : undefined
+    }
+
+    // Meaning: every passage on this query's scale, each file's best.
+    const best = new Map<number, { z: number; row: number }>()
+    let index = null
+    if (!this.config.semantic.enabled) notices.push("Search by meaning is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
+    else if (!this.config.content.enabled) notices.push("Search by meaning needs file contents, which are off")
+    else {
+      this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:"))
+      index = this.vectors.get(mainGeneration(this.db))
+      const embed = this.queryVectorFn()
+      if (!embed) notices.push("Search by meaning needs its model: run `zsearch semantic install`. Showing word matches")
+      else if (!index?.size) notices.push("No files have been read for meaning yet: they are with the next index update")
+      else if (text.trim()) {
+        try {
+          const vector = await embed(text)
+          if (opts.cancelled?.()) { res.partial = true; res.strategy = "meaning"; return }
+          const scores = index.score(vector)
+          const z = meaning(scores, index.modality, index.setsScale)
+          const authorized = new Map<number, boolean>()
+          for (let row = 0; row < z.length; row++) {
+            const file = index.file[row]!
+            const b = best.get(file)
+            if (b && b.z >= z[row]!) continue
+            let ok = authorized.get(file)
+            if (ok === undefined) {
+              const i = usable(file)
+              authorized.set(file, (ok = i !== undefined && this.contentAuthorized(i, check)))
+            }
+            if (ok) best.set(file, { z: z[row]!, row })
+          }
+        } catch (err) {
+          notices.push(`Search by meaning failed (${(err as Error).message}). Showing word matches`)
+        }
+      }
+    }
+
+    // Words: the share of the query's words each file holds, in its name or folders, or its text.
+    const terms = queryTerms(text)
+    const coverage = new Map<number, number>()
+    const nameMatch = new Set<number>()
+    const bodyMatch = new Set<number>()
+    const matching = (column: string, term: string, prefix: boolean): number[] => {
+      try {
+        return (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`${column} : ${ftsQuote(term)}${prefix ? "*" : ""}`) as number[][]).map((r) => r[0]!)
+      } catch {
+        return []
+      }
+    }
+    const contentOk = new Map<number, boolean>()
+    const canRead = (id: number, i: number) => {
+      let ok = contentOk.get(id)
+      if (ok === undefined) contentOk.set(id, (ok = this.contentAuthorized(i, check)))
+      return ok
+    }
+    terms.forEach((term, t) => {
+      // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
+      const stem = stemOf(term)
+      const prefix = stem !== term || (q.typing && t === terms.length - 1)
+      const has = new Set<number>()
+      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id) }
+      if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) {
+        if (has.has(id)) continue
+        const i = usable(id)
+        if (i !== undefined && canRead(id, i)) { has.add(id); bodyMatch.add(id) }
+      }
+      for (const id of has) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
+    })
+    // Words after `-` or `!` rule a file out.
+    for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
+      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id) }
+      for (const id of matching("body", n, false)) { best.delete(id); coverage.delete(id) }
+    }
+
+    const ranked = rank({
+      best,
+      coverage,
+      lookup: isLookup(terms),
+      wordWeight: WORD_WEIGHT,
+      hinted: kindHints(text),
+      kindOf: (file) => { const i = cat.indexOf(file); return i === undefined ? undefined : cat.kinds[i] },
+    })
+    // Code's words are everywhere in code: they count for half (DigUp's code index does the same).
+    for (const r of ranked) {
+      const i = cat.indexOf(r.file)
+      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * (isLookup(terms) ? 2 : 1) * (coverage.get(r.file) ?? 0) ** 1.5
+    }
+    if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
+    else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
+    res.total = ranked.length
+    res.strategy = best.size ? "meaning + words" : "words"
+    if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
+    const pattern = termsPattern(q.words, q.phrases, q.typing)
+    res.hits = ranked.slice(0, limit).map((r, n) => {
+      const sources: Source[] = []
+      if (r.row !== null || bodyMatch.has(r.file)) sources.push("content")
+      if (nameMatch.has(r.file)) sources.push("name")
+      const h = this.hit(r.file, r.score, sources.length ? sources : ["content"])
+      if (n >= 60) return h
+      // Show the passage that matched by meaning; or, matched by words, the lines with them.
+      const useMeaning = r.row !== null && index && (r.z! >= 2 || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
+      if (useMeaning) {
+        const t = this.storedText(r.file)
+        if (t !== null) {
+          h.lines = passageLines(t, index!.start[r.row!]!, index!.end[r.row!]!, pattern)
+          h.matchCount = h.lines.length
+        }
+      } else if (pattern && bodyMatch.has(r.file)) {
+        const s = this.snippets(r.file, pattern)
+        h.lines = s.lines
+        h.matchCount = s.count
+      }
+      return h
+    })
   }
 
   /* ------------------------------------------------------------- names -- */
@@ -1009,6 +1175,48 @@ export class SearchEngine {
 /** How long recording an open waits for the database, and when it tries again if that was not enough. */
 const OPEN_WAIT_MS = 20
 const OPEN_RETRY_MS = 250
+
+/** A word without a plural or verb ending, to match its other forms as a prefix ("invoices" → "invoice*"). */
+function stemOf(term: string): string {
+  if (/\p{N}/u.test(term)) return term
+  for (const [end, keep] of [["ies", 3], ["ing", 4], ["ed", 4], ["es", 4], ["s", 4]] as const) {
+    if (term.endsWith(end) && !term.endsWith("ss") && term.length - end.length >= keep) return term.slice(0, -end.length)
+  }
+  return term
+}
+
+/**
+ * The lines of a passage to show for a meaning match: those with the query's words, or else its
+ * first lines. Line and page numbers count from the start of the file's text.
+ */
+function passageLines(text: string, start: number, end: number, pattern: string | null): LineMatch[] {
+  let line = 1
+  let page = 1
+  for (let k = 0; k < start && k < text.length; k++) {
+    const c = text.charCodeAt(k)
+    if (c === 10) line++
+    else if (c === 12) { line++; page++ }
+  }
+  const slice = text.slice(start, end)
+  if (pattern) {
+    try {
+      const found = keywordLines(slice, pattern, 3)
+      if (found.lines.length) return found.lines.map((l) => ({ ...l, line: l.line + line - 1, page: l.page + page - 1, offset: undefined }))
+    } catch {}
+  }
+  const out: LineMatch[] = []
+  let from = 0
+  for (let k = 0; k <= slice.length && out.length < 2; k++) {
+    const c = k < slice.length ? slice.charCodeAt(k) : 10
+    if (c !== 10 && c !== 12) continue
+    const t = slice.slice(from, k).trim()
+    if (t) out.push({ line, page, ...clipLine(t, []) })
+    line++
+    if (c === 12) page++
+    from = k + 1
+  }
+  return out
+}
 
 /** The query text for name matching, with negations as fzf `!` terms. */
 function fuzzyQueryText(q: ParsedQuery): string {

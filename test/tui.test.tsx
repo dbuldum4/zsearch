@@ -171,9 +171,12 @@ describe("search screen", () => {
     await until(s, (f) => f.includes(`~/Documents/${order[2]}`))
   })
 
-  test("Tab switches between find and fuzzy", async () => {
+  test("Tab switches between find, fuzzy and semantic", async () => {
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FUZZY ") && f.includes("fuzzy names"))
+    s.mockInput.pressTab()
+    // Without the model: word matches, and a notice saying how to turn search by meaning on.
+    await until(s, (f) => f.includes(" SEMANTIC ") && f.includes("Search by meaning is off"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FIND ") && f.includes("exact text (indexed)"))
   })
@@ -206,6 +209,8 @@ describe("search screen", () => {
     await until(s, (f) => f.includes("▶ line 45 mentions zebra"))
     s.mockInput.pressKey("2", { meta: true })
     await until(s, (f) => f.includes(" FUZZY "))
+    s.mockInput.pressKey("3", { meta: true })
+    await until(s, (f) => f.includes(" SEMANTIC "))
     s.mockInput.pressKey("1", { meta: true })
     await until(s, (f) => f.includes(" FIND "))
   })
@@ -222,6 +227,8 @@ describe("search screen", () => {
     await esc(s)
     await type(s, "qqqzzzxxx")
     await until(s, (f) => f.includes("No matches") && f.includes("Tab for fuzzy search"))
+    s.mockInput.pressTab()
+    await until(s, (f) => f.includes("No matches") && f.includes("Tab to search by meaning"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes("No matches") && f.includes("Tab to find the exact text"))
     s.mockInput.pressTab()

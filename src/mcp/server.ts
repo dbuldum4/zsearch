@@ -509,14 +509,14 @@ export function tools(host: Host): Tool[] {
     title: "Search files",
     description: `Search the user's indexed files by name and by the text inside them (PDF, Word, Excel, PowerPoint, OpenDocument, EPUB, e-mail, notebooks, code, Markdown, plain text).
 
-Mode "find" (default) finds the exact text of the query in file contents and paths: several words are one piece of text, in that order; it ignores case unless the query has a capital letter. Set regex to treat the query as a JavaScript regular expression. Mode "fuzzy" matches file paths fzf-style and forgives typos: use it for a file name you only half remember.
+Mode "find" (default) finds the exact text of the query in file contents and paths: several words are one piece of text, in that order; it ignores case unless the query has a capital letter. Set regex to treat the query as a JavaScript regular expression. Mode "fuzzy" matches file paths fzf-style and forgives typos: use it for a file name you only half remember. Mode "semantic" finds files by what they are about (and photos by what they show), for a description rather than exact words: it works once the user has turned search by meaning on (\`zsearch semantic install\`); until then it says so and matches the query's words.
 
 Filters can be given as arguments, or written in the query in zsearch's syntax: type:pdf, ext:docx, in:~/Documents, path:2024, size:>5mb, mtime:<7d, after:2024-01-01, before:2024-06, limit:50, is:image. A query of filters alone lists matching files, newest first; an empty query lists recently opened and modified files.
 
 Each result gives the file's absolute path, kind, size, modification time and its best matching lines with line numbers (and the page, slide or sheet for paged documents). Use read_file to read more of a file.`,
     inputSchema: obj({
       query: str("Text to find, or a regular expression with regex: true. May include filters (type:pdf mtime:<30d). Empty: recent files.", { default: "" }),
-      mode: str('"find" (exact text, default) or "fuzzy" (typo-tolerant file names)', { enum: ["find", "fuzzy"], default: "find" }),
+      mode: str('"find" (exact text, default), "fuzzy" (typo-tolerant file names) or "semantic" (by meaning)', { enum: ["find", "fuzzy", "semantic"], default: "find" }),
       regex: bool("Treat the query as a regular expression (find mode)", false),
       type: strList(`Only these kinds of file. Kinds: ${KINDS}. Aliases: docs (all documents), spreadsheet, presentation, photo, music, notes, word, excel, powerpoint…`),
       exclude_type: strList("Leave out these kinds of file"),
