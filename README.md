@@ -23,13 +23,13 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 
 ## Highlights
 
-- **Two search modes, no guessing.** *Find* (the default) looks for the exact text you type in file names and contents; wrap the query in slashes (`/\d{4}-\d{2}/`) for a regular expression. *Fuzzy* is fzf-style name matching that forgives typos. Press <kbd>Tab</kbd> to switch.
+- **Search modes, no guessing.** *Find* (the default) looks for the exact text you type in file names and contents; wrap the query in slashes (`/\d{4}-\d{2}/`) for a regular expression. *Fuzzy* is fzf-style name matching that forgives typos. *Semantic*, if you turn it on, finds files by what they are about. Press <kbd>Tab</kbd> to switch.
 - **It looks inside files.** It reads PDF, DOCX, XLSX, PPTX, ODT, ODS, ODP, RTF, EPUB, EML, Jupyter notebooks, legacy `.doc`, `.xls` and `.ppt`, source code, Markdown, HTML, CSV, JSON, logs and other text. It shows which page, slide, sheet or line matched.
 - **Setup is guided.** On first launch, zsearch asks what to index (Documents and Downloads, home folder, whole disk or chosen folders) and whether to read file contents or include hidden files. Indexing runs in the background with a progress bar, and results appear while it runs.
 - **Updates are incremental.** Only new or changed files are read again, and search picks up the changes without reloading the whole index. While a frontend is running, native file-system events trigger a refresh; an hourly refresh also catches missed events. Press <kbd>Ctrl-R</kbd> to refresh now. Refreshes currently walk the selected roots.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
 - **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
-- **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests.
+- **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests, except to download the model for search by meaning when you ask for it.
 - **AI assistants can use it.** `zsearch mcp` lets Claude and other MCP clients search your files and read their text (see [below](#use-it-from-claude-and-other-ai-apps-mcp)).
 
 ## Install
@@ -81,9 +81,46 @@ Type to search. Use <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>Enter</kbd> to o
 | --- | --- | --- |
 | **find** (default) | The exact text you type, in file contents and paths. Several words are one piece of text, in that order (`marketing budget`). It is smart-case: case-sensitive only if the query has a capital letter. `"Quotes"` around the whole query are optional. | Almost everything: names, phrases, error messages, IDs |
 | **find** with `/regex/` | Wrap the query in slashes, or start it with `re:`, and it runs as a JavaScript regular expression over contents and paths. Nothing else is ever treated as a regex. | Code, dates, emails, structured text |
+| **semantic** (optional) | Files about what you describe, in other words than theirs: `lease for the flat in Lisbon`, `screenshot of a flight booking`. It needs a model downloaded first; see [Search by meaning](#search-by-meaning). | Things you remember the gist of, not the words |
 | **fuzzy** | Matches file paths the way fzf does: subsequences, with bonuses for word starts, `camelCase`, path separators and runs of consecutive letters, and a preference for the file name over the folders. Typos are forgiven (`mian` finds `main.rs`, `recieve` finds `receive.py`). Content matches are typo-tolerant too. Supports fzf operators: `'exact` `^prefix` `suffix$` `!exclude`. | Finding a file whose name you half remember |
 
-Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. It ranks an oversampled pool of content matches by match count, then combines them with name matches using reciprocal-rank fusion. Opening history and modification time break near ties; a name match is not guaranteed to come first. Ranking happens before the result limit. Broad queries stop after five times the requested matches (at least 100) or their time budget and are marked partial; explicit sorting scans until completion or its time budget. `f:…` runs one query in fuzzy mode.
+Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. It ranks an oversampled pool of content matches by match count, then combines them with name matches using reciprocal-rank fusion. Opening history and modification time break near ties; a name match is not guaranteed to come first. Ranking happens before the result limit. Broad queries stop after five times the requested matches (at least 100) or their time budget and are marked partial; explicit sorting scans until completion or its time budget. `f:…` runs one query in fuzzy mode, `s:…` in semantic mode.
+
+### Search by meaning
+
+Search by meaning runs Google DeepMind's [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) on your computer with [llama.cpp](https://github.com/ggml-org/llama.cpp), and ranks results the way [DigUp](https://github.com/ARahim3/DigUp) does. It is off until you turn it on, and find and fuzzy never need it:
+
+```sh
+zsearch semantic install      # downloads the model (310 MB; 865 MB with the image encoder on macOS), checks its SHA-256
+zsearch index                 # reads your files for meaning (any index update does, from now on)
+zsearch search -m semantic 'notes from the meeting about the office move'
+zsearch semantic status       # what has been read; `zsearch semantic remove` deletes the model and its index
+```
+
+In the Mac app it is **Settings › Meaning › Download and Turn On**, and the **Meaning** tab next to Find and Fuzzy. The terminal app's third tab is **semantic** (<kbd>Tab</kbd> or <kbd>Alt-3</kbd>).
+
+Every passage of every file is scored against the query, and the scores are put on one scale per query: how far a passage stands out from the rest. A file is a result if its best passage stands out clearly, or if it holds at least half of the query's words; it scores its meaning plus a bonus for the words it holds, plus one for the kind of file the query asks for ("photo of…", "…pdf"). A query of codes and numbers (`INV-2024-118`) weighs words double. The preview opens at the passage that matched.
+
+Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
+
+- It embeds the text the index already extracted, rather than reading every file again.
+- Passages from many files go to the model together, sorted by length and packed into as few model calls as fit; the next batch is prepared while one runs.
+- A passage is embedded once wherever it appears: copies of a file (`report (1).pdf`), text shared between files, and files that were renamed, moved or re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded again, because passages end where the text says (at paragraphs a hash picks) rather than at fixed offsets.
+- Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
+- Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
+
+With EmbeddingGemma 2 on a GitHub-hosted macOS runner, 188 text files with 10 copies among them:
+
+| | DigUp's way | zsearch |
+| --- | --- | --- |
+| First index | 582 passages, 279k tokens, 721 s | 561 passages embedded and 48 reused, 235k tokens, 603 s |
+| After editing 5 files | 10 passages, 8.8 s | 6 embedded, 4 reused, 5.9 s |
+| After `zsearch index --rebuild` | everything again, about 720 s | nothing embedded, 0.1 s |
+
+The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together leaves each vector within 0.999 cosine of embedding it alone (0.9994 at worst), and on a CPU it is no faster. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
+
+
+It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), as 16-bit floats like DigUp's: 8-bit numbers would take half the space, but with the real model they changed 2.7% of the top ten results.
 
 ## Query syntax
 
@@ -123,7 +160,7 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Ctrl-Shift-X</kbd> | Exclude the selected file or folder and update the index |
 | <kbd>Ctrl-Shift-O</kbd> | Cycle name, size, date and path sorting |
 | <kbd>Ctrl-Shift-T</kbd> | Fold the preview around matches |
-| <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> | Switch between find and fuzzy |
+| <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> / <kbd>Alt-3</kbd> | Switch between find, fuzzy and semantic |
 | <kbd>Ctrl-T</kbd> | Show or hide the preview |
 | <kbd>Shift-↑</kbd> <kbd>Shift-↓</kbd>, <kbd>Ctrl-D</kbd> <kbd>Ctrl-U</kbd>, wheel over the preview | Scroll the preview |
 | <kbd>Ctrl-F</kbd> / <kbd>Ctrl-B</kbd> | Jump to the next or previous match in the preview |
@@ -219,12 +256,15 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `skipDatasetOcr` | `true` | Leave images in machine-made dataset folders out of OCR (they stay findable by name) |
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
 | `editor` | `""` | Existing editor executable and fixed arguments (defaults to `$VISUAL` / `$EDITOR`); command interpreters are rejected |
-| `defaultMode` | `find` | Initial search mode (`find` or `fuzzy`) |
+| `semantic.enabled` | `false` | Read files for meaning when indexing (`zsearch semantic install` turns it on) |
+| `semantic.images` | `true` | ...and photos and screenshots by what they show (macOS, with the image encoder) |
+| `semantic.code` | `false` | ...and source code and data files |
+| `defaultMode` | `find` | Initial search mode (`find`, `fuzzy` or `semantic`) |
 | `preview` | `true` | Show the preview pane |
 
 To update the index only when you ask (the Mac app's **Update Index Now**, `^R` in the terminal app, `zsearch index`, or the MCP `update_index` tool), set `autoRefreshMinutes` to `0` and `liveUpdates` to `false`: `zsearch config set autoRefreshMinutes 0` and `zsearch config set liveUpdates false`, or pick **Only when I ask** under "Update the index" in the Mac app. Changing folders or what to read then waits for the next update too, in both apps. With a schedule picked, the Mac app's **Also update as files change** switch sets `liveUpdates`. Setting up for the first time, and excluding a result, still update the index.
 
-Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait.
+Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait. `ZSEARCH_EMBED` names the embedding helper (`0` turns search by meaning off), and `ZSEARCH_MODELS` the folder the model is in.
 
 The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it. App-owned data/config folders use mode 0700 and config, database and journals use 0600. The schema changes rebuild older indexes to correct non-Latin token matching. An index from the previous schema (version 9) is upgraded in place on the next update instead: nothing is read from disk again. What OCR read in images and scanned PDFs is kept by file, so later rebuilds do not run OCR again on files that have not changed.
 
@@ -294,14 +334,15 @@ Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and
 
 ```text
 zsearch [query]                 open the interactive search
-zsearch search <query>          print matches and exit (-m find|fuzzy, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
+zsearch search <query>          print matches and exit (-m find|fuzzy|semantic, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json)
 zsearch estimate [folders...]   how long a first index takes, roughly (--docs, --home, --disk, --json)
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256
 zsearch exclude <path>          exclude an indexed file or folder and update
-zsearch doctor                  check SQLite/FTS5, pdftotext, OCR and the index
+zsearch semantic [status|install|remove]  search by meaning: download the model (--no-images), or delete it
+zsearch doctor                  check SQLite/FTS5, pdftotext, OCR, the embedding helper and the index
 zsearch reset                   delete the index
 zsearch serve                   JSON lines on stdin/stdout, for the Mac app (see src/serve.ts)
 zsearch mcp                     MCP server on stdin/stdout, for Claude and other AI apps (see above)
@@ -322,10 +363,12 @@ src/
     extract/  zip/OOXML/ODF/EPUB, OLE2 (.doc/.xls/.ppt), PDF, RTF, email, text decoding
   search/     query parser, fzf-style matcher, FTS5 keyword search, regex planner,
               vocabulary index, snippets, fusion/ranking, search worker
+  semantic/   search by meaning: passages, the embedding helper, the semantic index, ranking
   tui/        Solid + OpenTUI app: setup, results, preview, status, help
   cli.ts      command line
   serve.ts    the engine over JSON lines, for the Mac app
   mcp/        the engine as an MCP server: protocol (rpc.ts) and tools (server.ts)
+native/embed/  zsearch-embed: EmbeddingGemma 2 on llama.cpp, for search by meaning
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
@@ -349,6 +392,9 @@ bun run typecheck
 bun run build                   # dist/zsearch
 bun run bench                   # index and search benchmark on a generated corpus (--files=N, --compare=old.json)
 bun run bench --corpus=real     # the same, plus real projects (MDN docs, Kubernetes) fetched once into ~/.cache
+scripts/build-embed.sh          # dist/zsearch-embed, the embedding helper (llama.cpp; needs CMake and a C++ compiler)
+bun scripts/bench-semantic/bench.ts --model=…gguf   # reading for meaning, against the way DigUp does it
+bun scripts/bench-semantic/quality.ts --model=…gguf # results with the stored vectors, against full precision and 8-bit
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt, Pillow)
 ```
 
@@ -356,7 +402,7 @@ The end-to-end tests drive the real app in a pseudo-terminal through [pyte](http
 
 ## Acknowledgements
 
-zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi).
+zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi). Search by meaning adapts [DigUp](https://github.com/ARahim3/DigUp)'s ranking and model runtime (MIT), runs on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and uses Google DeepMind's [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2), downloaded on request; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

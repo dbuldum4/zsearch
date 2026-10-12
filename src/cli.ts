@@ -27,6 +27,11 @@ import { ocrToolPath, pdftotextPath } from "./platform.ts"
 import { SearchEngine, type SearchHit } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "./util/text.ts"
+import { embedToolPath } from "./semantic/helper.ts"
+import { SemanticIndexer, semanticAvailable } from "./semantic/indexer.ts"
+import { removeSemantic, semanticStatus } from "./semantic/manage.ts"
+import { downloadModel, MEDIA_MODEL, MODEL_LICENSE, MODEL_REPOSITORY, TEXT_MODEL } from "./semantic/model.ts"
+import { semanticDbPath } from "./semantic/store.ts"
 
 export const VERSION: string = pkg.version
 
@@ -41,19 +46,20 @@ Usage
   zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
   zsearch duplicates [--json]      find identical indexed files
   zsearch exclude <path>          exclude an indexed file or folder
+  zsearch semantic [status|install|remove]  search by meaning (downloads a model)
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
   zsearch serve                   JSON lines on stdin/stdout (for the macOS app)
   zsearch mcp                     MCP server on stdin/stdout (for Claude and other AI apps)
 
 Interactive options
-  -m, --mode <mode>   start in find (default) | fuzzy
+  -m, --mode <mode>   start in find (default) | fuzzy | semantic
   -p, --print         print the chosen path instead of opening it
                       (e.g.  vim "$(zsearch -p)")
       --no-preview    start with the preview pane hidden
 
 Search options
-  -m, --mode <mode>   find (default) | fuzzy
+  -m, --mode <mode>   find (default) | fuzzy | semantic
   -e, --regex         treat the query as a regular expression
   -n, --limit <n>     maximum results (default 20)
   -l, --files         print paths only
@@ -77,6 +83,7 @@ Query syntax
                       (smart case: lowercase ignores case)
   /regex/  re:...     find with a regular expression
   f:...               fuzzy: fzf-style names, typo-tolerant contents
+  s:...               semantic: by meaning (zsearch semantic install)
   ext:pdf,docx  type:doc|sheet|slides|code|image|folder  in:~/Documents
   path:2024  size:>5mb  mtime:<7d  after:2024-01-01  limit:50
 
@@ -190,6 +197,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdReset()
       case "doctor":
         return cmdDoctor()
+      case "semantic":
+        return await cmdSemantic(rest, args)
       case "serve": {
         const { serve } = await import("./serve.ts")
         return await serve(VERSION)
@@ -243,6 +252,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
   const db = openDb(p.db)
   const engine = new SearchEngine(db, loadConfig())
   const res = await engine.search(query, mode, { limit, budgetMs: 10_000 })
+  engine.closeSemantic()
   db.close()
   if (flag(args, "json")) {
     console.log(JSON.stringify({ ...res, hits: res.hits.map(jsonHit) }, null, 2))
@@ -368,6 +378,19 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
     }
     if (!quiet) console.error(`Indexing ${config.roots.join(", ")}…`)
     const result = await new Indexer(db, config, { onProgress: report, signal: controller.signal }).run()
+    // Search by meaning, when it is on: embed what this run read.
+    const tool = embedToolPath()
+    if (result.phase === "done" && !semanticAvailable(config, tool)) {
+      const base = result.elapsedMs
+      const started = Date.now()
+      const summary = await new SemanticIndexer(db, config, tool, {
+        signal: controller.signal,
+        onProgress: (m) => report({ ...result, phase: "meaning", current: m.current, waiting: m.waiting, meaning: m }),
+      }).run()
+      result.elapsedMs = base + Date.now() - started
+      result.meaning = { total: summary.files, done: summary.files, embedded: summary.embedded, reused: summary.reused, error: summary.error }
+      if (summary.status === "cancelled") result.phase = "cancelled"
+    }
     if (tty && !quiet) process.stderr.write("\r\x1b[2K")
     const stats = indexStats(db, p.db)
     db.close()
@@ -386,6 +409,9 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
       console.error(`Index: ${formatCount(stats.files)} files, ${formatCount(stats.folders)} folders, ${formatCount(stats.withContent)} with text (${formatBytes(stats.contentBytes)}), ${formatBytes(stats.dbBytes)} on disk.`)
       if (result.unreadableFolders) console.error(`Could not read ${result.unreadableFolders} folders (check permissions); their indexed files were kept.`)
       if (result.contentErrors) console.error(`${formatCount(result.contentErrors)} files could not be read (see \`zsearch status --errors\`).`)
+      const m = result.meaning
+      if (m?.error) console.error(`Reading for meaning stopped: ${m.error}`)
+      else if (m) console.error(`Meaning: ${formatCount(m.done)} files read, ${formatCount(m.embedded)} passages embedded, ${formatCount(m.reused)} reused.`)
     }
     return 0
   } finally {
@@ -448,6 +474,11 @@ function cmdStatus(args: Args): number {
   if (s.unreadableFolders?.length) console.log(`Could not read ${s.unreadableFolders.length} folders (check permissions); indexed files were kept.`)
   if (s.secrets) console.log(`Not read     ${formatCount(s.secrets)} key or password files, indexed by name only`)
   if (s.datasetImages) console.log(`No OCR       ${formatCount(s.datasetImages)} images in ${formatCount(s.datasetFolders.length)} machine-made dataset folders (\`zsearch config set skipDatasetOcr false\` reads them)`)
+  if (config.semantic.enabled) {
+    const sem = semanticStatus(config, p.db)
+    const i = sem.index
+    console.log(`Meaning      ${sem.blocked ? `off: ${sem.blocked}` : i ? `${formatCount(i.files)} files, ${formatCount(i.vectors)} vectors (${formatBytes(i.bytes)})${i.partial ? `, ${formatCount(i.partial)} long files to finish` : ""}${i.error ? `; last run failed: ${i.error}` : ""}` : "not read yet (with the next index update)"}`)
+  }
   const holder = lockHolder(p.lock)
   if (holder) {
     const waiting = getMeta(db, "waiting_for")
@@ -520,9 +551,68 @@ function cmdReset(): number {
     console.error(`zsearch: indexing is in progress (pid ${holder}); stop it first`)
     return 1
   }
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(p.db + suffix, { force: true })
+  for (const path of [p.db, semanticDbPath(p.db)]) for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true })
   console.log(`Deleted the index at ${tildify(p.db)}.`)
   return 0
+}
+
+/* --------------------------------------------------------------- semantic -- */
+
+async function cmdSemantic(rest: string[], args: Args): Promise<number> {
+  const p = paths()
+  const action = rest[0] ?? "status"
+  const config = loadConfig()
+  switch (action) {
+    case "status": {
+      const s = semanticStatus(config, p.db)
+      if (flag(args, "json")) {
+        console.log(JSON.stringify(s, null, 2))
+        return 0
+      }
+      console.log(`Search by meaning  ${s.enabled ? "on" : "off"}${s.blocked && s.enabled ? ` (not running: ${s.blocked})` : ""}`)
+      console.log(`Model              ${s.model.text ? `${MODEL_REPOSITORY} in ${tildify(s.modelDir)}${s.model.media ? ", with the image encoder" : ""}` : "not downloaded"}`)
+      console.log(`Helper             ${s.helper ? tildify(s.helper) : "not found (scripts/build-embed.sh builds it; the Mac app has it)"}`)
+      if (s.index) console.log(`Index              ${formatCount(s.index.files)} files, ${formatCount(s.index.passages)} passages, ${formatCount(s.index.vectors)} vectors, ${formatBytes(s.index.bytes)}${s.index.lastRunAt ? `, updated ${formatAge(s.index.lastRunAt)}` : ""}${s.index.error ? `\nLast error         ${s.index.error}` : ""}`)
+      return 0
+    }
+    case "install": {
+      const media = flag(args, "images") !== false && process.platform === "darwin"
+      const bytes = TEXT_MODEL.bytes + (media ? MEDIA_MODEL.bytes : 0)
+      console.error(`Downloading EmbeddingGemma 2 (${MODEL_REPOSITORY}, ${MODEL_LICENSE}), ${formatBytes(bytes)}${media ? " with the image encoder" : ""}…`)
+      const tty = process.stderr.isTTY === true
+      const controller = new AbortController()
+      const onSignal = () => controller.abort()
+      process.on("SIGINT", onSignal)
+      try {
+        await downloadModel({
+          media,
+          signal: controller.signal,
+          onProgress: (d) => { if (tty) process.stderr.write(`\r\x1b[2K${d.file} ${Math.floor((d.received / d.total) * 100)}% of ${formatBytes(d.total)}`) },
+        })
+      } finally {
+        process.off("SIGINT", onSignal)
+        if (tty) process.stderr.write("\r\x1b[2K")
+      }
+      saveConfig({ ...config, semantic: { ...config.semantic, enabled: true, images: media ? config.semantic.images : false } })
+      console.error("Search by meaning is on: the next index update reads your files for it (`zsearch index` starts one now).")
+      if (!embedToolPath()) console.error("The embedding helper is missing: build it with scripts/build-embed.sh, or use the Mac app.")
+      return 0
+    }
+    case "remove":
+    case "off": {
+      const holder = lockHolder(p.lock)
+      if (holder) {
+        console.error(`zsearch: indexing is in progress (pid ${holder}); stop it first`)
+        return 1
+      }
+      saveConfig({ ...config, semantic: { ...config.semantic, enabled: false } })
+      removeSemantic(p.db)
+      console.error("Search by meaning is off; its model and index are deleted.")
+      return 0
+    }
+    default:
+      throw new UsageError(`unknown semantic action "${action}" (status, install, remove)`)
+  }
 }
 
 /* ----------------------------------------------------------------- doctor -- */
@@ -545,6 +635,9 @@ function cmdDoctor(): number {
   console.log(`${ok(!!pdf)} pdftotext ${pdf ?? "not found — using the built-in PDF reader (slower); install poppler for speed"}`)
   const ocr = ocrToolPath()
   console.log(`${ok(!!ocr)} OCR ${ocr ?? "not available — images and scanned PDF pages are indexed by name only (the Mac app has it)"}`)
+  const sem = semanticStatus(loadConfig(), p.db)
+  console.log(`${ok(!!sem.helper)} embedding helper ${sem.helper ?? "not found — search by meaning needs zsearch-embed (in the Mac app; scripts/build-embed.sh builds it)"}`)
+  console.log(`${ok(sem.model.text)} meaning model ${sem.model.text ? `${tildify(sem.modelDir)}${sem.model.media ? " (with images)" : ""}` : "not downloaded (zsearch semantic install)"}`)
   console.log(`${ok(existsSync(p.db))} index ${tildify(p.db)}`)
   console.log(`${ok(configExists())} config ${tildify(p.configFile)}`)
   return 0
@@ -553,6 +646,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { search: "search <query> [-m find|fuzzy] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install [--no-images]|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

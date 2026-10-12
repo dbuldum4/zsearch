@@ -89,11 +89,12 @@ struct SearchBar: View {
             Picker("Mode", selection: $model.mode) {
                 Text("Find").tag(Mode.find)
                 Text("Fuzzy").tag(Mode.fuzzy)
+                Text("Meaning").tag(Mode.semantic)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching.")
+            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Meaning: files about what you describe (turn it on in Settings › Meaning).")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -365,11 +366,12 @@ struct IndexProgressView: View {
 
     private var text: String {
         guard let p = activity.progress else { return "Starting…" }
-        if p.phase == "content", let waiting = p.waiting { return "Waiting: \(waiting) · resumes on its own" }
+        if p.phase == "content" || p.phase == "meaning", let waiting = p.waiting { return "Waiting: \(waiting) · resumes on its own" }
         switch p.phase {
         case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
         case "content": return "Reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
         case "cleanup": return "Cleaning up…"
+        case "meaning": return "Reading for meaning \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
         default: return "Indexing…"
         }
     }

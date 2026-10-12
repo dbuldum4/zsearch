@@ -2,6 +2,7 @@
 # Build dist/zsearch.app and dist/zsearch.dmg (macOS only).
 #
 #   bun run build                      # first: the engine at dist/zsearch
+#   scripts/build-embed.sh             # and the embedding helper at dist/zsearch-embed (search by meaning)
 #   macos/scripts/build-app.sh
 #
 # Environment: VERSION (default: package.json), BUILD (default: 1), COMMIT (default: git HEAD).
@@ -16,6 +17,11 @@ BUILD=${BUILD:-1}
 COMMIT=${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 
 [ -x "$ENGINE" ] || { echo "error: $ENGINE not found; run 'bun run build' first" >&2; exit 1; }
+EMBED="$DIST/zsearch-embed"
+if [ ! -x "$EMBED" ]; then
+  if [ "${ZSEARCH_RELEASE:-0}" = "1" ]; then echo "error: $EMBED not found; run scripts/build-embed.sh first" >&2; exit 1; fi
+  echo "warning: $EMBED not found (scripts/build-embed.sh builds it); this app will have no search by meaning" >&2
+fi
 
 swift build -c release --package-path "$ROOT/macos" --product ZSearch
 swift build -c release --package-path "$ROOT/macos" --product zsearch-ocr
@@ -28,6 +34,10 @@ cp "$BIN/ZSearch" "$APP/Contents/MacOS/ZSearch"
 cp "$ENGINE" "$APP/Contents/Helpers/zsearch"
 # The OCR helper sits next to the engine, where the engine looks for it.
 cp "$BIN/zsearch-ocr" "$APP/Contents/Helpers/zsearch-ocr"
+# So does the embedding helper (search by meaning). The model is downloaded on request, not bundled.
+[ -x "$EMBED" ] && cp "$EMBED" "$APP/Contents/Helpers/zsearch-embed"
+# Licences of what the helpers are built from (DigUp, llama.cpp).
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" -e "s/@COMMIT@/$COMMIT/" "$ROOT/macos/Info.plist" > "$APP/Contents/Info.plist"
 
 # App icon, drawn by a script (no binary assets in the repository).
@@ -50,11 +60,15 @@ fi
 # The engine first, then the bundle.
 codesign "${SIGN_FLAGS[@]}" --entitlements "$ROOT/macos/engine-entitlements.plist" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
 codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
+if [ -x "$APP/Contents/Helpers/zsearch-embed" ]; then
+  codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.embed "$APP/Contents/Helpers/zsearch-embed"
+fi
 codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
-# The bundled engine must still run after signing.
+# The bundled engine (and helper) must still run after signing.
 "$APP/Contents/Helpers/zsearch" --version
+[ -x "$APP/Contents/Helpers/zsearch-embed" ] && "$APP/Contents/Helpers/zsearch-embed" --version
 
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT

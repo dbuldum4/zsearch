@@ -17,6 +17,16 @@ export interface ContentConfig {
   ocr: boolean
 }
 
+/** Search by meaning (the semantic tab), with a model downloaded on request. See src/semantic. */
+export interface SemanticConfig {
+  /** Embed files' text when indexing, so the semantic tab can find them. Needs the model. */
+  enabled: boolean
+  /** Also embed what images show (Mac app, with the image encoder downloaded). */
+  images: boolean
+  /** Also embed source code and data files (off, as in DigUp: keyword search suits them better). */
+  code: boolean
+}
+
 export interface Config {
   /** Folders to index. `~` is expanded. */
   roots: string[]
@@ -60,8 +70,9 @@ export interface Config {
   skipDatasetOcr: boolean
   /** Command used to open files in an editor (defaults to $VISUAL / $EDITOR). */
   editor: string
+  semantic: SemanticConfig
   /** Default search mode in the TUI. */
-  defaultMode: "find" | "fuzzy"
+  defaultMode: "find" | "fuzzy" | "semantic"
   /** Show the preview pane by default. */
   preview: boolean
 }
@@ -88,6 +99,7 @@ export function defaultConfig(): Config {
     pauseOnBattery: false,
     skipDatasetOcr: true,
     editor: "",
+    semantic: { enabled: false, images: true, code: false },
     defaultMode: "find",
     preview: true,
   }
@@ -160,7 +172,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 /** Validation shared by the CLI, app and MCP. */
 const CONFIG_RULES: Record<string, (v: unknown) => string | null> = {
-  defaultMode: (v) => v === "find" || v === "fuzzy" ? null : 'must be "find" or "fuzzy"',
+  defaultMode: (v) => v === "find" || v === "fuzzy" || v === "semantic" ? null : 'must be "find", "fuzzy" or "semantic"',
   indexLoad: (v) => Number.isInteger(v) && Number(v) >= 10 && Number(v) <= 100 ? null : "must be a whole number from 10 to 100 (percent)",
   workers: (v) => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 64 ? null : "must be a whole number from 0 (automatic) to 64",
   autoRefreshMinutes: (v) => Number.isFinite(v) && Number(v) >= 0 ? null : "must be 0 (off) or more",
@@ -238,9 +250,12 @@ export function mergeConfig(base: Config, patch: unknown): Config {
       else if (typeof cur === typeof v) dst[k] = v
     }
   }
-  walk(out, patch)
-  // Older versions had auto, exact, regex and semantic modes: all of them are "find" now.
-  if (out.defaultMode !== "fuzzy") out.defaultMode = "find"
+  // An older version's semantic settings (with its own `model`) were for another kind of model.
+  const old = isObject(patch.semantic) && "model" in patch.semantic
+  walk(out, old ? { ...patch, semantic: undefined } : patch)
+  // Older versions had auto, exact and regex modes: all of them are "find" now.
+  if (out.defaultMode !== "fuzzy" && out.defaultMode !== "semantic") out.defaultMode = "find"
+  if (out.defaultMode === "semantic" && !(out.semantic as SemanticConfig).enabled) out.defaultMode = "find"
   return out as unknown as Config
 }
 

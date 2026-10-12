@@ -21,7 +21,8 @@ import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
 import { ExtractPool } from "./pool.ts"
 import { type ContentItem, type ContentSink, InlineSink, ThreadSink } from "./writer.ts"
 
-type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "done" | "cancelled" | "error"
+// "meaning": the semantic pass after the main run (src/semantic/indexer.ts, run by index-worker.ts).
+type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "meaning" | "done" | "cancelled" | "error"
 
 export interface IndexProgress {
   phase: IndexPhase
@@ -40,6 +41,8 @@ export interface IndexProgress {
   startedAt: number
   elapsedMs: number
   error?: string
+  /** The semantic pass, when search by meaning is on: files to embed and done, passages embedded and reused. */
+  meaning?: { total: number; done: number; embedded: number; reused: number; error?: string }
 }
 
 interface IndexOptions {

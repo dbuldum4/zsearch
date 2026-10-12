@@ -142,7 +142,7 @@ describe("MCP tool helpers", () => {
     expect(withConfigSetting(c, "roots", '["~/My, Folder", "~/b"]').roots).toEqual(["~/My, Folder", "~/b"])
     expect(withSetting(c, "preview", "yes").preview).toBe(true)
     expect(() => withSetting(c, "indexLoad", 150)).toThrow("indexLoad must be a whole number from 10 to 100")
-    expect(() => withSetting(c, "defaultMode", "regex")).toThrow('must be "find" or "fuzzy"')
+    expect(() => withSetting(c, "defaultMode", "regex")).toThrow('must be "find", "fuzzy" or "semantic"')
     expect(() => withConfigSetting(c, "includeHidden", 3)).toThrow("expects true or false")
     expect(() => withSetting(c, "nope", 1)).toThrow('setting "nope"')
   })

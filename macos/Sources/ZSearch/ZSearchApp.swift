@@ -53,6 +53,8 @@ struct ZSearchApp: App {
                     .keyboardShortcut("1")
                 Button("Fuzzy Names") { model.mode = .fuzzy; model.requestSearchFocus() }
                     .keyboardShortcut("2")
+                Button("By Meaning") { model.mode = .semantic; model.requestSearchFocus() }
+                    .keyboardShortcut("3")
                 Divider()
                 Button("Search Field") { model.requestSearchFocus() }
                     .keyboardShortcut("l")

@@ -80,6 +80,27 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(p.waiting, "Low Power Mode")
     }
 
+    func testSemanticRequestsAndReplies() throws {
+        func json(_ r: Request) throws -> String { String(decoding: try r.encoded(id: 7), as: UTF8.self) }
+        XCTAssertEqual(try json(.search(query: "red car", mode: .semantic)), #"{"id":7,"limit":200,"mode":"semantic","query":"red car","type":"search"}"#)
+        XCTAssertEqual(try json(.semanticInstall(images: false)), #"{"id":7,"images":false,"type":"semanticInstall"}"#)
+        XCTAssertEqual(try json(.semanticRemove), #"{"id":7,"type":"semanticRemove"}"#)
+        XCTAssertEqual(
+            try json(.setConfig(ConfigPatch(semantic: SemanticConfig(enabled: true, images: true, code: false)))),
+            #"{"config":{"semantic":{"code":false,"enabled":true,"images":true}},"id":7,"type":"setConfig"}"#
+        )
+        let status = #"{"id":2,"type":"semantic","status":{"enabled":true,"images":true,"code":false,"helper":"/x/zsearch-embed","modelDir":"/m","model":{"text":true,"media":false,"textBytes":309855456,"mediaBytes":554821024},"blocked":null,"index":{"files":3,"passages":9,"vectors":8,"partial":0,"bytes":4096,"lastRunAt":1700000000000,"error":null}}}"#
+        guard case let .semantic(s) = try Envelope.decode(Data(status.utf8)).message else { return XCTFail("expected a status") }
+        XCTAssertTrue(s.model.text)
+        XCTAssertEqual(s.index?.vectors, 8)
+        let download = #"{"type":"semanticDownload","file":"embeddinggemma-2-Q8_0.gguf","received":10,"total":20}"#
+        guard case let .semanticDownload(d) = try Envelope.decode(Data(download.utf8)).message else { return XCTFail("expected progress") }
+        XCTAssertEqual(d.received, 10)
+        let meaning = #"{"type":"indexProgress","progress":{"phase":"meaning","scanned":5,"added":0,"updated":0,"removed":0,"contentTotal":0,"contentDone":0,"contentBytes":0,"contentErrors":0,"current":"","elapsedMs":10,"meaning":{"total":4,"done":1,"embedded":7,"reused":2}}}"#
+        guard case let .indexProgress(p) = try Envelope.decode(Data(meaning.utf8)).message else { return XCTFail("expected progress") }
+        XCTAssertEqual(p.fraction, 0.25)
+    }
+
     func testUnknownMessageTypesAreKept() throws {
         let e = try Envelope.decode(Data(#"{"type":"somethingNew","x":1}"#.utf8))
         XCTAssertNil(e.id)

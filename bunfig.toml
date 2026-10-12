@@ -2,3 +2,5 @@ preload = ["@opentui/solid/preload"]
 
 [test]
 preload = ["@opentui/solid/preload"]
+# Not native/embed/vendor (llama.cpp's own tests, once scripts/build-embed.sh has fetched it).
+root = "test"

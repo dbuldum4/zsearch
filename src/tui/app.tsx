@@ -25,7 +25,7 @@ interface AppProps {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const MODE_LABEL: Record<Mode, string> = { find: "find", fuzzy: "fuzzy" }
+const MODE_LABEL: Record<Mode, string> = { find: "find", fuzzy: "fuzzy", semantic: "semantic" }
 
 function RowText(props: { row: Row; width: number }) {
   return <StyledLine segs={props.row.segs} width={props.width} bg={props.row.bg} />
@@ -115,7 +115,8 @@ export function App(props: AppProps) {
 
   createEffect(
     on([query, mode], () => {
-      if (screen() === "search") scheduleSearch()
+      // Search by meaning runs the model on the query: wait for a pause in typing.
+      if (screen() === "search") scheduleSearch(mode() === "semantic" ? 200 : 25)
     }),
   )
 
@@ -426,7 +427,7 @@ export function App(props: AppProps) {
           return handled(() => jumpMatch(-1))
       }
     }
-    if (key.meta && (k === "1" || k === "2")) return handled(() => setMode(MODES[Number(k) - 1]!))
+    if (key.meta && (k === "1" || k === "2" || k === "3")) return handled(() => setMode(MODES[Number(k) - 1]!))
   })
 
   /* ------------------------------------------------------------- view -- */
@@ -477,7 +478,7 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
-    lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
+    lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : mode() === "fuzzy" ? "  Tip: press Tab to search by meaning." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines
   })
@@ -512,6 +513,13 @@ export function App(props: AppProps) {
           fg: t().muted,
         })
         if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
+      } else if (p.phase === "meaning") {
+        const m = p.meaning ?? { total: 0, done: 0, embedded: 0, reused: 0 }
+        if (p.waiting) segs.push({ text: `Waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(m.done)}/${formatCount(m.total)} files read for meaning · resumes on its own`, fg: t().muted })
+        else {
+          segs.push({ text: "Reading for meaning ", fg: t().text, bold: true }, ...bar(m.total ? m.done / m.total : 1, 18, t()), { text: ` ${formatCount(m.done)}/${formatCount(m.total)} files`, fg: t().muted })
+          if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
+        }
       } else segs.push({ text: "Finishing up…", fg: t().muted })
       return segs
     }
@@ -649,7 +657,7 @@ const HELP: [string, [string, string][]][] = [
       ["^Y / Ctrl-Shift-Y", "copy selected / all paths"],
       ["Ctrl-Shift-X", "exclude this file or folder"],
       ["Ctrl-Shift-O / Ctrl-Shift-T", "cycle sorting / fold preview"],
-      ["Tab, Alt-1 / Alt-2", "switch between find and fuzzy"],
+      ["Tab, Alt-1 / 2 / 3", "switch between find, fuzzy and semantic"],
       ["^T", "toggle preview"],
       ["Shift-↑↓  ^D ^U", "scroll preview"],
       ["^F ^B", "next / previous match in preview"],
@@ -664,6 +672,7 @@ const HELP: [string, [string, string][]][] = [
       ["find", "exact text in names and contents, smart case"],
       ["/regex/  re:…", "find with a regular expression"],
       ["fuzzy", "fzf-style names, typo-tolerant contents"],
+      ["semantic", "by meaning, with words as a bonus (zsearch semantic install)"],
     ],
   ],
   [
@@ -675,7 +684,7 @@ const HELP: [string, [string, string][]][] = [
       ["ext:pdf,docx  type:doc", "extension / kind (doc, sheet, slides, code…)"],
       ["in:~/Documents  path:2024", "inside a folder / path contains"],
       ["size:>5mb  mtime:<7d", "size / age (also after:2024-01-01)"],
-      ["f:…", "fuzzy for this query only"],
+      ["f:…  s:…", "fuzzy / semantic for this query only"],
       ["'exact ^prefix suffix$ !not", "fzf operators in fuzzy mode"],
     ],
   ],

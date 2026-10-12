@@ -18,7 +18,8 @@ final class IndexActivity {
 @MainActor
 final class SearchModel {
     var query = "" {
-        didSet { if query != oldValue { scheduleSearch() } }
+        // Search by meaning runs the model on the query: wait for a pause in typing.
+        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
     }
     var mode: Mode = .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
@@ -42,6 +43,10 @@ final class SearchModel {
     private(set) var preview: FilePreview?
     private(set) var stats: IndexStats?
     private(set) var config: Config?
+    /// Search by meaning: its model, helper and index; and the model download, while one runs.
+    private(set) var semantic: SemanticStatus?
+    private(set) var semanticDownload: DownloadProgress?
+    private(set) var downloadingModel = false
     private(set) var indexing = false
     private(set) var firstRun = false
     private(set) var notice: String?
@@ -207,8 +212,13 @@ final class SearchModel {
             default: show("Indexing failed: \(done.error ?? "unknown error")")
             }
             clearPreviewCache()
-            Task { await refreshStats() }
+            Task {
+                await refreshStats()
+                await refreshSemantic()
+            }
             scheduleSearch(delay: 0)
+        case let .semanticDownload(d):
+            semanticDownload = d
         case let .refreshed(_, changed):
             if changed {
                 clearPreviewCache()
@@ -382,6 +392,55 @@ final class SearchModel {
     func refreshStats() async {
         guard let engine else { return }
         if case let .stats(s)? = try? await engine.request(.stats) { stats = s }
+    }
+
+    // MARK: - Search by meaning
+
+    func refreshSemantic() async {
+        guard let engine else { return }
+        if case let .semantic(s)? = try? await engine.request(.semanticStatus) { semantic = s }
+    }
+
+    /// Download the model and turn search by meaning on; the engine then reads the files for it.
+    func installSemantic(images: Bool) {
+        guard let engine, !downloadingModel else { return }
+        downloadingModel = true
+        semanticDownload = nil
+        Task {
+            defer {
+                downloadingModel = false
+                semanticDownload = nil
+            }
+            do {
+                let reply = try await engine.request(.semanticInstall(images: images))
+                if case let .semantic(s) = reply { semantic = s }
+                if case let .error(text) = reply { show(text) }
+                if case let .config(c)? = try? await engine.request(.config) { config = c }
+                scheduleSearch(delay: 0)
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
+    }
+
+    func cancelSemanticInstall() {
+        guard let engine else { return }
+        Task { _ = try? await engine.request(.semanticCancelInstall) }
+    }
+
+    func removeSemantic() {
+        guard let engine else { return }
+        Task {
+            do {
+                let reply = try await engine.request(.semanticRemove)
+                if case let .semantic(s) = reply { semantic = s }
+                if case let .error(text) = reply { show(text) }
+                if case let .config(c)? = try? await engine.request(.config) { config = c }
+                if mode == .semantic { scheduleSearch(delay: 0) }
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
     }
 
     /// `background`: the app started it on its own, so a big one may wait on power.
