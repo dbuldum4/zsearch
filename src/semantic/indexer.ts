@@ -242,6 +242,30 @@ export class SemanticIndexer {
     }
   }
 
+  /**
+   * `job`, or null as soon as the run is cancelled: the helper is killed rather than waited for,
+   * so a helper that hangs can't keep the index busy after a cancel.
+   */
+  private async unlessAborted<T>(job: Promise<T>): Promise<T | null> {
+    const signal = this.opts.signal
+    if (!signal) return job
+    if (signal.aborted) { job.catch(() => {}); this.killEmbedder(); return null }
+    let onAbort = () => {}
+    const aborted = new Promise<null>((resolve) => { onAbort = () => resolve(null); signal.addEventListener("abort", onAbort, { once: true }) })
+    try {
+      const r = await Promise.race([job, aborted])
+      if (signal.aborted) { job.catch(() => {}); this.killEmbedder(); return null }
+      return r
+    } finally {
+      signal.removeEventListener("abort", onAbort)
+    }
+  }
+
+  private killEmbedder() {
+    this.embedder?.kill()
+    this.embedder = null
+  }
+
   private startEmbedder(images: boolean): Embedder {
     if (this.embedder) return this.embedder
     const cores = availableParallelism()
@@ -428,7 +452,7 @@ export class SemanticIndexer {
       // The model works on this group while the next one is read and cut.
       const job = needs.length ? this.startEmbedder(this.imagesWanted()).embedTexts(needs.map((n) => n.prompt)) : null
       const following = build()
-      const result = job ? await job : null
+      const result = job ? await this.unlessAborted(job) : null
       if (this.aborted) return false
       if (result) this.tokens += result.tokens
       const insertVector = store.prepare("INSERT OR IGNORE INTO vectors(hash, vec) VALUES (?, ?)")
@@ -495,8 +519,8 @@ export class SemanticIndexer {
         const ask = batch.map((f, k) => ({ f, hash: hashes[k] })).filter((x) => x.hash && !hasVector.get(x.hash))
         const seen = new Set<string>()
         const unique = ask.filter((x) => !seen.has(hex(x.hash!)) && (seen.add(hex(x.hash!)), true))
-        const result = unique.length ? await this.startEmbedder(true).embedImages(unique.map((x) => x.f.path), budget) : { vectors: [], errors: [] }
-        if (this.aborted) return false
+        const result = unique.length ? await this.unlessAborted(this.startEmbedder(true).embedImages(unique.map((x) => x.f.path), budget)) : { vectors: [], errors: [] }
+        if (this.aborted || !result) return false
         const errors = new Map<string, string>()
         store.transaction(() => {
           unique.forEach((x, k) => {

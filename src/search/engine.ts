@@ -421,7 +421,8 @@ export class SearchEngine {
     const bodyMatch = new Set<number>()
     const matching = (column: string, term: string, prefix: boolean): number[] => {
       try {
-        return (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`${column} : ${ftsQuote(term)}${prefix ? "*" : ""}`) as number[][]).map((r) => r[0]!)
+        // The same expression find builds for a word, so the index's way of keeping words applies.
+        return (this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`${column} : ${ftsWords([term], prefix)}`) as number[][]).map((r) => r[0]!)
       } catch {
         return []
       }

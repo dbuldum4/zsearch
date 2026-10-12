@@ -142,6 +142,7 @@ describe("semantic index and search", () => {
     corpus.write("notes/garage.txt", "My sedan needs new tyres before winter.\n\nThe mechanic also said the brakes are worn.\n")
     corpus.write("notes/pets.md", "# Pets\n\nOur puppy chewed the sofa again.\n")
     corpus.write("notes/orders.txt", "Order K7Q2LM shipped on Monday. Tracking will follow.\n")
+    corpus.write("notes/deploy.txt", "Deployed commit 3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a to production on Friday.\n")
     corpus.write("Documents/credentials", "user=admin password=hunter2 sedan\n")
     corpus.write("Pictures/sunset-beach.png", new Uint8Array(4096).fill(7))
     corpus.write("Pictures/broken.png", new Uint8Array(4096).fill(9))
@@ -240,6 +241,19 @@ describe("semantic index and search", () => {
     expect(r.hits[0]!.lines[0]!.text).toContain("K7Q2LM")
   })
 
+  test("long codes such as commit hashes are looked up whole and by their start", async () => {
+    // The index may keep long words in a shorter form; word matching must find them all the same.
+    // Words only (no model), so that meaning can't find the file instead.
+    const e = new SearchEngine(db, config)
+    e.embedQuery = null
+    const r = await e.search("3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a ", "semantic")
+    expect(r.strategy).toBe("words")
+    expect(r.hits[0]?.display).toBe("notes/deploy.txt")
+    // Still typing: the last word is a prefix.
+    const typing = await e.search("3f9a1c7e5b2d4f6a8", "semantic")
+    expect(typing.hits[0]?.display).toBe("notes/deploy.txt")
+  })
+
   test("without the model it says so and shows word matches", async () => {
     const e = new SearchEngine(db, config)
     e.embedQuery = null
@@ -282,6 +296,33 @@ describe("semantic index and search", () => {
     const r = await run
     expect(r.status).toBe("done")
     expect(r.files).toBeGreaterThanOrEqual(110)
+  })
+
+  test("a search engine follows the index when it is removed and made again", async () => {
+    const e = engine()
+    expect((await e.search("automobile", "semantic")).strategy).toBe("meaning + words")
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(semanticDbPath(dbPath) + suffix, { force: true })
+    expect((await e.search("automobile", "semantic")).strategy).toBe("words")
+    expect((await semantic()).status).toBe("done")
+    const r = await e.search("automobile", "semantic")
+    expect(r.strategy).toBe("meaning + words")
+    expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
+    e.closeSemantic()
+  })
+
+  test("cancelling doesn't wait for a helper that hangs", async () => {
+    corpus.write("notes/hang.txt", "This one says HANG_EMBED to the fake helper.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    const controller = new AbortController()
+    const started = Date.now()
+    const run = semantic({ signal: controller.signal })
+    await Bun.sleep(300)
+    controller.abort()
+    const r = await run
+    expect(r.status).toBe("cancelled")
+    expect(Date.now() - started).toBeLessThan(2000)
+    rmSync(join(corpus.home, "notes/hang.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
   })
 
   test("a helper error is kept for status, and the next run tries again", async () => {

@@ -70,6 +70,8 @@ for await (const chunk of Bun.stdin.stream()) {
         pos += 4 + l
       }
       note({ op: "t", n, texts })
+      // A helper that never answers, until it is killed.
+      if (texts.some((t) => t.includes("HANG_EMBED"))) continue
       if (texts.some((t) => t.includes("FAIL_EMBED"))) {
         const e = Buffer.from("made to fail")
         send([Buffer.from([1]), u32(e.length), e])

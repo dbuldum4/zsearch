@@ -13,6 +13,7 @@
  */
 import type { Database } from "bun:sqlite"
 import { availableParallelism } from "node:os"
+import { statSync } from "node:fs"
 import type { Kind } from "../kinds.ts"
 import { foldTerm } from "../util/text.ts"
 import { queryPrompt } from "./chunk.ts"
@@ -233,6 +234,7 @@ export class SemanticVectors {
   private loadedAt = 0
   private index: VectorIndex | null = null
   private generation: string | null = null
+  private ino: number | null = null
 
   constructor(private path: string, private minReloadMs = 3000) {}
 
@@ -246,9 +248,15 @@ export class SemanticVectors {
   }
 
   private load(): VectorIndex | null {
+    // Removed, or removed and made again (`zsearch semantic remove`, then install): an open
+    // connection would go on reading the deleted file, so follow the file itself.
+    const ino = fileIno(this.path)
+    if (this.db && ino !== this.ino) this.close()
+    if (ino === null) return null
     if (!this.db) {
       try { this.db = openSemanticDb(this.path, { readonly: true }) } catch { this.db = null }
       if (!this.db) return null
+      this.ino = ino
     }
     try {
       const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
@@ -270,7 +278,15 @@ export class SemanticVectors {
     try { this.db?.close() } catch {}
     this.db = null
     this.index = null
+    this.generation = null
+    this.version = -1
+    this.ino = null
   }
+}
+
+function fileIno(path: string): number | null {
+  if (path === ":memory:") return 0
+  try { return statSync(path).ino } catch { return null }
 }
 
 /* ---------------------------------------------------- query vectors -- */
