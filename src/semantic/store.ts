@@ -9,14 +9,16 @@
  *   files     what each file's passages were made from (its size, date and text length), and how
  *             far through them the index got: long files are finished in a second round.
  *
- * Vectors are kept as 8-bit integers with one scale each (772 bytes for 768 dimensions, half of
- * DigUp's float16), which keeps cosine similarity to about four decimal places.
+ * Vectors are kept as 16-bit floats (1,536 bytes for 768 dimensions), as DigUp keeps them. 8-bit
+ * integers would take half that, but with the real model they changed 2.7% of the top ten results
+ * (scripts/bench-semantic/quality.ts).
  */
 import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
-const SCHEMA_VERSION = 1
+// 2: vectors went from 8-bit integers with a scale to 16-bit floats.
+const SCHEMA_VERSION = 2
 
 export function semanticDbPath(dbPath: string): string {
   if (dbPath === ":memory:") return ":memory:"
@@ -76,16 +78,18 @@ export function clearAll(db: Database): void {
   })()
 }
 
-/** `dim` floats of `v` from `offset`, as a scale (float32) and one signed byte per dimension. */
+/** `dim` floats of `v` from `offset`, as 16-bit floats. */
 export function packVector(v: Float32Array, offset: number, dim: number): Uint8Array {
-  let max = 0
-  for (let i = 0; i < dim; i++) max = Math.max(max, Math.abs(v[offset + i]!))
-  const scale = max > 0 ? max / 127 : 1
-  const out = new Uint8Array(4 + dim)
-  new DataView(out.buffer).setFloat32(0, scale, true)
-  const q = new Int8Array(out.buffer, 4, dim)
-  for (let i = 0; i < dim; i++) q[i] = Math.round(v[offset + i]! / scale)
-  return out
+  const h = new Float16Array(dim)
+  h.set(v.subarray(offset, offset + dim))
+  return new Uint8Array(h.buffer)
+}
+
+/** A stored vector as 16-bit floats, or null if it isn't `dim` long. */
+export function vectorValues(vec: Uint8Array, dim: number): Float16Array | null {
+  if (vec.length !== dim * 2) return null
+  // SQLite's blobs may not be 2-byte aligned: copy them.
+  return new Float16Array(vec.slice().buffer)
 }
 
 export interface SemanticStats {

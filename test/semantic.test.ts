@@ -13,7 +13,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { isLookup, kindHints, meaning, queryTerms, rank, strongCount } from "../src/semantic/search.ts"
-import { openSemanticDb, packVector, semanticDbPath, semanticStats } from "../src/semantic/store.ts"
+import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
 describe("passages", () => {
@@ -85,15 +85,15 @@ describe("DigUp's ranking", () => {
     expect(strongCount([10, 8, 5, 4.9, 1])).toBe(3)
   })
 
-  test("vectors keep their direction in 8 bits", () => {
-    const v = new Float32Array(768).map((_, i) => Math.sin(i))
+  test("vectors keep their direction in 16 bits", () => {
+    const v = new Float32Array(768).map((_, i) => Math.sin(i) / 20)
     const packed = packVector(v, 0, 768)
-    expect(packed.length).toBe(772)
-    const scale = new DataView(packed.buffer).getFloat32(0, true)
-    const q = new Int8Array(packed.buffer, 4)
+    expect(packed.length).toBe(1536)
+    const h = vectorValues(packed, 768)!
     let dot = 0, a = 0, b = 0
-    for (let i = 0; i < 768; i++) { dot += v[i]! * q[i]! * scale; a += v[i]! ** 2; b += (q[i]! * scale) ** 2 }
-    expect(dot / Math.sqrt(a * b)).toBeGreaterThan(0.9999)
+    for (let i = 0; i < 768; i++) { dot += v[i]! * h[i]!; a += v[i]! ** 2; b += h[i]! ** 2 }
+    expect(dot / Math.sqrt(a * b)).toBeGreaterThan(0.99999)
+    expect(vectorValues(packed.subarray(2), 768)).toBeNull()
   })
 
   test("queries pick semantic mode with s: and keep their words", () => {

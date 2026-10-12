@@ -18,7 +18,7 @@ import { foldTerm } from "../util/text.ts"
 import { queryPrompt } from "./chunk.ts"
 import { Embedder } from "./helper.ts"
 import { SCALE_PASSAGES } from "./indexer.ts"
-import { getMeta, openSemanticDb } from "./store.ts"
+import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 
 /** A file's best passage must stand out by this many deviations to count as a meaning match. */
 export const Z_GATE = 2.0
@@ -148,7 +148,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; cove
 /* ------------------------------------------------------- the vectors -- */
 
 /**
- * The semantic index in memory: each distinct vector once (8-bit, with its scale), and each passage
+ * The semantic index in memory: each distinct vector once (16-bit floats), and each passage
  * with the vector it uses. Cosine similarity is scored per distinct vector, then read per passage.
  */
 export class VectorIndex {
@@ -160,8 +160,8 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
-  private q = new Int8Array(0)
-  private scales = new Float32Array(0)
+  private values = new Float16Array(0)
+  private distinct = 0
 
   get size(): number {
     return this.file.length
@@ -171,16 +171,16 @@ export class VectorIndex {
     const v = new VectorIndex()
     const index = new Map<string, number>()
     const vecs = db.query("SELECT hash, vec FROM vectors").values() as [Uint8Array, Uint8Array][]
-    v.dim = vecs.length ? vecs[0]![1].length - 4 : 0
-    v.q = new Int8Array(vecs.length * v.dim)
-    v.scales = new Float32Array(vecs.length)
+    v.dim = vecs.length ? vecs[0]![1].length / 2 : 0
+    v.values = new Float16Array(vecs.length * v.dim)
     let k = 0
     for (const [hash, vec] of vecs) {
-      if (vec.length !== v.dim + 4) continue
-      v.scales[k] = new DataView(vec.buffer, vec.byteOffset, 4).getFloat32(0, true)
-      v.q.set(new Int8Array(vec.buffer, vec.byteOffset + 4, v.dim), k * v.dim)
+      const values = vectorValues(vec, v.dim)
+      if (!values) continue
+      v.values.set(values, k * v.dim)
       index.set(Buffer.from(hash).toString("hex"), k++)
     }
+    v.distinct = k
     const rows = db.query("SELECT file, n, hash, start, end FROM passages").values() as [number, number, Uint8Array, number, number][]
     const keep = rows.filter((r) => index.has(Buffer.from(r[2]).toString("hex")))
     const n = keep.length
@@ -206,15 +206,15 @@ export class VectorIndex {
   /** Cosine similarity of `query` (L2-normalized) with every passage. */
   score(query: Float32Array): Float32Array {
     const dim = this.dim
-    const distinct = this.scales.length
+    const distinct = this.distinct
     const byVector = new Float32Array(distinct)
     if (query.length === dim) {
-      const q = this.q
+      const values = this.values
       for (let k = 0; k < distinct; k++) {
         let s = 0
         const base = k * dim
-        for (let d = 0; d < dim; d++) s += q[base + d]! * query[d]!
-        byVector[k] = s * this.scales[k]!
+        for (let d = 0; d < dim; d++) s += values[base + d]! * query[d]!
+        byVector[k] = s
       }
     }
     const out = new Float32Array(this.size)

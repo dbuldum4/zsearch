@@ -1,7 +1,8 @@
 name: Search by meaning (real model)
 
-# Runs search by meaning with the real EmbeddingGemma 2 model on a Mac: what 8-bit vectors cost
-# in results against 16-bit ones, whether packing passages together changes them
+# Runs search by meaning with the real EmbeddingGemma 2 model on a Mac: what the stored 16-bit
+# vectors cost in results against full precision (and what 8-bit ones would), whether packing
+# passages together changes them
 # (scripts/bench-semantic/quality.ts, which fails the job past its limits), and how long indexing
 # takes against DigUp's way (scripts/bench-semantic/bench.ts, informational). The model is
 # downloaded from Hugging Face with its checksum checked, once, and kept in the cache until

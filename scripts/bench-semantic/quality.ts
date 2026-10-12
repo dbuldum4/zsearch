@@ -1,23 +1,24 @@
 /**
  * What the stored vectors cost in results, with the real model: the eval queries in evals.json
  * against their documents among a few thousand distractor passages (this repository's Markdown
- * and scripts/bench.ts's generated prose), ranked by the full 32-bit vectors, by 16-bit floats
- * (what DigUp stores) and by 8-bit integers with a scale each (what zsearch stores).
+ * and scripts/bench.ts's generated prose), ranked by the full 32-bit vectors, by the vectors as
+ * zsearch stores them (16-bit floats, as DigUp does), and by 8-bit integers with a scale each
+ * (half the size; zsearch stored those at first).
  *
  *   bun scripts/bench-semantic/quality.ts --model=MODEL.gguf [--tool=dist/zsearch-embed]
  *       [--distractors=2000] [--json=OUT] [--min-overlap=0.99]
  *
  * Ranking by meaning alone orders a query's passages by cosine (DigUp's z-score is the same
  * order), so the top-10 overlap here is the overlap of what search by meaning shows. Exits 1 if
- * 8-bit agrees with 16-bit on less than --min-overlap of the top 10, or if packing passages
- * into one model call moves any vector below DigUp's 0.999 cosine.
+ * the stored vectors agree with full precision on less than --min-overlap of the top 10, or if
+ * packing passages into one model call moves any vector below DigUp's 0.999 cosine.
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { chunkText, documentPrompt, queryPrompt, titleOf } from "../../src/semantic/chunk.ts"
 import { Embedder, embedToolPath } from "../../src/semantic/helper.ts"
-import { packVector } from "../../src/semantic/store.ts"
+import { packVector, vectorValues } from "../../src/semantic/store.ts"
 import { makeCorpus } from "../bench.ts"
 
 const args = new Map(process.argv.slice(2).map((a) => { const [k, v] = a.replace(/^--/, "").split("="); return [k!, v ?? "true"] as [string, string] }))
@@ -76,14 +77,18 @@ for (let i = 0; i < docs.length; i++) {
   packedWorst = Math.min(packedWorst, dot)
 }
 
-const fp16 = (v: Float32Array) => { const h = new Float16Array(v.length); h.set(v); return Float32Array.from(h) }
+const stored = (v: Float32Array) => {
+  const out = new Float32Array(v.length)
+  for (let r = 0; r < v.length / dim; r++) out.set(vectorValues(packVector(v, r * dim, dim), dim)!, r * dim)
+  return out
+}
 const int8 = (v: Float32Array) => {
   const out = new Float32Array(v.length)
   for (let r = 0; r < v.length / dim; r++) {
-    const p = packVector(v, r * dim, dim)
-    const scale = new DataView(p.buffer).getFloat32(0, true)
-    const q = new Int8Array(p.buffer, 4, dim)
-    for (let i = 0; i < dim; i++) out[r * dim + i] = q[i]! * scale
+    let max = 0
+    for (let i = 0; i < dim; i++) max = Math.max(max, Math.abs(v[r * dim + i]!))
+    const scale = max > 0 ? max / 127 : 1
+    for (let i = 0; i < dim; i++) out[r * dim + i] = Math.round(v[r * dim + i]! / scale) * scale
   }
   return out
 }
@@ -94,7 +99,7 @@ const scores = (vecs: Float32Array) => evals.map((_, q) => {
 })
 const top = (s: Float64Array, k: number) => Array.from(s.keys()).sort((a, b) => s[b]! - s[a]!).slice(0, k)
 
-const ranked = { f32: scores(P.vectors), fp16: scores(fp16(P.vectors)), int8: scores(int8(P.vectors)) }
+const ranked = { f32: scores(P.vectors), stored: scores(stored(P.vectors)), int8: scores(int8(P.vectors)) }
 const quality = (name: keyof typeof ranked) => {
   let at1 = 0, at5 = 0, mrr = 0
   ranked[name].forEach((s, q) => {
@@ -123,13 +128,13 @@ const results = {
   passages: n,
   embedSeconds: +embedSeconds.toFixed(1),
   packedVsSingleWorstCosine: +packedWorst.toFixed(6),
-  quality: { f32: quality("f32"), fp16: quality("fp16"), int8: quality("int8") },
-  agreement: { fp16VsF32: agreement("fp16", "f32"), int8VsF32: agreement("int8", "f32"), int8VsFp16: agreement("int8", "fp16") },
+  quality: { f32: quality("f32"), stored: quality("stored"), int8: quality("int8") },
+  agreement: { storedVsF32: agreement("stored", "f32"), int8VsF32: agreement("int8", "f32"), int8VsStored: agreement("int8", "stored") },
 }
 if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify(results, null, 2))
 console.log(JSON.stringify(results, null, 2))
 
 let failed = false
-if (results.agreement.int8VsFp16.top10Overlap < MIN_OVERLAP) { log(`8-bit vectors agree with 16-bit on ${results.agreement.int8VsFp16.top10Overlap} of the top 10, below ${MIN_OVERLAP}`); failed = true }
+if (results.agreement.storedVsF32.top10Overlap < MIN_OVERLAP) { log(`the stored vectors agree with full precision on ${results.agreement.storedVsF32.top10Overlap} of the top 10, below ${MIN_OVERLAP}`); failed = true }
 if (packedWorst < 0.999) { log(`packing passages together moved a vector to cosine ${packedWorst.toFixed(6)}, below 0.999`); failed = true }
 process.exit(failed ? 1 : 0)

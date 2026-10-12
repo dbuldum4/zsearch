@@ -109,18 +109,18 @@ Reading files for meaning is the slow part, so zsearch does much less of it than
 - Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
 - Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
 
-On a 4-core Linux CPU with a stand-in model the size of EmbeddingGemma (random weights, so the timings count but the results don't), 189 text files with 10 copies among them:
+With EmbeddingGemma 2 on a GitHub-hosted macOS runner, 188 text files with 10 copies among them:
 
 | | DigUp's way | zsearch |
 | --- | --- | --- |
-| First index | 602 passages, 190k tokens, 125.5 s | 562 passages embedded and 67 reused, 153k tokens, 96.4 s |
-| After editing 5 files | 10 passages, 1.9 s | 6 embedded, 4 reused, 1.6 s |
-| After `zsearch index --rebuild` | everything again, about 125 s | nothing embedded, 0.1 s |
+| First index | 582 passages, 279k tokens, 721 s | 561 passages embedded and 48 reused, 235k tokens, 603 s |
+| After editing 5 files | 10 passages, 8.8 s | 6 embedded, 4 reused, 5.9 s |
+| After `zsearch index --rebuild` | everything again, about 720 s | nothing embedded, 0.1 s |
 
-The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together made no difference on the CPU, and the Metal numbers on a Mac are still to be measured. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
+The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together leaves each vector within 0.999 cosine of embedding it alone (0.9994 at worst), and on a CPU it is no faster. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
 
 
-It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), 8-bit with a scale each.
+It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), as 16-bit floats like DigUp's: 8-bit numbers would take half the space, but with the real model they changed 2.7% of the top ten results.
 
 ## Query syntax
 
@@ -394,7 +394,7 @@ bun run bench                   # index and search benchmark on a generated corp
 bun run bench --corpus=real     # the same, plus real projects (MDN docs, Kubernetes) fetched once into ~/.cache
 scripts/build-embed.sh          # dist/zsearch-embed, the embedding helper (llama.cpp; needs CMake and a C++ compiler)
 bun scripts/bench-semantic/bench.ts --model=…gguf   # reading for meaning, against the way DigUp does it
-bun scripts/bench-semantic/quality.ts --model=…gguf # what 8-bit vectors cost in results, against 16-bit
+bun scripts/bench-semantic/quality.ts --model=…gguf # results with the stored vectors, against full precision and 8-bit
 bun run fixtures                # regenerate document fixtures (needs python-docx, openpyxl, python-pptx, reportlab, xlwt, Pillow)
 ```
 
