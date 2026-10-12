@@ -55,13 +55,6 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Picker("Search mode at start", selection: defaultMode) {
-                Text("Find (exact text, /regex/)").tag(Mode.find)
-                Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
-                if model.config?.semantic?.enabled == true {
-                    Text("Meaning (describe what you're looking for)").tag(Mode.semantic)
-                }
-            }
             Picker("Preview PDFs as", selection: $pdfShowsText) {
                 Text("Pages").tag(false)
                 Text("Text").tag(true)
@@ -102,13 +95,6 @@ private struct GeneralSettings: View {
         EditorApp.known.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil }
     }
 
-    private var defaultMode: Binding<Mode> {
-        Binding(
-            get: { Mode(rawValue: model.config?.defaultMode ?? "find") ?? .find },
-            set: { model.updateConfig(ConfigPatch(defaultMode: $0.rawValue), reindex: false) }
-        )
-    }
-
     private func setOpenAtLogin(_ on: Bool) {
         // Also called when a failure below puts the toggle back: nothing to do then.
         guard on != (SMAppService.mainApp.status == .enabled) else { return }
@@ -131,7 +117,7 @@ private struct SemanticSettings: View {
     var body: some View {
         Form {
             Section {
-                Text("Finds files by what they are about, and photos and screenshots by what they show: “the lease for the flat in Lisbon”, “screenshot of a flight booking”. It runs on this Mac with Google's EmbeddingGemma 2 model (Apache 2.0), which zsearch downloads only when you ask, using DigUp's ranking. Find and Fuzzy don't need it.")
+                Text("This app searches by meaning only. It finds files by what they are about, and photos and screenshots by what they show: “the lease for the flat in Lisbon”, “screenshot of a flight booking”. It runs on this Mac with Google's EmbeddingGemma 2 model (Apache 2.0), which zsearch downloads only when you ask, using DigUp's ranking.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let s = model.semantic {
@@ -212,7 +198,7 @@ private struct SemanticSettings: View {
         .confirmationDialog("Turn off search by meaning?", isPresented: $confirmRemove) {
             Button("Turn Off and Delete", role: .destructive) { model.removeSemantic() }
         } message: {
-            Text("The model and what was read for meaning are deleted. Find and Fuzzy keep working.")
+            Text("The model and what was read for meaning are deleted. Turn it on again to search.")
         }
     }
 

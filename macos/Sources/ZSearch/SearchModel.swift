@@ -19,11 +19,10 @@ final class IndexActivity {
 final class SearchModel {
     var query = "" {
         // Search by meaning runs the model on the query: wait for a pause in typing.
-        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
+        didSet { if query != oldValue { scheduleSearch(delay: 0.2) } }
     }
-    var mode: Mode = .find {
-        didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
-    }
+    /// The app searches by meaning only; the engine's other modes remain for the CLI.
+    let mode: Mode = .semantic
     var selection: SearchHit.ID? {
         didSet {
             guard selection != oldValue else { return }
@@ -182,7 +181,6 @@ final class SearchModel {
         case let .ready(ready):
             config = ready.config
             firstRun = ready.firstRun
-            mode = Mode(rawValue: ready.config.defaultMode) ?? .find
             Task {
                 await refreshStats()
                 if ready.firstRun {

@@ -63,7 +63,7 @@ struct SearchBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search names and contents   ext:pdf  in:~/Documents  /regex/", text: $model.query)
+            TextField("Describe what you're looking for   ext:pdf  in:~/Documents", text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused(focused)
@@ -86,15 +86,11 @@ struct SearchBar: View {
                     model.query = ""
                     return .handled
                 }
-            Picker("Mode", selection: $model.mode) {
-                Text("Find").tag(Mode.find)
-                Text("Fuzzy").tag(Mode.fuzzy)
-                Text("Meaning").tag(Mode.semantic)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Meaning: files about what you describe (turn it on in Settings › Meaning).")
+            Text("Meaning")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .help("Search by meaning: files about what you describe (Settings › Meaning).")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

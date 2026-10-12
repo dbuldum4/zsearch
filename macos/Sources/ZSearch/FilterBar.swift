@@ -18,7 +18,7 @@ struct FilterBar: View {
     }
 
     private static let types: [Option] = [
-        Option("Documents", "docs"), Option("PDFs", "pdf"), Option("Text and notes", "notes"), Option("Code", "code"),
+        Option("Documents", "docs"), Option("PDFs", "pdf"), Option("Text and notes", "notes"),
         Option("Spreadsheets", "sheet"), Option("Presentations", "slides"), Option("Images", "image"),
         Option("Audio", "audio"), Option("Video", "video"), Option("Archives", "archive"), Option("Folders", "folder"),
     ]
@@ -39,7 +39,6 @@ struct FilterBar: View {
             folderMenu(query)
             choiceMenu("Modified", icon: "calendar", keys: QueryFilters.modifiedKeys, options: Self.ages, anyTitle: "Any Time", query: query)
             choiceMenu("Size", icon: "internaldrive", keys: QueryFilters.sizeKeys, options: Self.sizes, anyTitle: "Any Size", query: query)
-            regexToggle(query)
             Spacer(minLength: 0)
             if QueryFilters.hasFilters(query) || QueryFilters.isRegex(query) {
                 Button("Clear Filters") {
@@ -120,18 +119,6 @@ struct FilterBar: View {
         set(QueryFilters.folderKeys, tildePath(url.path))
     }
 
-    private func regexToggle(_ query: String) -> some View {
-        let on = QueryFilters.isRegex(query)
-        return Button {
-            model.query = QueryFilters.settingRegex(!on, in: model.query)
-            model.requestSearchFocus()
-        } label: {
-            FilterChip(title: "Regex", icon: "chevron.left.forwardslash.chevron.right", active: on, showsChevron: false)
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .help("Match a regular expression (re:… or /…/)")
-    }
 }
 
 /// `ext:` as a small text field: "pdf", or "md,txt" for several.
