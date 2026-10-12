@@ -252,6 +252,9 @@ describe("semantic index and search", () => {
     // Still typing: the last word is a prefix.
     const typing = await e.search("3f9a1c7e5b2d4f6a8", "semantic")
     expect(typing.hits[0]?.display).toBe("notes/deploy.txt")
+    // And a word left out leaves out the files that hold it.
+    const without = await e.search("production -3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a ", "semantic")
+    expect(without.hits.map((h) => h.display)).not.toContain("notes/deploy.txt")
   })
 
   test("without the model it says so and shows word matches", async () => {
