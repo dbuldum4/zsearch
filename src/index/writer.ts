@@ -1,7 +1,7 @@
 import type { Database, Statement } from "bun:sqlite"
 import { ftsBody } from "../util/text.ts"
-import { compressText, ContentState, decompressText, getMeta, openDb } from "./db.ts"
-import type { ExtractReply } from "./extract-job.ts"
+import { compressText, ContentState, decompressText, getMeta, OCR_CACHE_VERSION, openDb } from "./db.ts"
+import { type ExtractReply, replyBuffers } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
 
 /** What is stored of an extraction: all of it but the vocabulary terms. */
@@ -15,6 +15,15 @@ export interface ContentItem {
   dirs: string
   /** The file has an FTS row already, from an earlier run. */
   inFts: number
+  /** The file's identity, under which what OCR read in it is kept (see `ocr_cache`). */
+  identity?: FileIdentity
+}
+
+export interface FileIdentity {
+  dev: number
+  ino: number
+  size: number
+  mtime: number
 }
 
 /**
@@ -34,7 +43,7 @@ export class ContentWriter {
   private tuned = false
   /** New terms, a line each, in parts. */
   private fresh: string[] = []
-  private st: Record<"setState" | "ftsInsert" | "ftsDeleteRow" | "ftsDeleteManual" | "contentGet" | "contentPut" | "contentDel" | "vocabPut", Statement>
+  private st: Record<"setState" | "ftsInsert" | "ftsDeleteRow" | "ftsDeleteManual" | "contentGet" | "textFind" | "textPut" | "contentPut" | "contentDel" | "ocrPut" | "vocabPut", Statement>
 
   constructor(private db: Database) {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
@@ -45,8 +54,14 @@ export class ContentWriter {
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
       ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
       contentGet: q("SELECT data FROM content WHERE id = ?"),
-      contentPut: q("INSERT INTO content(id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data"),
-      contentDel: q("DELETE FROM content WHERE id = ?"),
+      textFind: q("SELECT text FROM content_map WHERE hash = ? LIMIT 1"),
+      textPut: q("INSERT INTO texts(data) VALUES (?)"),
+      // A text no file holds any more goes with its last row (see `createContentTables`).
+      contentPut: q("INSERT INTO content_map(id, text, hash) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text, hash = excluded.hash"),
+      contentDel: q("DELETE FROM content_map WHERE id = ?"),
+      ocrPut: q(
+        "INSERT INTO ocr_cache(dev, ino, size, mtime, version, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(dev, ino, size, mtime) DO UPDATE SET version = excluded.version, data = excluded.data",
+      ),
       vocabPut: q("INSERT INTO vocab_chunks(terms) VALUES (?)"),
     }
   }
@@ -67,7 +82,7 @@ export class ContentWriter {
     for (const item of items) this.store(item)
   }
 
-  private store({ reply: r, name, dirs, inFts }: ContentItem) {
+  private store({ reply: r, name, dirs, inFts, identity }: ContentItem) {
     if (r.status === "error" && r.error === "cancelled") return
     if (inFts) {
       if (!this.manualDelete) this.st.ftsDeleteRow.run(r.id)
@@ -79,7 +94,11 @@ export class ContentWriter {
     }
     if (r.status === "ok") {
       this.st.ftsInsert.run(r.id, name, dirs, r.body)
-      this.st.contentPut.run(r.id, r.compressed)
+      // The same text as another file's is kept once.
+      const same = this.st.textFind.get(r.hash) as { text: number } | null
+      const text = same ? same.text : Number(this.st.textPut.run(r.compressed).lastInsertRowid)
+      this.st.contentPut.run(r.id, text, r.hash)
+      if (r.ocr && identity?.ino) this.st.ocrPut.run(identity.dev, identity.ino, identity.size, identity.mtime, OCR_CACHE_VERSION, r.ocr)
       this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", r.id)
     } else {
       this.st.ftsInsert.run(r.id, name, dirs, "")
@@ -131,7 +150,7 @@ export interface ContentSink {
 
 function itemBytes(items: ContentItem[]): number {
   let n = 0
-  for (const { reply: r } of items) n += r.status === "ok" ? r.body.length + r.compressed.length : 64
+  for (const { reply: r } of items) n += r.status === "ok" ? r.body.length + r.compressed.length + (r.ocr?.length ?? 0) : 64
   return n
 }
 
@@ -265,7 +284,7 @@ export class ThreadSink implements ContentSink {
     const bytes = itemBytes(items)
     this.sent += bytes
     const transfer: ArrayBuffer[] = []
-    for (const { reply: r } of items) if (r.status === "ok") transfer.push(r.body.buffer as ArrayBuffer, r.compressed.buffer as ArrayBuffer)
+    for (const { reply: r } of items) if (r.status === "ok") transfer.push(...replyBuffers(r))
     // One string: thousands of short ones cost much more to copy over.
     this.post({ type: "write", items, fresh: fresh.join("\n"), bytes }, transfer)
   }

@@ -1,5 +1,5 @@
 import { pdftotextPath } from "../../platform.ts"
-import { ocrBlankPages } from "./ocr.ts"
+import { ocrBlankPages, type OcrMemo } from "./ocr.ts"
 import { tidy } from "./xml.ts"
 import { cappedText, trackProcess } from "../../util/process.ts"
 
@@ -7,9 +7,9 @@ import { cappedText, trackProcess } from "../../util/process.ts"
  * Text of a PDF with pages separated by form feeds. Uses poppler's pdftotext when available.
  * With an OCR helper, pages without text (scans) are read with OCR.
  */
-export async function extractPdf(path: string, buf: () => Promise<Uint8Array>, timeoutMs = 60_000, ocrTool?: string | null, metadata = false): Promise<string> {
+export async function extractPdf(path: string, buf: () => Promise<Uint8Array>, timeoutMs = 60_000, ocrTool?: string | null, metadata = false, memo?: OcrMemo): Promise<string> {
   const text = metadata ? await viaPdfjs(await buf(), timeoutMs, true) : await pdfText(path, buf, timeoutMs)
-  return ocrTool ? ocrBlankPages(ocrTool, path, text, timeoutMs) : text
+  return ocrTool ? ocrBlankPages(ocrTool, path, text, timeoutMs, memo) : text
 }
 
 export async function extractPdfBytes(bytes: Uint8Array, timeoutMs = 60_000, metadata = false): Promise<string> {

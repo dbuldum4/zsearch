@@ -7,7 +7,7 @@ import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
-import { escapeRegExp, foldTerm, ftsQuote, smartCaseSensitive } from "../util/text.ts"
+import { escapeRegExp, foldTerm, ftsPrefixExpr, ftsTerm, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
@@ -141,7 +141,11 @@ class TextCache {
 }
 
 /** A query word or phrase: its FTS5 expression, and the terms that count as it when ranking. */
-type TermGroup = { expr: string; terms: string[]; prefix: boolean }
+/**
+ * `check`: the expression also matches files without the word (see `ftsPrefixExpr`), which must
+ * have a match for this in their path or text.
+ */
+type TermGroup = { expr: string; terms: string[]; prefix: boolean; check?: RegExp }
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
 
@@ -275,7 +279,7 @@ export class SearchEngine {
     if (!this.config.content.enabled) return false
     const opts = policyFor(crawlOptionsFor(this.config))
     try {
-      for (const [id] of this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : ${ftsQuote(term)}`) as number[][]) {
+      for (const [id] of this.db.query("SELECT rowid FROM fts WHERE fts MATCH ?").values(`body : ${ftsTerm(term)}`) as number[][]) {
         const i = this.catalog.indexOf(id)
         if (i !== undefined && this.contentAuthorized(i, opts)) return true
       }
@@ -393,7 +397,8 @@ export class SearchEngine {
       if (!tokens) return
       const isLast = i === words.length - 1
       const prefix = prefixLast && isLast && tokens[tokens.length - 1]!.length >= 3
-      let expr = ftsWords(tokens, prefix)
+      const fts = this.ftsWords(tokens, prefix)
+      let expr = fts.expr
       const terms = [...tokens]
       if (typos && tokens.length === 1) {
         const t = tokens[0]!
@@ -403,13 +408,20 @@ export class SearchEngine {
         const some = [...alts].slice(0, 48)
         this.lastExpansions.push(...some)
         terms.push(...some)
-        if (some.length) expr = `(${[expr, ...some.map(ftsQuote)].join(" OR ")})`
+        if (some.length) expr = `(${[expr, ...some.map(ftsTerm)].join(" OR ")})`
       }
-      groups.push({ expr, terms, prefix })
+      // The broad prefix is the last token's; a typo's alternatives count as the word too.
+      let check: RegExp | undefined
+      if (fts.broad) {
+        const alts = terms.slice(tokens.length).map(escapeRegExp)
+        const whole = alts.length ? `|(?:${alts.join("|")})(?![\\p{L}\\p{N}])` : ""
+        check = new RegExp(`(?<![\\p{L}\\p{N}])(?:${escapeRegExp(tokens[tokens.length - 1]!)}${whole})`, "iu")
+      }
+      groups.push({ expr, terms, prefix, check })
     })
     for (const p of q.phrases) {
       const tokens = foldTerm(p).match(/[\p{L}\p{N}]+/gu)
-      if (tokens) groups.push({ expr: ftsWords(tokens, false), terms: tokens, prefix: false })
+      if (tokens) groups.push({ expr: this.ftsWords(tokens, false).expr, terms: tokens, prefix: false })
     }
     return groups
   }
@@ -418,9 +430,21 @@ export class SearchEngine {
   private groupsExpr(q: ParsedQuery, groups: TermGroup[], any: boolean): string | null {
     if (!groups.length) return null
     let expr = groups.map((g) => g.expr).join(any ? " OR " : " AND ")
-    const neg = q.negated.flatMap((n) => foldTerm(n).match(/[\p{L}\p{N}]+/gu) ?? []).map(ftsQuote)
+    const neg = q.negated.flatMap((n) => foldTerm(n).match(/[\p{L}\p{N}]+/gu) ?? []).map(ftsTerm)
     if (neg.length) expr = `(${expr}) NOT (${neg.join(" OR ")})`
     return expr
+  }
+
+  /** All of `tokens` (the index keeps no word positions, so a phrase is matched as its words), the last one optionally as a prefix. */
+  private ftsWords(tokens: string[], prefixLast: boolean): { expr: string; broad: boolean } {
+    let broad = false
+    const quoted = tokens.map((t, i) => {
+      if (!prefixLast || i < tokens.length - 1) return ftsTerm(t)
+      const p = ftsPrefixExpr(t, (p) => this.vocab.longStartingWith(p))
+      broad = p.broad
+      return p.expr
+    })
+    return { expr: quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`, broad }
   }
 
   keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false): string | null {
@@ -437,9 +461,26 @@ export class SearchEngine {
         return []
       }
     }
+    // A group whose expression also matches other words holds only where its path or text has the word.
+    const holds = (id: number, g: TermGroup) => {
+      if (!g.check) return true
+      const i = this.catalog.indexOf(id)
+      if (i !== undefined && g.check.test(this.catalog.paths[i]!)) return true
+      const text = this.storedText(id)
+      return text !== null && g.check.test(text)
+    }
+    const checked = groups.some((g) => g.check)
     let matches = ids(this.groupsExpr(q, groups, false))
+    if (checked) matches = matches.filter((id) => groups.every((g) => holds(id, g)))
     // Several words but no document has all of them: fall back to any of them.
-    if (matches.length === 0 && groups.length > 1) matches = ids(this.groupsExpr(q, groups, true))
+    if (matches.length === 0 && groups.length > 1) {
+      matches = ids(this.groupsExpr(q, groups, true))
+      if (checked) {
+        const plain = groups.filter((g) => !g.check)
+        const byPlain = new Set(plain.length ? ids(this.groupsExpr(q, plain, true)) : [])
+        matches = matches.filter((id) => byPlain.has(id) || groups.some((g) => g.check && holds(id, g)))
+      }
+    }
     return this.rankMatches(matches, groups, q.filters, limit)
   }
 
@@ -1017,10 +1058,5 @@ function fuzzyQueryText(q: ParsedQuery): string {
   return parts.join(" ")
 }
 
-/** All of `tokens` (the index keeps no word positions, so a phrase is matched as its words), the last one optionally as a prefix. */
-function ftsWords(tokens: string[], prefixLast: boolean): string {
-  const quoted = tokens.map((t, i) => (prefixLast && i === tokens.length - 1 ? `${ftsQuote(t)}*` : ftsQuote(t)))
-  return quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`
-}
 
 function usesMetadata(filters: Filters): boolean { return !!filters.tags?.length || !!filters.not?.some(usesMetadata) }

@@ -30,22 +30,68 @@ const ASCII_SEPARATORS = /[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/
 const ASCII_UPPER = /[A-Z]+/g
 
 /**
+ * Long words of ASCII letters and digits (hashes, ids, encoded data) are indexed short: their
+ * first SHORT_HEAD characters and a tag made from the whole word, which keeps them apart. They
+ * are rarely searched for, yet each is a word of its own, and the full-text index stores every
+ * word whole. The vocabulary keeps them whole (words up to 64 characters), so searches still
+ * find them by any part, and map them to the short form (see `ftsTerm`). Longer words are not in
+ * the vocabulary, and stay whole.
+ */
+const LONG_WORD = /^[a-z0-9]{32,64}$/
+const SHORT_HEAD = 12
+
+export function isLongWord(t: string): boolean {
+  return t.length >= 32 && t.length <= 64 && LONG_WORD.test(t)
+}
+
+/** The form a long word is indexed in: its head and a tag, 20 characters in all. */
+export function shortWord(t: string): string {
+  // Two 32-bit FNV-1a hashes with different seeds, 4 base-36 digits of each: 36^8 tags.
+  let a = 0x811c9dc5 | 0
+  let b = 0x9747b28c | 0
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193)
+    b = Math.imul(b ^ c, 0x01000193)
+  }
+  const digits = (h: number) => ((h >>> 0) % 1_679_616).toString(36).padStart(4, "0")
+  return t.slice(0, SHORT_HEAD) + digits(a) + digits(b)
+}
+
+/** A body word as the index takes it. */
+function bodyWord(w: string): string {
+  return isLongWord(w) ? shortWord(w) : w
+}
+
+/** The words of an FTS body with long ones made short; the same string when there are none. */
+export function shortenBody(body: string): string {
+  if (body.length < 32) return body
+  let changed = false
+  const words = body.split(" ").map((w) => {
+    const b = bodyWord(w)
+    if (b !== w) changed = true
+    return b
+  })
+  return changed ? words.join(" ") : body
+}
+
+/**
  * What the index keeps of a text: its distinct words for the FTS `body` column, and its
  * vocabulary terms (as `uniqueTerms`). The index is contentless with detail=column, so it
  * records which words a file holds but not where or how often: indexing each word once gives
- * the same matches for a fraction of SQLite's work.
+ * the same matches for a fraction of SQLite's work. Long words go in short (see `shortWord`).
  */
 export function indexTerms(text: string): { body: string; terms: Iterable<string> } {
   if (!NON_ASCII.test(text)) {
     // ASCII: the tokens are exactly the runs of letters and digits, lower-cased.
     const words = asciiWords(text.toLowerCase())
-    const body = words.join(" ")
+    const body = shortenBody(words.join(" "))
     return { body, terms: words.some((w) => w.length > 64) ? words.filter((w) => w.length <= 64) : words }
   }
   // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer. ASCII
   // letters are lower-cased first, as it would, so that a word in other cases goes in once.
   const body = [...new Set(text.replace(ASCII_UPPER, (w) => w.toLowerCase()).split(ASCII_SEPARATORS))].filter(Boolean).join(" ")
-  return { body, terms: uniqueTerms(body) }
+  return { body: shortenBody(body), terms: uniqueTerms(body) }
 }
 
 /**
@@ -162,6 +208,34 @@ export function dirTokens(dir: string, home: string): string {
 /** Quote a term for an FTS5 MATCH expression. */
 export function ftsQuote(term: string): string {
   return `"${term.replace(/"/g, '""')}"`
+}
+
+/**
+ * FTS5 expression for a folded word of the text. A long word is indexed short (see
+ * `shortWord`), or whole in rows written before that, and in file names.
+ */
+export function ftsTerm(term: string): string {
+  return isLongWord(term) ? `(${ftsQuote(term)} OR ${ftsQuote(shortWord(term))})` : ftsQuote(term)
+}
+
+/**
+ * FTS5 expression for words starting with a folded `prefix`. A long word's short form starts
+ * with its first 12 characters only: for a longer prefix, `longWords` are the long words in
+ * the vocabulary that start with it, or null when there are too many to list. Then any word
+ * with the same first 12 characters matches too, and `broad` says so: the matches must be
+ * checked against the text (see `prefixPattern`).
+ */
+export function ftsPrefixExpr(prefix: string, longWords: (prefix: string) => string[] | null): { expr: string; broad: boolean } {
+  const plain = `${ftsQuote(prefix)}*`
+  if (prefix.length <= SHORT_HEAD || prefix.length > 64 || !/^[a-z0-9]+$/.test(prefix)) return { expr: plain, broad: false }
+  const longs = longWords(prefix)
+  const alts = longs === null ? [`${ftsQuote(prefix.slice(0, SHORT_HEAD))}*`] : longs.map((w) => ftsQuote(shortWord(w)))
+  return { expr: alts.length ? `(${[plain, ...alts].join(" OR ")})` : plain, broad: longs === null }
+}
+
+/** `ftsPrefixExpr`'s expression, for searches that check every match against the text anyway. */
+export function ftsPrefix(prefix: string, longWords: (prefix: string) => string[] | null): string {
+  return ftsPrefixExpr(prefix, longWords).expr
 }
 
 /** Escape a string for use inside a RegExp. */

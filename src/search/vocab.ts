@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { readVocabChunks } from "../index/db.ts"
-import { editDistance, foldTerm, ftsQuote } from "../util/text.ts"
+import { editDistance, foldTerm, ftsPrefix, ftsTerm, isLongWord } from "../util/text.ts"
 import type { Req } from "./regex-plan.ts"
 
 /**
@@ -35,6 +35,8 @@ export class Vocab {
         this.offsets.push(off)
         parts.push(term)
         off += term.length + 1
+        // Hashes and the like are never what a typo meant.
+        if (isLongWord(term)) continue
         let bucket = this.byLen.get(term.length)
         if (!bucket) this.byLen.set(term.length, (bucket = []))
         bucket.push(term)
@@ -83,6 +85,24 @@ export class Vocab {
     return this.scan(suffix + "\n", limit)
   }
 
+  /** Long words (see `isLongWord`) starting with `prefix`. null when there are more than `limit`. */
+  longStartingWith(prefix: string, limit = 64): string[] | null {
+    if (!prefix || prefix.includes("\n")) return []
+    const out: string[] = []
+    const needle = `\n${prefix}`
+    let i = this.joined.indexOf(needle)
+    while (i >= 0) {
+      const end = this.joined.indexOf("\n", i + 1)
+      const term = this.joined.slice(i + 1, end)
+      if (isLongWord(term)) {
+        if (out.length >= limit) return null
+        out.push(term)
+      }
+      i = this.joined.indexOf(needle, end)
+    }
+    return out
+  }
+
   has(term: string): boolean {
     return this.joined.includes(`\n${term}\n`)
   }
@@ -126,9 +146,9 @@ export function literalToFts(lit: string, vocab: Vocab | null): string | null {
     const startBounded = m.index > 0
     const endBounded = m.index + run.length < folded.length
     if (startBounded && endBounded) {
-      parts.push(ftsQuote(run))
+      parts.push(ftsTerm(run))
     } else if (startBounded) {
-      if (run.length >= 2) parts.push(`${ftsQuote(run)}*`)
+      if (run.length >= 2) parts.push(ftsPrefix(run, (p) => vocab?.longStartingWith(p) ?? null))
     } else if (!vocab || run.length < 3) {
       // The run may sit inside a longer token: without the vocabulary there is no safe constraint.
       continue
@@ -136,7 +156,7 @@ export function literalToFts(lit: string, vocab: Vocab | null): string | null {
       const terms = endBounded ? vocab.endingWith(run) : vocab.containing(run)
       if (terms === null) continue // too common to help
       if (terms.length === 0) return "__no_match__"
-      parts.push(terms.length === 1 ? ftsQuote(terms[0]!) : `(${terms.map(ftsQuote).join(" OR ")})`)
+      parts.push(terms.length === 1 ? ftsTerm(terms[0]!) : `(${terms.map(ftsTerm).join(" OR ")})`)
     }
   }
   if (!parts.length) return null
