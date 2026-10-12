@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig, type Config } from "../src/config.ts"
@@ -9,6 +9,7 @@ import { clearIndex, compactIndex, compressText, decompressText, getMeta, openDb
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { ftsBody, indexTerms, isLongWord, shortWord } from "../src/util/text.ts"
+import { FIXTURES } from "./helpers/corpus.ts"
 
 const SHA = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 const GIT = "3a7bd3e2360a3d29eea436fcfb7e44c735d117c4"
@@ -85,6 +86,25 @@ describe("long words", () => {
     expect(names((await e.search(`/${SHA.slice(4, 30)}/`)).hits)).toEqual(["lock.txt"])
     // A hash that is not there is still no match, at once.
     expect((await e.search(SHA.replace("9f86", "0000"))).hits).toEqual([])
+    db.close()
+  })
+  test("a prefix shared by too many hashes to list still finds only files with words that start with it", async () => {
+    const head = "c0ffee0123456789"
+    // 80 hashes starting with the same 16 characters: too many to list, so the search falls
+    // back to every word with their first 12, and checks the matches against the text.
+    const hashes = Array.from({ length: 80 }, (_, i) => head + i.toString(16).padStart(4, "0") + "ab".repeat(10))
+    const { config, db } = setup("prefix-overflow", {
+      "hashes.txt": hashes.join("\n"),
+      "decoy.txt": `a different word ${head.slice(0, 12)}ffffzz shares only the head`,
+      "c0ffee0123456789-notes.txt": "named after the prefix",
+    })
+    await new Indexer(db, config, { inProcess: true }).run()
+    const e = new SearchEngine(db, config)
+    expect(e.vocab.longStartingWith(head)).toBeNull()
+    expect(names((await e.search(head, "fuzzy")).hits)).toEqual(["c0ffee0123456789-notes.txt", "hashes.txt"])
+    expect(names((await e.search(head)).hits)).toEqual(["c0ffee0123456789-notes.txt", "hashes.txt"])
+    // With another word that no file has with it, any of them: still not the decoy.
+    expect(names((await e.search(`zebraword ${head}`, "fuzzy")).hits)).toEqual(["c0ffee0123456789-notes.txt", "hashes.txt"])
     db.close()
   })
 })
@@ -280,6 +300,23 @@ esac
     expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(1)
     await new Indexer(db, { ...config, content: { ...config.content, ocr: false } }, { inProcess: true }).run()
     expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(0)
+    db.close()
+  })
+
+  test("are dropped when OCR is turned off, also for a PDF that keeps text of its own", async () => {
+    const { root, config, db } = setup("ocr-off-pdf", {})
+    copyFileSync(join(FIXTURES, "pages/blank-pages.pdf"), join(root, "scanned.pdf"))
+    writeFileSync(calls, "")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect(ocrCalls()).toBe(1)
+    expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(1)
+    const off = { ...config, content: { ...config.content, ocr: false } }
+    await new Indexer(db, off, { inProcess: true }).run()
+    expect(count(db, "SELECT count(*) AS n FROM files WHERE content_state = 1")).toBe(1)
+    expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(0)
+    const e = new SearchEngine(db, off)
+    expect(names((await e.search("calvin")).hits)).toEqual(["scanned.pdf"])
+    expect((await e.search("receipt")).hits).toEqual([])
     db.close()
   })
 })

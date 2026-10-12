@@ -221,15 +221,21 @@ export function ftsTerm(term: string): string {
 /**
  * FTS5 expression for words starting with a folded `prefix`. A long word's short form starts
  * with its first 12 characters only: for a longer prefix, `longWords` are the long words in
- * the vocabulary that start with it, or null when there are too many to list, and then any
- * short form with the same head matches too.
+ * the vocabulary that start with it, or null when there are too many to list. Then any word
+ * with the same first 12 characters matches too, and `broad` says so: the matches must be
+ * checked against the text (see `prefixPattern`).
  */
-export function ftsPrefix(prefix: string, longWords: (prefix: string) => string[] | null): string {
+export function ftsPrefixExpr(prefix: string, longWords: (prefix: string) => string[] | null): { expr: string; broad: boolean } {
   const plain = `${ftsQuote(prefix)}*`
-  if (prefix.length <= SHORT_HEAD || prefix.length > 64 || !/^[a-z0-9]+$/.test(prefix)) return plain
+  if (prefix.length <= SHORT_HEAD || prefix.length > 64 || !/^[a-z0-9]+$/.test(prefix)) return { expr: plain, broad: false }
   const longs = longWords(prefix)
   const alts = longs === null ? [`${ftsQuote(prefix.slice(0, SHORT_HEAD))}*`] : longs.map((w) => ftsQuote(shortWord(w)))
-  return alts.length ? `(${[plain, ...alts].join(" OR ")})` : plain
+  return { expr: alts.length ? `(${[plain, ...alts].join(" OR ")})` : plain, broad: longs === null }
+}
+
+/** `ftsPrefixExpr`'s expression, for searches that check every match against the text anyway. */
+export function ftsPrefix(prefix: string, longWords: (prefix: string) => string[] | null): string {
+  return ftsPrefixExpr(prefix, longWords).expr
 }
 
 /** Escape a string for use inside a RegExp. */

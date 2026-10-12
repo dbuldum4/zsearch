@@ -295,7 +295,7 @@ export class Indexer {
       setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
       // Readers follow the removed files from this log; only its recent part is needed.
       this.db.query("DELETE FROM removed WHERE n <= (SELECT MAX(n) FROM removed) - ?").run(REMOVED_KEPT)
-      pruneOcrCache(this.db)
+      pruneOcrCache(this.db, this.ocrTool !== null)
       compactIndex(this.db, bigWrite, rewritten)
       this.db.exec("PRAGMA optimize")
     }

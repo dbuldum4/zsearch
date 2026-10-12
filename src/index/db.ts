@@ -259,10 +259,15 @@ export function compactIndex(db: Database, optimizeFts: boolean, rewritten = fal
 
 /**
  * Drop OCR results whose file is no longer indexed with its text: deleted, changed, excluded,
- * or with contents or OCR turned off since. What a file shows is never kept after it is gone.
+ * or with contents turned off since. With OCR off (`ocr` false), all of them go: a PDF with
+ * text of its own stays indexed without what OCR read on its scanned pages.
  */
-export function pruneOcrCache(db: Database): void {
+export function pruneOcrCache(db: Database, ocr: boolean): void {
   if (!db.query("SELECT 1 FROM ocr_cache LIMIT 1").get()) return
+  if (!ocr) {
+    db.exec("DELETE FROM ocr_cache")
+    return
+  }
   db.query(
     "DELETE FROM ocr_cache WHERE (dev, ino, size, mtime) NOT IN (SELECT dev, ino, size, mtime FROM files WHERE content_state = ?)",
   ).run(ContentState.Indexed)
