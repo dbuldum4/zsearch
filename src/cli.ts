@@ -76,6 +76,8 @@ Index options
       --hidden        include hidden files    (--no-hidden to exclude)
       --no-content    index names only
       --rebuild       start from an empty index
+      --meaning-only  build only the meaning (Gemma) index, from text already read;
+                      skips scanning and the word index
   -q, --quiet         no progress output
 
 Query syntax
@@ -359,9 +361,18 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   const controller = new AbortController()
   process.on("SIGINT", onSignal)
   process.on("SIGTERM", onSignal)
+  const meaningOnly = flag(args, "meaning-only") === true
+  if (meaningOnly && flag(args, "rebuild")) throw new UsageError("--meaning-only cannot be combined with --rebuild")
   try {
     if (flag(args, "rebuild")) {
       for (const suffix of ["", "-wal", "-shm"]) rmSync(p.db + suffix, { force: true })
+    }
+    // Refuse a meaning-only run before opening (and thereby creating) the index.
+    const tool = embedToolPath()
+    const blocked = semanticAvailable(config, tool)
+    if (meaningOnly && blocked) {
+      console.error(`zsearch: search by meaning cannot run: ${blocked}`)
+      return 1
     }
     const db = openDb(p.db)
     const quiet = flag(args, "quiet", "q") === true
@@ -376,11 +387,12 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         lastLine = Date.now()
       }
     }
-    if (!quiet) console.error(`Indexing ${config.roots.join(", ")}…`)
-    const result = await new Indexer(db, config, { onProgress: report, signal: controller.signal }).run()
+    if (!quiet) console.error(meaningOnly ? "Building the meaning index (Gemma) from text already read…" : `Indexing ${config.roots.join(", ")}…`)
+    const startedAt = Date.now()
+    let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
+    if (!meaningOnly) result = await new Indexer(db, config, { onProgress: report, signal: controller.signal }).run()
     // Search by meaning, when it is on: embed what this run read.
-    const tool = embedToolPath()
-    if (result.phase === "done" && !semanticAvailable(config, tool)) {
+    if (result.phase === "done" && !blocked) {
       const base = result.elapsedMs
       const started = Date.now()
       const summary = await new SemanticIndexer(db, config, tool, {
@@ -593,7 +605,7 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
         process.off("SIGINT", onSignal)
         if (tty) process.stderr.write("\r\x1b[2K")
       }
-      saveConfig({ ...config, semantic: { ...config.semantic, enabled: true, images: media ? config.semantic.images : false } })
+      saveConfig({ ...config, defaultMode: "semantic", semantic: { ...config.semantic, enabled: true, images: media ? config.semantic.images : false } })
       console.error("Search by meaning is on: the next index update reads your files for it (`zsearch index` starts one now).")
       if (!embedToolPath()) console.error("The embedding helper is missing: build it with scripts/build-embed.sh, or use the Mac app.")
       return 0
@@ -605,7 +617,7 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
         console.error(`zsearch: indexing is in progress (pid ${holder}); stop it first`)
         return 1
       }
-      saveConfig({ ...config, semantic: { ...config.semantic, enabled: false } })
+      saveConfig({ ...config, defaultMode: "find", semantic: { ...config.semantic, enabled: false } })
       removeSemantic(p.db)
       console.error("Search by meaning is off; its model and index are deleted.")
       return 0

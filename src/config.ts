@@ -100,7 +100,9 @@ export function defaultConfig(): Config {
     skipDatasetOcr: true,
     editor: "",
     semantic: { enabled: false, images: true, code: false },
-    defaultMode: "find",
+    // Meaning is the default search once it is turned on; while it is off (no model yet),
+    // loading demotes this to "find" (see below), so word search keeps working.
+    defaultMode: "semantic",
     preview: true,
   }
 }

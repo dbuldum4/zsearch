@@ -504,20 +504,20 @@ export function App(props: AppProps) {
         segs.push({ text: "Scanning folders… ", fg: t().text, bold: true }, { text: `${formatCount(p?.scanned ?? 0)} items found`, fg: t().muted })
         if (p?.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
       } else if (p.phase === "content" && p.waiting) {
-        segs.push({ text: `Waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} files read · resumes on its own`, fg: t().muted })
+        segs.push({ text: `Word index · waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} files read · resumes on its own`, fg: t().muted })
       } else if (p.phase === "content") {
         const pct = p.contentTotal ? p.contentDone / p.contentTotal : 1
         const eta = pct > 0.02 && p.contentDone > 0 ? ((p.elapsedMs / Math.max(1, p.contentDone)) * (p.contentTotal - p.contentDone)) : 0
-        segs.push({ text: "Reading contents ", fg: t().text, bold: true }, ...bar(pct, 18, t()), {
+        segs.push({ text: "Word index: reading contents ", fg: t().text, bold: true }, ...bar(pct, 18, t()), {
           text: ` ${formatCount(p.contentDone)}/${formatCount(p.contentTotal)} · ${formatBytes(p.contentBytes)} text${eta ? ` · ~${formatDuration(eta)} left` : ""}`,
           fg: t().muted,
         })
         if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
       } else if (p.phase === "meaning") {
         const m = p.meaning ?? { total: 0, done: 0, embedded: 0, reused: 0 }
-        if (p.waiting) segs.push({ text: `Waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(m.done)}/${formatCount(m.total)} files read for meaning · resumes on its own`, fg: t().muted })
+        if (p.waiting) segs.push({ text: `Meaning index (Gemma) · waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(m.done)}/${formatCount(m.total)} files read · resumes on its own`, fg: t().muted })
         else {
-          segs.push({ text: "Reading for meaning ", fg: t().text, bold: true }, ...bar(m.total ? m.done / m.total : 1, 18, t()), { text: ` ${formatCount(m.done)}/${formatCount(m.total)} files`, fg: t().muted })
+          segs.push({ text: "Meaning index (Gemma) ", fg: t().text, bold: true }, ...bar(m.total ? m.done / m.total : 1, 18, t()), { text: ` ${formatCount(m.done)}/${formatCount(m.total)} files`, fg: t().muted })
           if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
         }
       } else segs.push({ text: "Finishing up…", fg: t().muted })

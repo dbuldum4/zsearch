@@ -366,12 +366,13 @@ struct IndexProgressView: View {
 
     private var text: String {
         guard let p = activity.progress else { return "Starting…" }
-        if p.phase == "content" || p.phase == "meaning", let waiting = p.waiting { return "Waiting: \(waiting) · resumes on its own" }
+        if p.phase == "content", let waiting = p.waiting { return "Word index · waiting: \(waiting) · resumes on its own" }
+        if p.phase == "meaning", let waiting = p.waiting { return "Meaning index (Gemma) · waiting: \(waiting) · resumes on its own" }
         switch p.phase {
         case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
-        case "content": return "Reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
+        case "content": return "Word index: reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
         case "cleanup": return "Cleaning up…"
-        case "meaning": return "Reading for meaning \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
+        case "meaning": return "Meaning index (Gemma): \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
         default: return "Indexing…"
         }
     }

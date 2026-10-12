@@ -18,7 +18,7 @@ export class IndexRun {
   private worker: Worker
   readonly done: Promise<IndexOutcome>
 
-  constructor(config: Config, dbPath: string, lockPath: string, handlers: IndexRunHandlers = {}, rebuild = false, background = false) {
+  constructor(config: Config, dbPath: string, lockPath: string, handlers: IndexRunHandlers = {}, rebuild = false, background = false, meaningOnly = false) {
     this.worker = new Worker(workerUrl("index/index-worker.ts"))
     this.done = new Promise<IndexOutcome>((resolve) => {
       this.worker.onmessage = (ev: MessageEvent<IndexWorkerOut>) => {
@@ -51,7 +51,7 @@ export class IndexRun {
         this.worker.terminate()
       }
     })
-    const msg: IndexWorkerIn = { type: "start", config, dbPath, lockPath, rebuild, background }
+    const msg: IndexWorkerIn = { type: "start", config, dbPath, lockPath, rebuild, background, meaningOnly }
     this.worker.postMessage(msg)
   }
 

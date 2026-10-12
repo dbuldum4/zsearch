@@ -203,7 +203,9 @@ final class SearchModel {
             case "done":
                 // Settings changed during the run still wait for the next one.
                 if indexedRevision == settingsRevision { needsReindex = false }
-                if let p = done.progress {
+                if let p = done.progress, let m = p.meaning, p.scanned == 0 {
+                    show("Meaning index (Gemma) updated · \(m.done.formatted()) files read · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused")
+                } else if let p = done.progress {
                     let changed = p.added + p.updated + p.removed
                     show("Index updated · \(p.scanned.formatted()) items scanned" + (changed > 0 ? " · \(changed.formatted()) changed" : ""))
                 }
@@ -451,6 +453,21 @@ final class SearchModel {
         Task {
             do {
                 _ = try await engine.request(rebuild ? .rebuildIndex : background ? .backgroundIndex : .index)
+            } catch {
+                indexing = false
+                show(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Build only the meaning (Gemma) index, from text earlier runs already read:
+    /// no scanning and no word-index pass, so testing meaning never re-reads files.
+    func buildMeaningIndex() {
+        guard let engine, !indexing else { return }
+        indexing = true
+        Task {
+            do {
+                _ = try await engine.request(.meaningIndex)
             } catch {
                 indexing = false
                 show(error.localizedDescription)

@@ -27,7 +27,8 @@ type ServeIn =
   | { id?: number; type: "stats" }
   | { id?: number; type: "config" }
   | { id?: number; type: "setConfig"; config: Partial<Config> }
-  | { id?: number; type: "index"; rebuild?: boolean; background?: boolean }
+  | { id?: number; type: "index"; rebuild?: boolean; background?: boolean; meaningOnly?: boolean }
+  | { id?: number; type: "meaningIndex" }
   | { id?: number; type: "cancelIndex" }
   | { id?: number; type: "opened"; path: string }
   | { id?: number; type: "estimate"; roots: string[] }
@@ -81,7 +82,7 @@ export async function serve(version: string): Promise<number> {
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
   /** `background`: the run started on its own (file changes, the app's schedule), not on request. */
-  const startIndex = (id?: number, rebuild = false, background = false) => {
+  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false) => {
     if (closed) return
     config = loadConfig()
     client.setConfig(config)
@@ -113,7 +114,7 @@ export async function serve(version: string): Promise<number> {
         flush()
       },
       onCommit: () => client.refresh(),
-    }, rebuild, background)
+    }, rebuild, background, meaningOnly)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
@@ -172,7 +173,9 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "config", config })
       }
       case "index":
-        return startIndex(id, msg.rebuild === true, msg.background === true)
+        return startIndex(id, msg.rebuild === true, msg.background === true, msg.meaningOnly === true)
+      case "meaningIndex":
+        return startIndex(id, false, false, true)
       case "cancelIndex":
         index?.cancel()
         return send({ id, type: "ok" })
@@ -206,7 +209,7 @@ export async function serve(version: string): Promise<number> {
         try {
           const media = msg.images !== false && process.platform === "darwin"
           await downloadModel({ media, signal: downloading.run.signal, onProgress: (d) => send({ type: "semanticDownload", ...d }) })
-          config = validateConfigPatch(loadConfig(), { semantic: { enabled: true, images: media } })
+          config = validateConfigPatch(loadConfig(), { semantic: { enabled: true, images: media }, defaultMode: "semantic" })
           saveConfig(config)
           client.setConfig(config)
         } catch (err) {
@@ -225,7 +228,7 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "ok" })
       case "semanticRemove": {
         if (index || lockHolder(p.lock) !== null) return send({ id, type: "error", error: "indexing is running: stop it first" })
-        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false } })
+        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false }, defaultMode: "find" })
         saveConfig(config)
         client.setConfig(config)
         removeSemantic(p.db)

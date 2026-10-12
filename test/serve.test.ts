@@ -137,6 +137,18 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
 
+test("serve: meaningIndex without meaning on fails without touching the word index", async () => {
+  const s = server({}, ".zsearch-meaning-data")
+  await s.until((m) => m.type === "ready")
+  s.send({ id: 1, type: "meaningIndex" })
+  expect((await s.reply(1)).type).toBe("ok")
+  const done = await s.until((m) => m.type === "indexDone")
+  expect(done.status).toBe("error")
+  expect(String(done.error ?? (done.progress as { error?: string })?.error ?? "")).toContain("search by meaning cannot run")
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
 test("serve: with no schedule and no live updates, the index changes only when asked", async () => {
   const s = server()
   await s.until((m) => m.type === "ready")

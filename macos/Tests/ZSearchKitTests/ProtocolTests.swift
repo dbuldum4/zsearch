@@ -84,6 +84,7 @@ final class ProtocolTests: XCTestCase {
         func json(_ r: Request) throws -> String { String(decoding: try r.encoded(id: 7), as: UTF8.self) }
         XCTAssertEqual(try json(.search(query: "red car", mode: .semantic)), #"{"id":7,"limit":200,"mode":"semantic","query":"red car","type":"search"}"#)
         XCTAssertEqual(try json(.semanticInstall(images: false)), #"{"id":7,"images":false,"type":"semanticInstall"}"#)
+        XCTAssertEqual(try json(.meaningIndex), #"{"id":7,"type":"meaningIndex"}"#)
         XCTAssertEqual(try json(.semanticRemove), #"{"id":7,"type":"semanticRemove"}"#)
         XCTAssertEqual(
             try json(.setConfig(ConfigPatch(semantic: SemanticConfig(enabled: true, images: true, code: false)))),

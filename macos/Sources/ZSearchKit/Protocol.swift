@@ -257,6 +257,9 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
+    /// Build only the meaning (Gemma) index, from text earlier runs already read:
+    /// no scanning and no word-index pass.
+    case meaningIndex
     /// An update the app started on its own (its schedule): a big one waits in Low Power Mode,
     /// while the Mac is hot or (optionally) on battery.
     case backgroundIndex
@@ -377,6 +380,8 @@ extension Request {
             w.type = "setConfig"; w.config = patch
         case .index:
             w.type = "index"
+        case .meaningIndex:
+            w.type = "meaningIndex"
         case .backgroundIndex:
             w.type = "index"; w.background = true
         case .rebuildIndex:

@@ -163,10 +163,15 @@ private struct SemanticSettings: View {
                         Toggle("Source code and data files", isOn: semanticFlag(\.code))
                             .help("Off by default: words find code better than meaning does.")
                         HStack {
+                            Button("Build Meaning Index Only") { model.buildMeaningIndex() }
+                                .disabled(model.indexing || s.blocked != nil)
                             Spacer()
                             Button("Turn Off and Delete Model…", role: .destructive) { confirmRemove = true }
                                 .disabled(model.indexing)
                         }
+                        Text("Builds only the meaning (Gemma) index from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else if model.downloadingModel {
                         if let d = model.semanticDownload, d.total > 0 {
                             ProgressView(value: Double(d.received), total: Double(d.total)) {
