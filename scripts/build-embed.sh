@@ -40,7 +40,7 @@ else
 fi
 GENERATOR=()
 command -v ninja > /dev/null && GENERATOR=(-G Ninja)
-cmake -S "$ROOT/native/embed" -B "$BUILD" "${GENERATOR[@]}" "${FLAGS[@]}" > /dev/null
+cmake -S "$ROOT/native/embed" -B "$BUILD" ${GENERATOR[@]+"${GENERATOR[@]}"} "${FLAGS[@]}" > /dev/null
 cmake --build "$BUILD" --config Release --target zsearch-embed -j "$JOBS" > /dev/null
 mkdir -p "$ROOT/dist"
 cp "$BUILD/zsearch-embed" "$ROOT/dist/zsearch-embed"
