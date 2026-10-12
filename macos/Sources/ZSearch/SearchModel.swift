@@ -366,6 +366,9 @@ final class SearchModel {
     // MARK: - Indexing and settings
 
     var indexIsStale: Bool {
+        // "Only when I ask" never starts a build on its own, even when no run has
+        // completed yet: a first or interrupted index waits for Update Index.
+        guard !manualIndexing else { return false }
         guard let last = stats?.lastIndexedAt else { return true }
         return AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: last, now: Date().timeIntervalSince1970 * 1000)
     }
