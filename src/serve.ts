@@ -68,6 +68,8 @@ export async function serve(version: string): Promise<number> {
   let closed = false
   /** The model download, while one runs. */
   const downloading: { run: AbortController | null } = { run: null }
+  /** A run to start when the one going ends: it started before semantic search was installed. */
+  let followUp: { meaningOnly: boolean } | null = null
   const watcher = new RootWatcher(() => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
@@ -125,6 +127,9 @@ export async function serve(version: string): Promise<number> {
       if (outcome.status === "fatal") send({ type: "indexDone", status: "error", error: outcome.error })
       else if (outcome.status === "locked") send({ type: "indexDone", status: "locked" })
       else send({ type: "indexDone", status: outcome.status, progress: outcome.progress, error: outcome.progress.error })
+      const next = followUp
+      followUp = null
+      if (next && outcome.status !== "cancelled") startIndex(undefined, false, true, next.meaningOnly)
     })
   }
 
@@ -220,8 +225,10 @@ export async function serve(version: string): Promise<number> {
         }
         send({ id, type: "semantic", status: semanticStatus(config, p.db) })
         // Read the files for semantic search now: with a whole update when updates run on their
-        // own, and with Only when I ask, a semantic-only run over the text already read.
-        startIndex(undefined, false, true, manualIndexing(config))
+        // own, and with Only when I ask, a semantic-only run over the text already read. A run
+        // going now has its settings from before: this one follows it.
+        if (index) followUp = { meaningOnly: manualIndexing(config) }
+        else startIndex(undefined, false, true, manualIndexing(config))
         return
       }
       case "semanticCancelInstall":
