@@ -1,4 +1,4 @@
-/** Turning search by meaning on and off, and what to say about it (CLI, app, MCP). */
+/** Turning semantic search on and off, and what to say about it (CLI, app, MCP). */
 import { rmSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { embedToolPath } from "./helper.ts"

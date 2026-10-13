@@ -41,7 +41,7 @@ export interface IndexProgress {
   startedAt: number
   elapsedMs: number
   error?: string
-  /** The semantic pass, when search by meaning is on: files to embed and done, passages embedded and reused. */
+  /** The semantic pass, when semantic search is on: files to embed and done, passages embedded and reused. */
   meaning?: { tier?: "fast" | "full"; total: number; done: number; embedded: number; reused: number; error?: string }
 }
 

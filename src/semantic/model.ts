@@ -4,13 +4,13 @@
  *
  * - potion-retrieval-32M by Minish Lab (MIT), a Model2Vec static model: a passage's vector is the
  *   average of its word pieces' vectors, with no network to run (`potion.ts`). It reads every file
- *   in moments, so search by meaning works right after the first index.
+ *   in moments, so semantic search works right after the first index.
  * - IBM's granite-embedding-small-english-r2 (Apache 2.0), a 47M-parameter ModernBERT encoder, in
  *   mradermacher's 8-bit GGUF conversion, run by the llama.cpp helper (`helper.ts`). It reads the
  *   files again in the background, and each file's Granite vectors replace its Potion ones once
  *   they are in.
  *
- * Nothing is bundled: the Mac app downloads both when it starts (unless search by meaning was
+ * Nothing is bundled: the Mac app downloads both when it starts (unless semantic search was
  * turned off), and `zsearch semantic install` does in the terminal. That is the only network
  * request zsearch makes.
  */

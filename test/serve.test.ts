@@ -144,7 +144,7 @@ test("serve: meaningIndex without meaning on fails without touching the word ind
   expect((await s.reply(1)).type).toBe("ok")
   const done = await s.until((m) => m.type === "indexDone")
   expect(done.status).toBe("error")
-  expect(String(done.error ?? (done.progress as { error?: string })?.error ?? "")).toContain("search by meaning cannot run")
+  expect(String(done.error ?? (done.progress as { error?: string })?.error ?? "")).toContain("semantic search cannot run")
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
 }, 60_000)

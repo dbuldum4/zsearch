@@ -341,7 +341,7 @@ export class SearchEngine {
 
   /* ---------------------------------------------------------- semantic -- */
 
-  /** The semantic indexes (Potion's and Granite's), loaded on the first search by meaning. */
+  /** The semantic indexes (Potion's and Granite's), loaded on the first semantic search. */
   private vectors: Partial<Record<Tier, SemanticVectors>> = {}
   private queryEmbedders: Partial<Record<Tier, QueryEmbedder>> = {}
   /** Turns a query into one model's vector (tests pass their own). Null: no model is there. */
@@ -376,7 +376,7 @@ export class SearchEngine {
   }
 
   /**
-   * Search by meaning, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
+   * Semantic search, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
    * stands out for the query, and files holding at least half of its words. Without the model, or
    * before files have vectors, only the words count, and a notice says why.
    */
@@ -385,7 +385,7 @@ export class SearchEngine {
     // While typing, wait a moment: the next key press would make this query's vector wasted work.
     if (q.typing && opts.cancelled) {
       await Bun.sleep(150)
-      if (opts.cancelled()) { res.partial = true; res.strategy = "meaning"; return }
+      if (opts.cancelled()) { res.partial = true; res.strategy = "semantic"; return }
     }
     const text = [...q.words, ...q.phrases].join(" ")
     const cat = this.catalog
@@ -399,8 +399,8 @@ export class SearchEngine {
     // each file's best, from Granite's index once Granite has read the file, Potion's until then.
     let best = new Map<number, { z: number; row: number; tier: Tier }>()
     const indexes: Partial<Record<Tier, VectorIndex>> = {}
-    if (!this.config.semantic.enabled) notices.push("Search by meaning is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
-    else if (!this.config.content.enabled) notices.push("Search by meaning needs file contents, which are off")
+    if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
+    else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
     else {
       const generation = mainGeneration(this.db)
       const parts: { index: VectorIndex; z: Float64Array; tier: Tier }[] = []
@@ -415,16 +415,16 @@ export class SearchEngine {
         if (!index?.size || !text.trim()) continue
         try {
           const vector = await embed(text)
-          if (opts.cancelled?.()) { res.partial = true; res.strategy = "meaning"; return }
+          if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
           indexes[tier] = index
           parts.push({ index, z: meaning(index.score(vector), index.modality, index.setsScale), tier })
         } catch (err) {
           errors.push((err as Error).message)
         }
       }
-      if (!models) notices.push("Search by meaning needs its models: run `zsearch semantic install`. Showing word matches")
-      else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Search by meaning failed (${errors[0]}). Showing word matches`)
-      else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for meaning yet: they are with the next index update")
+      if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
+      else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Semantic search failed (${errors[0]}). Showing word matches`)
+      else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for semantic search yet: they are with the next index update")
       best = bestByFile(parts, (file) => {
         const i = usable(file)
         return i !== undefined && this.contentAuthorized(i, check)
@@ -497,7 +497,7 @@ export class SearchEngine {
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
     res.total = ranked.length
-    res.strategy = best.size ? "meaning + words" : "words"
+    res.strategy = best.size ? "semantic + words" : "words"
     if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
     const pattern = termsPattern(q.words, q.phrases, q.typing)
     res.hits = ranked.slice(0, limit).map((r, n) => {

@@ -1,5 +1,5 @@
 /**
- * Search by meaning: DigUp's hybrid ranking (its `Searcher.swift`, MIT, Copyright (c) 2026 Abdur
+ * Semantic search: DigUp's hybrid ranking (its `Searcher.swift`, MIT, Copyright (c) 2026 Abdur
  * Rahim, https://github.com/ARahim3/DigUp at 6faa29e), over zsearch's semantic indexes (`store.ts`)
  * and its keyword index.
  *

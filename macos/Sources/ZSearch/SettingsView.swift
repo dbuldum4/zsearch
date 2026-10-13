@@ -13,7 +13,7 @@ struct SettingsView: View {
             IndexSettings()
                 .tabItem { Label("Index", systemImage: "externaldrive") }
             SemanticSettings()
-                .tabItem { Label("Meaning", systemImage: "sparkle.magnifyingglass") }
+                .tabItem { Label("Semantic", systemImage: "sparkle.magnifyingglass") }
         }
         .frame(width: 520)
     }
@@ -59,7 +59,7 @@ private struct GeneralSettings: View {
                 Text("Find (exact text, /regex/)").tag(Mode.find)
                 Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
                 if model.config?.semantic?.enabled == true {
-                    Text("Meaning (describe what you're looking for)").tag(Mode.semantic)
+                    Text("Semantic (describe what you're looking for)").tag(Mode.semantic)
                 }
             }
             Picker("Preview PDFs as", selection: $pdfShowsText) {
@@ -122,7 +122,7 @@ private struct GeneralSettings: View {
     }
 }
 
-/// Search by meaning: Potion reads every file first, then Granite in the background (both downloaded when the app starts).
+/// Semantic search: Potion reads every file first, then Granite in the background (both downloaded when the app starts).
 private struct SemanticSettings: View {
     @Environment(SearchModel.self) private var model
     @State private var confirmRemove = false
@@ -150,7 +150,7 @@ private struct SemanticSettings: View {
                             }
                         }
                         if s.index == nil && s.fastIndex == nil {
-                            Text("Files are read for meaning with the next index update.")
+                            Text("Files are read for semantic search with the next index update.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -162,13 +162,13 @@ private struct SemanticSettings: View {
                         Toggle("Source code and data files", isOn: semanticFlag(\.code))
                             .help("Off by default: words find code better than meaning does.")
                         HStack {
-                            Button("Build Meaning Index Only") { model.buildMeaningIndex() }
+                            Button("Build Semantic Index Only") { model.buildMeaningIndex() }
                                 .disabled(model.indexing || s.blocked != nil)
                             Spacer()
                             Button("Turn Off and Delete Models…", role: .destructive) { confirmRemove = true }
                                 .disabled(model.indexing)
                         }
-                        Text("Builds only the meaning indexes from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
+                        Text("Builds only the semantic indexes from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if model.downloadingModel {
@@ -201,15 +201,15 @@ private struct SemanticSettings: View {
                     ProgressView()
                 }
             } header: {
-                Text("Search by meaning")
+                Text("Semantic search")
             }
         }
         .formStyle(.grouped)
         .onAppear { Task { await model.refreshSemantic() } }
-        .confirmationDialog("Turn off search by meaning?", isPresented: $confirmRemove) {
+        .confirmationDialog("Turn off semantic search?", isPresented: $confirmRemove) {
             Button("Turn Off and Delete", role: .destructive) { model.removeSemantic() }
         } message: {
-            Text("The models and what was read for meaning are deleted, and they are no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
+            Text("The models and what was read for semantic search are deleted, and they are no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
         }
     }
 

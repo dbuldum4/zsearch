@@ -17,7 +17,7 @@ export interface ContentConfig {
   ocr: boolean
 }
 
-/** Search by meaning (the semantic tab), with two models the app downloads when it starts. See src/semantic. */
+/** Semantic search (the semantic tab), with two models the app downloads when it starts. See src/semantic. */
 export interface SemanticConfig {
   /** Embed files' text when indexing, so the semantic tab can find them. Needs the model. */
   enabled: boolean
@@ -100,7 +100,7 @@ export function defaultConfig(): Config {
     skipDatasetOcr: true,
     editor: "",
     semantic: { enabled: false, declined: false, code: false },
-    // Turning search by meaning on (semantic install, in the CLI or the app) makes it
+    // Turning semantic search on (semantic install, in the CLI or the app) makes it
     // the default mode; until then this stays "find".
     defaultMode: "find",
     preview: true,

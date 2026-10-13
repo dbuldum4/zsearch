@@ -100,7 +100,7 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
     public var current: String
     public var elapsedMs: Double
     public var error: String?
-    /// The semantic pass (search by meaning), after the contents are read.
+    /// The semantic pass (semantic search), after the contents are read.
     public var meaning: MeaningProgress?
 
     /// 0...1 while reading contents or for meaning, nil while scanning.
@@ -176,13 +176,13 @@ public struct Config: Codable, Hashable, Sendable {
     /// and while on battery. Nil from engines older than these settings.
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
-    /// Search by meaning. Nil from engines without it.
+    /// Semantic search. Nil from engines without it.
     public var semantic: SemanticConfig?
 }
 
 public struct SemanticConfig: Codable, Hashable, Sendable {
     public var enabled: Bool
-    /// Someone turned search by meaning off: the app doesn't download its models when it starts.
+    /// Someone turned semantic search off: the app doesn't download its models when it starts.
     /// Nil from older engines.
     public var declined: Bool?
     /// Also embed source code and data files.
@@ -195,7 +195,7 @@ public struct SemanticConfig: Codable, Hashable, Sendable {
     }
 }
 
-/// What search by meaning has: its setting, model, helper and index (`semanticStatus` replies).
+/// What semantic search has: its setting, model, helper and index (`semanticStatus` replies).
 public struct SemanticStatus: Decodable, Hashable, Sendable {
     /// The two models: Potion ("fast", reads everything first) and Granite ("full", better, after).
     public struct Model: Decodable, Hashable, Sendable {
@@ -265,7 +265,7 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
-    /// Build only the meaning indexes (Potion, then Granite), from text earlier runs already read:
+    /// Build only the semantic indexes (Potion, then Granite), from text earlier runs already read:
     /// no scanning and no word-index pass.
     case meaningIndex
     /// An update the app started on its own (its schedule): a big one waits in Low Power Mode,
@@ -281,10 +281,10 @@ public enum Request: Sendable {
     /// How long a first index of these folders takes. A newer one supersedes it (`cancelled`).
     case estimate(roots: [String])
     case semanticStatus
-    /// Download both models and turn search by meaning on.
+    /// Download both models and turn semantic search on.
     case semanticInstall
     case semanticCancelInstall
-    /// Turn search by meaning off and delete its model and index.
+    /// Turn semantic search off and delete its model and index.
     case semanticRemove
 }
 

@@ -234,7 +234,7 @@ describe("semantic index and search", () => {
     const r = await engine().search("automobile", "semantic")
     expect(r.error).toBeUndefined()
     expect(r.resolved).toBe("semantic")
-    expect(r.strategy).toBe("meaning + words")
+    expect(r.strategy).toBe("semantic + words")
     expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     expect(r.hits[0]!.lines[0]!.text).toContain("sedan")
     expect(r.hits.some((h) => h.display === "Documents/credentials")).toBe(false)
@@ -259,7 +259,7 @@ describe("semantic index and search", () => {
     try {
       const e = engine()
       const r = await e.search("canine", "semantic")
-      expect(r.strategy).toBe("meaning + words")
+      expect(r.strategy).toBe("semantic + words")
       expect(r.hits[0]!.display).toBe("notes/pets.md")
       // Potion's stand-in doesn't know a sedan is a vehicle; Granite's does.
       expect((await e.search("automobile", "semantic")).hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
@@ -355,12 +355,12 @@ describe("semantic index and search", () => {
 
   test("a search engine follows the index when it is removed and made again", async () => {
     const e = engine()
-    expect((await e.search("automobile", "semantic")).strategy).toBe("meaning + words")
+    expect((await e.search("automobile", "semantic")).strategy).toBe("semantic + words")
     for (const tier of ["fast", "full"] as const) for (const suffix of ["", "-wal", "-shm"]) rmSync(semanticDbPath(dbPath, tier) + suffix, { force: true })
     expect((await e.search("automobile", "semantic")).strategy).toBe("words")
     expect((await semantic()).status).toBe("done")
     const r = await e.search("automobile", "semantic")
-    expect(r.strategy).toBe("meaning + words")
+    expect(r.strategy).toBe("semantic + words")
     expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     e.closeSemantic()
   })

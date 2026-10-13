@@ -1,7 +1,7 @@
 /**
  * A stand-in for `zsearch-embed` (native/embed) that speaks its protocol with made-up vectors:
  * each word counts toward a dimension picked by its "concept", and a few words share one, so
- * "car" and "automobile" mean the same here and tests can tell search by meaning from search by
+ * "car" and "automobile" mean the same here and tests can tell semantic search from search by
  * words. Every request is logged to $FAKE_EMBED_LOG (one JSON line), for tests to count work.
  */
 import { appendFileSync } from "node:fs"

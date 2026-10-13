@@ -29,7 +29,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Updates are incremental.** Only new or changed files are read again, and search picks up the changes without reloading the whole index. While a frontend is running, native file-system events trigger a refresh; an hourly refresh also catches missed events. Press <kbd>Ctrl-R</kbd> to refresh now. Refreshes currently walk the selected roots.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
 - **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
-- **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests, except to download the model for search by meaning when you ask for it.
+- **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests, except to download the model for semantic search when you ask for it.
 - **AI assistants can use it.** `zsearch mcp` lets Claude and other MCP clients search your files and read their text (see [below](#use-it-from-claude-and-other-ai-apps-mcp)).
 
 ## Install
@@ -81,19 +81,19 @@ Type to search. Use <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>Enter</kbd> to o
 | --- | --- | --- |
 | **find** (default) | The exact text you type, in file contents and paths. Several words are one piece of text, in that order (`marketing budget`). It is smart-case: case-sensitive only if the query has a capital letter. `"Quotes"` around the whole query are optional. | Almost everything: names, phrases, error messages, IDs |
 | **find** with `/regex/` | Wrap the query in slashes, or start it with `re:`, and it runs as a JavaScript regular expression over contents and paths. Nothing else is ever treated as a regex. | Code, dates, emails, structured text |
-| **semantic** (optional) | Files about what you describe, in other words than theirs: `lease for the flat in Lisbon`, `screenshot of a flight booking`. It needs a model downloaded first; see [Search by meaning](#search-by-meaning). | Things you remember the gist of, not the words |
+| **semantic** (optional) | Files about what you describe, in other words than theirs: `lease for the flat in Lisbon`, `screenshot of a flight booking`. It needs a model downloaded first; see [Semantic search](#semantic-search). | Things you remember the gist of, not the words |
 | **fuzzy** | Matches file paths the way fzf does: subsequences, with bonuses for word starts, `camelCase`, path separators and runs of consecutive letters, and a preference for the file name over the folders. Typos are forgiven (`mian` finds `main.rs`, `recieve` finds `receive.py`). Content matches are typo-tolerant too. Supports fzf operators: `'exact` `^prefix` `suffix$` `!exclude`. | Finding a file whose name you half remember |
 
 Find narrows the candidates through the index first (the literal parts of a regex too), so most searches don't have to read every file. It ranks an oversampled pool of content matches by match count, then combines them with name matches using reciprocal-rank fusion. Opening history and modification time break near ties; a name match is not guaranteed to come first. Ranking happens before the result limit. Broad queries stop after five times the requested matches (at least 100) or their time budget and are marked partial; explicit sorting scans until completion or its time budget. `f:…` runs one query in fuzzy mode, `s:…` in semantic mode.
 
-### Search by meaning
+### Semantic search
 
-Search by meaning runs two models on your computer, and ranks results together with your words the way [DigUp](https://github.com/ARahim3/DigUp) does:
+Semantic search runs two models on your computer, and ranks results together with your words the way [DigUp](https://github.com/ARahim3/DigUp) does:
 
 - [potion-retrieval-32M](https://huggingface.co/minishlab/potion-retrieval-32M) (Minish Lab, MIT), a [Model2Vec](https://github.com/MinishLab/model2vec) static model: a passage's vector is the average of its word pieces' vectors, so it reads every file within moments of an index update.
 - IBM's [granite-embedding-small-english-r2](https://huggingface.co/ibm-granite/granite-embedding-small-english-r2) (Apache 2.0), a 47M-parameter encoder run with [llama.cpp](https://github.com/ggml-org/llama.cpp), which reads the files again in the background. A file is searched with Granite's vectors once Granite has read it, and with Potion's until then.
 
-The Mac app downloads both when it starts (131 MB and 52 MB), unless you turned search by meaning off; find and fuzzy never need them. In the terminal:
+The Mac app downloads both when it starts (131 MB and 52 MB), unless you turned semantic search off; find and fuzzy never need them. In the terminal:
 
 ```sh
 zsearch semantic install      # downloads both models, checks their checksums
@@ -102,7 +102,7 @@ zsearch search -m semantic 'notes from the meeting about the office move'
 zsearch semantic status       # what has been read; `zsearch semantic remove` deletes the models and their indexes
 ```
 
-In the Mac app it is **Settings › Meaning**, and the **Meaning** tab next to Find and Fuzzy. The terminal app's third tab is **semantic** (<kbd>Tab</kbd> or <kbd>Alt-3</kbd>).
+In the Mac app it is **Settings › Semantic**, and the **Semantic** tab next to Find and Fuzzy. The terminal app's third tab is **semantic** (<kbd>Tab</kbd> or <kbd>Alt-3</kbd>).
 
 Every passage of every file is scored against the query, and the scores are put on one scale per query and model: how far a passage stands out from the rest of that model's passages. A file is a result if its best passage stands out clearly, or if it holds at least half of the query's words; it scores its meaning plus a bonus for the words it holds, plus one for the kind of file the query asks for ("…pdf", "slides…"). A query of codes and numbers (`INV-2024-118`) weighs words double. The preview opens at the passage that matched.
 
@@ -262,14 +262,14 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
 | `editor` | `""` | Existing editor executable and fixed arguments (defaults to `$VISUAL` / `$EDITOR`); command interpreters are rejected |
 | `semantic.enabled` | `false` | Read files for meaning when indexing (`zsearch semantic install` turns it on) |
-| `semantic.declined` | `false` | Set by turning search by meaning off: the Mac app then stops downloading its models when it starts |
+| `semantic.declined` | `false` | Set by turning semantic search off: the Mac app then stops downloading its models when it starts |
 | `semantic.code` | `false` | ...and source code and data files |
 | `defaultMode` | `find` | Initial search mode (`find`, `fuzzy` or `semantic`) |
 | `preview` | `true` | Show the preview pane |
 
 To update the index only when you ask (the Mac app's **Update Index Now**, `^R` in the terminal app, `zsearch index`, or the MCP `update_index` tool), set `autoRefreshMinutes` to `0` and `liveUpdates` to `false`: `zsearch config set autoRefreshMinutes 0` and `zsearch config set liveUpdates false`, or pick **Only when I ask** under "Update the index" in the Mac app. Changing folders or what to read then waits for the next update too, in both apps. With a schedule picked, the Mac app's **Also update as files change** switch sets `liveUpdates`. Setting up for the first time, and excluding a result, still update the index.
 
-Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait. `ZSEARCH_EMBED` names the embedding helper (`0` turns search by meaning off), and `ZSEARCH_MODELS` the folder the model is in.
+Environment variables: `ZSEARCH_HOME` keeps config and index in one folder (handy for testing). `ZSEARCH_DB` overrides the index path. `ZSEARCH_NO_PDFTOTEXT=1` (also `true`/`yes`/`on`) forces the built-in PDF reader. `ZSEARCH_NO_PDFTOTEXT=0` leaves Poppler enabled. `ZSEARCH_OCR` names the OCR helper (`0` turns OCR off). `ZSEARCH_POWER=low-power,hot,battery` (any of them) stands in for the computer's power state, to see background runs wait. `ZSEARCH_EMBED` names the embedding helper (`0` turns semantic search off), and `ZSEARCH_MODELS` the folder the model is in.
 
 The index is stored at `~/.local/share/zsearch/index.db` (`~/Library/Application Support/zsearch/index.db` on macOS). `zsearch reset` deletes it. App-owned data/config folders use mode 0700 and config, database and journals use 0600. The schema changes rebuild older indexes to correct non-Latin token matching. An index from the previous schema (version 9) is upgraded in place on the next update instead: nothing is read from disk again. What OCR read in images and scanned PDFs is kept by file, so later rebuilds do not run OCR again on files that have not changed.
 
@@ -346,7 +346,7 @@ zsearch estimate [folders...]   how long a first index takes, roughly (--docs, -
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256
 zsearch exclude <path>          exclude an indexed file or folder and update
-zsearch semantic [status|install|remove]  search by meaning: download the model (--no-images), or delete it
+zsearch semantic [status|install|remove]  semantic search: download the model (--no-images), or delete it
 zsearch doctor                  check SQLite/FTS5, pdftotext, OCR, the embedding helper and the index
 zsearch reset                   delete the index
 zsearch serve                   JSON lines on stdin/stdout, for the Mac app (see src/serve.ts)
@@ -368,12 +368,12 @@ src/
     extract/  zip/OOXML/ODF/EPUB, OLE2 (.doc/.xls/.ppt), PDF, RTF, email, text decoding
   search/     query parser, fzf-style matcher, FTS5 keyword search, regex planner,
               vocabulary index, snippets, fusion/ranking, search worker
-  semantic/   search by meaning: passages, the embedding helper, the semantic index, ranking
+  semantic/   semantic search: passages, the embedding helper, the semantic index, ranking
   tui/        Solid + OpenTUI app: setup, results, preview, status, help
   cli.ts      command line
   serve.ts    the engine over JSON lines, for the Mac app
   mcp/        the engine as an MCP server: protocol (rpc.ts) and tools (server.ts)
-native/embed/  zsearch-embed: the Granite embedding model on llama.cpp, for search by meaning
+native/embed/  zsearch-embed: the Granite embedding model on llama.cpp, for semantic search
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
@@ -407,7 +407,7 @@ The end-to-end tests drive the real app in a pseudo-terminal through [pyte](http
 
 ## Acknowledgements
 
-zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi). Search by meaning adapts [DigUp](https://github.com/ARahim3/DigUp)'s ranking and model runtime (MIT), runs on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and uses Minish Lab's potion-retrieval-32M and IBM's granite-embedding-small-english-r2, downloaded when the app starts; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi). Semantic search adapts [DigUp](https://github.com/ARahim3/DigUp)'s ranking and model runtime (MIT), runs on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and uses Minish Lab's potion-retrieval-32M and IBM's granite-embedding-small-english-r2, downloaded when the app starts; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

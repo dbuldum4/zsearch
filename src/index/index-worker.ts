@@ -62,16 +62,16 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     running = indexer
     if (goNow) indexer.goNow()
     // A meaning-only run skips the scan and word content pass: it embeds the text earlier
-    // runs already extracted, so testing search by meaning never re-reads files for word search.
+    // runs already extracted, so testing semantic search never re-reads files for word search.
     const startedAt = Date.now()
     let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
     if (!msg.meaningOnly) result = await indexer.run()
-    // Then search by meaning: embed what the run read, under the same cancel, power and priority rules.
+    // Then semantic search: embed what the run read, under the same cancel, power and priority rules.
     const tool = embedToolPath()
     const blocked = semanticAvailable(msg.config, tool)
     if (msg.meaningOnly && blocked) {
       result.phase = "error"
-      result.error = `search by meaning cannot run: ${blocked}`
+      result.error = `semantic search cannot run: ${blocked}`
       result.elapsedMs = Date.now() - startedAt
     } else if (result.phase === "done" && !blocked) {
       const started = Date.now()

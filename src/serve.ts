@@ -203,8 +203,8 @@ export async function serve(version: string): Promise<number> {
       case "semanticStatus":
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       case "semanticInstall": {
-        // Search by meaning's models: the only time zsearch goes online. The app asks when it
-        // starts, unless search by meaning was turned off.
+        // Semantic search's models: the only time zsearch goes online. The app asks when it
+        // starts, unless semantic search was turned off.
         if (downloading.run) return send({ id, type: "error", error: "the models are already downloading" })
         downloading.run = new AbortController()
         try {
@@ -219,8 +219,9 @@ export async function serve(version: string): Promise<number> {
           downloading.run = null
         }
         send({ id, type: "semantic", status: semanticStatus(config, p.db) })
-        // The next update reads files for meaning; with updates on their own, that's now.
-        if (!manualIndexing(config)) startIndex(undefined, false, true)
+        // Read the files for semantic search now: with a whole update when updates run on their
+        // own, and with Only when I ask, a semantic-only run over the text already read.
+        startIndex(undefined, false, true, manualIndexing(config))
         return
       }
       case "semanticCancelInstall":

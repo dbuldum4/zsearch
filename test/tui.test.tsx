@@ -175,8 +175,8 @@ describe("search screen", () => {
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FUZZY ") && f.includes("fuzzy names"))
     s.mockInput.pressTab()
-    // Without the model: word matches, and a notice saying how to turn search by meaning on.
-    await until(s, (f) => f.includes(" SEMANTIC ") && f.includes("Search by meaning is off"))
+    // Without the model: word matches, and a notice saying how to turn semantic search on.
+    await until(s, (f) => f.includes(" SEMANTIC ") && f.includes("Semantic search is off"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FIND ") && f.includes("exact text (indexed)"))
   })
@@ -228,7 +228,7 @@ describe("search screen", () => {
     await type(s, "qqqzzzxxx")
     await until(s, (f) => f.includes("No matches") && f.includes("Tab for fuzzy search"))
     s.mockInput.pressTab()
-    await until(s, (f) => f.includes("No matches") && f.includes("Tab to search by meaning"))
+    await until(s, (f) => f.includes("No matches") && f.includes("Tab to semantic search"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes("No matches") && f.includes("Tab to find the exact text"))
     s.mockInput.pressTab()
