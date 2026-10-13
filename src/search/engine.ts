@@ -450,6 +450,8 @@ export class SearchEngine {
       if (ok === undefined) contentOk.set(id, (ok = this.contentAuthorized(i, check)))
       return ok
     }
+    const sets: Set<number>[] = []
+    const weighted = new Map<number, number>()
     terms.forEach((term, t) => {
       // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
       const stem = stemOf(term)
@@ -461,8 +463,12 @@ export class SearchEngine {
         const i = usable(id)
         if (i !== undefined && canRead(id, i)) { has.add(id); bodyMatch.add(id) }
       }
-      for (const id of has) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
+      sets.push(has)
     })
+    // Without vectors, rare words count for more of a file's coverage (whether it matches at all still counts words).
+    const idf = sets.map((h) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(h.size, 1)))
+    const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
+    sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
     // Words after `-` or `!` rule a file out.
     for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
       for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id); named.delete(id) }
@@ -484,6 +490,7 @@ export class SearchEngine {
       strength,
       ranking: this.ranking,
       terms: terms.length,
+      weighted,
       lookup: isLookup(terms),
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),

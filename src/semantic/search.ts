@@ -162,7 +162,7 @@ export interface Ranked {
  * use separate weights; code and number lookups retain their exact-word preference.
  * Alternative benchmark pipelines can request rank fusion.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more, used without vectors. */ weighted?: Map<number, number> }): Ranked[] {
   const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
@@ -180,7 +180,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
-    const words = opts.coverage.get(file) ?? 0
+    const words = (!hasMeaning && !opts.lookup && opts.weighted ? opts.weighted : opts.coverage).get(file) ?? 0
     const z = b?.z ?? 0
     const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
     // No word match automatically outranks a better semantic answer.

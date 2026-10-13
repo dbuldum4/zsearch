@@ -15,9 +15,9 @@ Digit-only passages deliberately have no vectors and still count as processed. A
 
 ## Words only
 
-Until Granite completes, results come from word matches. They are ordered by body-word coverage, the filename/folder boost, and up to 0.5 from keyword search's BM25 order of the query's content words. A query with more than six content words needs only three of them to match.
+Until Granite completes, results come from word matches. They are ordered by body-word coverage (rarer words counting for more, by IDF), the filename/folder boost, and up to 0.5 from keyword search's BM25 order of the query's content words. A query with more than six content words needs only three of them to match.
 
-On BEIR SciFact (5,183 abstracts, 300 dev queries; `bun scripts/semantic-bench.ts --dataset=DIR --no-granite`), words-only nDCG@10 rose from 0.465 to 0.585 and recall@100 from 0.590 to 0.773. On the development sets below, words-only nDCG@10 went from 0.723 to 0.726 (tuning), 0.529 to 0.570 (validation) and stayed 0.850 (audit). Granite-stage ranking is unchanged.
+On BEIR SciFact (5,183 abstracts, 300 dev queries; `bun scripts/semantic-bench.ts --dataset=DIR --no-granite`), words-only nDCG@10 rose from 0.465 to 0.612 and recall@100 from 0.590 to 0.794. On the development sets below, words-only nDCG@10 went from 0.723 to 0.731 (tuning), 0.529 to 0.570 (validation) and stayed 0.850 (audit). Granite-stage ranking is unchanged.
 
 ## Measurements
 
