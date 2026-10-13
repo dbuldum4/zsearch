@@ -62,7 +62,7 @@ macos/scripts/install-preview.sh 12         # pull request #12
 macos/scripts/install-preview.sh main --semantic   # zsearch Semantic.app: Semantic search only
 ```
 
-Each DMG also holds **zsearch Semantic.app**, the same app with Semantic as its only search mode (no Find or Fuzzy). It runs the same engine on the same index as zsearch.app, so the two can be installed side by side, and it downloads the semantic models when it starts.
+Each DMG also holds **zsearch Semantic.app**, the same app with Semantic as its only search mode (no Find or Fuzzy). Mode prefixes and `/regex/` are read as words to search by meaning. It runs the same engine on the same index as zsearch.app, so the two can be installed side by side, and it downloads the semantic models when it starts.
 
 Install a current GitHub CLI first (`brew install gh`). The preview installer verifies GitHub provenance before mounting the download, stages a recoverable replacement, and installs without a quarantine marker. No GitHub login or Apple credentials are required. See [Mac installation and verification](macos/README.md#installing-a-preview).
 

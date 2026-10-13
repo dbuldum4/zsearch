@@ -97,6 +97,11 @@ final class SearchModel {
 
     // MARK: - Engine
 
+    /// The query text sent to the engine. The semantic-only app never lets a prefix switch modes.
+    private static func sent(_ query: String) -> String {
+        Edition.semanticOnly ? QueryFilters.semanticOnly(query) : query
+    }
+
     /// The engine binary: $ZSEARCH_ENGINE when set (development), else the one inside the app bundle.
     static func engineURL() -> URL? {
         if let path = ProcessInfo.processInfo.environment["ZSEARCH_ENGINE"], !path.isEmpty {
@@ -265,7 +270,7 @@ final class SearchModel {
         guard let engine else { return }
         let (query, mode) = (self.query, self.mode)
         do {
-            guard case let .results(r) = try await engine.request(.search(query: query, mode: mode)) else { return }
+            guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
             if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits { return }
@@ -299,7 +304,7 @@ final class SearchModel {
             return
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
-        let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: hit.lines.first?.line)
+        let request = Request.preview(file: hit.id, query: Self.sent(query), mode: mode, focusLine: hit.lines.first?.line)
         let epoch = previewEpoch
         previewTask = Task { [weak self] in
             let reply = try? await engine.request(request)
@@ -326,7 +331,7 @@ final class SearchModel {
         let epoch = previewEpoch
         prefetchTask?.cancel()
         prefetchTask = Task { [weak self] in
-            let request = Request.previews(files: ids, query: query, mode: mode, focusLines: focusLines)
+            let request = Request.previews(files: ids, query: Self.sent(query), mode: mode, focusLines: focusLines)
             guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
             for p in list where p.message == nil || p.isDir {
@@ -657,7 +662,7 @@ final class SearchModel {
         let target = delta > 0 ? (lines.first { $0 > p.focusLine } ?? lines[0]) : (lines.last { $0 < p.focusLine } ?? lines[lines.count - 1])
         guard target != p.focusLine else { return }
         // The preview holds the lines around its focus only: ask for the ones around the target.
-        let request = Request.preview(file: p.id, query: key.query, mode: key.mode, focusLine: target)
+        let request = Request.preview(file: p.id, query: Self.sent(key.query), mode: key.mode, focusLine: target)
         let epoch = previewEpoch
         previewTask?.cancel()
         previewTask = Task { [weak self] in

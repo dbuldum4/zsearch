@@ -13,6 +13,15 @@ import { byteTerms } from "../src/index/byte-terms.ts"
 describe("query parsing", () => {
   const now = new Date("2024-06-15T12:00:00").getTime()
 
+  test("a semantic: prefix keeps every other mode switch as text (the semantic-only Mac app)", () => {
+    for (const raw of ["fuzzy: report", "re:inv.*ice", "/inv.*ice/", "all: lease", "lease NEAR/3 lisbon", "inv*ice", "(a OR b)"]) {
+      const q = parseQuery(`semantic:${raw}`, now)
+      expect(q.forcedMode).toBe("semantic")
+      expect(q.regex).toBe(false)
+    }
+    expect([...parseQuery("semantic:lease ext:pdf", now).filters.exts!]).toEqual(["pdf"])
+  })
+
   test("plain words, phrases and negations", () => {
     const q = parseQuery('budget "next year" !draft -old report', now)
     expect(q.words).toEqual(["budget", "report"])

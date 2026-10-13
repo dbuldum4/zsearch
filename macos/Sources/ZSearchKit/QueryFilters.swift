@@ -108,6 +108,13 @@ public enum QueryFilters {
 
     // MARK: - Tokens
 
+    /// The query as the semantic-only app sends it: behind a `semantic:` prefix, so the engine reads
+    /// a mode prefix (`fuzzy:`, `re:`...), `all:` or a `/regex/` the user typed as words to search by
+    /// meaning instead of switching to another mode.
+    public static func semanticOnly(_ query: String) -> String {
+        query.trimmingCharacters(in: .whitespaces).isEmpty ? query : "semantic:" + query
+    }
+
     /// Split off a leading mode prefix (`re:`, `fuzzy:`...), as the engine does before reading filters.
     static func splitPrefix(_ query: String) -> (prefix: String, body: String) {
         let lead = query.trimmingLeadingSpaces()
