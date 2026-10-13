@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { closeSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { makeCorpus } from "./helpers/corpus.ts"
 
@@ -223,12 +223,15 @@ test("serve: semantic search installed while an update runs gets a run of its ow
   // The models as if downloaded already: files of their sizes (unchecked, with $ZSEARCH_MODELS).
   const models = join(corpus.home, ".models")
   mkdirSync(models, { recursive: true })
-  for (const [name, bytes] of [["model.safetensors", 129_210_456], ["tokenizer.json", 1_493_150], ["granite-embedding-small-english-r2.Q8_0.gguf", 52_445_632]] as const) {
+  for (const [name, bytes] of [["granite-embedding-small-english-r2.Q8_0.gguf", 52_445_632]] as const) {
     const fd = openSync(join(models, name), "w")
     ftruncateSync(fd, bytes)
     closeSync(fd)
   }
-  const s = server({ ZSEARCH_POWER: "low-power", ZSEARCH_MODELS: models }, ".zsearch-install")
+  const helper = join(models, "fake-embed")
+  writeFileSync(helper, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "helpers", "fake-embed.ts")}" "$@"\n`)
+  chmodSync(helper, 0o755)
+  const s = server({ ZSEARCH_POWER: "low-power", ZSEARCH_MODELS: models, ZSEARCH_EMBED: helper }, ".zsearch-install")
   await s.until((m) => m.type === "ready")
   s.send({ id: 1, type: "setConfig", config: { roots: ["~/bulk"], semantic: { enabled: false, declined: false, code: false } } })
   await s.reply(1)

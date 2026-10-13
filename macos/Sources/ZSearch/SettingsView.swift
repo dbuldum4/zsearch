@@ -130,7 +130,7 @@ private struct GeneralSettings: View {
     }
 }
 
-/// Semantic search: Potion reads every file first, then Granite in the background (both downloaded when the app starts).
+/// Semantic search uses Granite locally after its current index is complete.
 private struct SemanticSettings: View {
     @Environment(SearchModel.self) private var model
     @State private var confirmRemove = false
@@ -138,16 +138,13 @@ private struct SemanticSettings: View {
     var body: some View {
         Form {
             Section {
-                Text("Finds files by what they are about, not only by their words: “the lease for the flat in Lisbon”. It runs on this Mac with two models zsearch downloads when it starts: Potion (Minish Lab, MIT) reads every file within moments, then IBM's Granite embedding model (Apache 2.0) reads them again in the background, and each file is searched with Granite once it's done. Results mix meaning with your words, using DigUp's ranking. Find and Fuzzy don't need it.")
+                Text("Finds files by what they are about, not only by their words: “the lease for the flat in Lisbon”. It runs on this Mac with IBM's Granite embedding model (Apache 2.0), downloaded when zsearch starts. Granite reads stored text in the background. Word matches remain available until semantic indexing finishes. Results mix meaning with your words, using DigUp's ranking. Find and Fuzzy don't need it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let s = model.semantic {
                     if s.enabled && s.model.ready {
-                        if let i = s.fastIndex {
-                            LabeledContent("Quick pass (Potion)", value: "\(i.files.formatted()) files")
-                        }
                         if let i = s.index {
-                            LabeledContent("Full pass (Granite)", value: "\(i.files.formatted()) files (\(ByteCountFormatter.string(fromByteCount: Int64(i.bytes), countStyle: .file)))")
+                            LabeledContent("Granite index", value: "\(i.files.formatted()) files (\(ByteCountFormatter.string(fromByteCount: Int64(i.bytes), countStyle: .file)))")
                             if i.partial > 0 {
                                 LabeledContent("Long files to finish", value: i.partial.formatted())
                             }
@@ -157,7 +154,7 @@ private struct SemanticSettings: View {
                                     .foregroundStyle(.red)
                             }
                         }
-                        if s.index == nil && s.fastIndex == nil {
+                        if s.index == nil {
                             Text("Files are read for semantic search with the next index update.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -173,13 +170,13 @@ private struct SemanticSettings: View {
                             Button("Build Semantic Index Only") { model.buildMeaningIndex() }
                                 .disabled(model.indexing || s.blocked != nil)
                             Spacer()
-                            // The semantic-only app downloads the models again at its next start.
+                            // The semantic-only app downloads the model again at its next start.
                             if !Edition.semanticOnly {
-                                Button("Turn Off and Delete Models…", role: .destructive) { confirmRemove = true }
+                                Button("Turn Off and Delete Model…", role: .destructive) { confirmRemove = true }
                                     .disabled(model.indexing)
                             }
                         }
-                        Text("Builds only the semantic indexes from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
+                        Text("Builds only the semantic index from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if model.downloadingModel {
@@ -196,14 +193,14 @@ private struct SemanticSettings: View {
                         }
                     } else {
                         HStack {
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(s.model.fastBytes + s.model.fullBytes), countStyle: .file) + " download")
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(s.model.bytes), countStyle: .file) + " download")
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button("Download and Turn On") { model.installSemantic() }
                                 .keyboardShortcut(.defaultAction)
                         }
                         if s.helper == nil {
-                            Text("This copy of zsearch has no embedding helper, so only the quick pass (Potion) runs.")
+                            Text("This copy of zsearch has no embedding helper. Granite needs it to build and search the semantic index.")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -220,7 +217,7 @@ private struct SemanticSettings: View {
         .confirmationDialog("Turn off semantic search?", isPresented: $confirmRemove) {
             Button("Turn Off and Delete", role: .destructive) { model.removeSemantic() }
         } message: {
-            Text("The models and what was read for semantic search are deleted, and they are no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
+            Text("The model and what was read for semantic search are deleted, and it is no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
         }
     }
 

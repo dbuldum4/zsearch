@@ -5,7 +5,7 @@
  *   bun scripts/bench-semantic/store.ts [--vectors=100000] [--bytes=1024] [--lookups=10000] [--work=DIR]
  *       [--layouts=without-rowid,rowid-unique,without-rowid-8k]
  *
- * `--bytes` is one vector: 1,024 for Potion (512 16-bit floats), 1,536 for Granite. Cold numbers
+ * `--bytes` is one vector: 768 for Granite (384 16-bit floats). Cold numbers
  * need the page cache dropped between steps (`/proc/sys/vm/drop_caches`, so Linux as root); without
  * that they are warm numbers, and say so.
  */

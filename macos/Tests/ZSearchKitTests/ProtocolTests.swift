@@ -90,10 +90,10 @@ final class ProtocolTests: XCTestCase {
             try json(.setConfig(ConfigPatch(semantic: SemanticConfig(enabled: true, declined: false, code: false)))),
             #"{"config":{"semantic":{"code":false,"declined":false,"enabled":true}},"id":7,"type":"setConfig"}"#
         )
-        let status = #"{"id":2,"type":"semantic","status":{"enabled":true,"declined":false,"code":false,"helper":"/x/zsearch-embed","modelDir":"/m","model":{"fast":true,"full":false,"fastBytes":130703606,"fullBytes":52445632},"blocked":null,"index":{"files":3,"passages":9,"vectors":8,"partial":0,"bytes":4096,"lastRunAt":1700000000000,"error":null},"fastIndex":null}}"#
+        let status = #"{"id":2,"type":"semantic","status":{"enabled":true,"declined":false,"code":false,"helper":"/x/zsearch-embed","modelDir":"/m","model":{"ready":true,"bytes":52445632},"blocked":null,"index":{"files":3,"passages":9,"vectors":8,"partial":0,"bytes":4096,"lastRunAt":1700000000000,"error":null}}}"#
         guard case let .semantic(s) = try Envelope.decode(Data(status.utf8)).message else { return XCTFail("expected a status") }
-        XCTAssertTrue(s.model.fast)
-        XCTAssertFalse(s.model.ready)
+        XCTAssertTrue(s.model.ready)
+        XCTAssertEqual(s.model.bytes, 52445632)
         XCTAssertEqual(s.index?.vectors, 8)
         let download = #"{"type":"semanticDownload","file":"granite-embedding-small-english-r2.Q8_0.gguf","received":10,"total":20}"#
         guard case let .semanticDownload(d) = try Envelope.decode(Data(download.utf8)).message else { return XCTFail("expected progress") }

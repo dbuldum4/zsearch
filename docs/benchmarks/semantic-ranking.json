@@ -1,0 +1,321 @@
+{
+  "pipeline": "Granite only",
+  "model": "mradermacher/granite-embedding-small-english-r2-GGUF",
+  "modelRevision": "2b2ad9b58f3e382821e007f4c924101d6bd4a5e2",
+  "quantization": "Q8_0",
+  "pooling": "cls",
+  "helperVectorVersion": 2,
+  "packageDocumentsPerSet": 20,
+  "pdfs": false,
+  "notes": "Development queries; bounded distractors. These results do not reproduce the earlier two-model corpus.",
+  "sets": [
+    {
+      "set": "tuning",
+      "source": "real Granite",
+      "files": 49,
+      "packages": 20,
+      "summary": {
+        "words/words": {
+          "n": 13,
+          "ndcg": 0.969024405447439,
+          "mrr": 1,
+          "recall": 0.9230769230769231
+        },
+        "words/mixed": {
+          "n": 10,
+          "ndcg": 0.95,
+          "mrr": 0.9333333333333333,
+          "recall": 1
+        },
+        "words/meaning": {
+          "n": 14,
+          "ndcg": 0.2978083873582356,
+          "mrr": 0.2976190476190476,
+          "recall": 0.35714285714285715
+        },
+        "words/all": {
+          "n": 37,
+          "ndcg": 0.7099090457792433,
+          "mrr": 0.7162162162162162,
+          "recall": 0.7297297297297297
+        },
+        "full/words": {
+          "n": 13,
+          "ndcg": 0.9455675878694205,
+          "mrr": 0.9615384615384616,
+          "recall": 0.9230769230769231
+        },
+        "full/mixed": {
+          "n": 10,
+          "ndcg": 0.95,
+          "mrr": 0.9333333333333333,
+          "recall": 1
+        },
+        "full/meaning": {
+          "n": 14,
+          "ndcg": 0.8571428571428571,
+          "mrr": 0.8333333333333333,
+          "recall": 0.9285714285714286
+        },
+        "full/all": {
+          "n": 37,
+          "ndcg": 0.9133075308730396,
+          "mrr": 0.9054054054054054,
+          "recall": 0.9459459459459459
+        }
+      }
+    },
+    {
+      "set": "validation",
+      "source": "real Granite",
+      "files": 57,
+      "packages": 20,
+      "summary": {
+        "words/mixed": {
+          "n": 12,
+          "ndcg": 0.6884882922619097,
+          "mrr": 0.6666666666666666,
+          "recall": 0.75
+        },
+        "words/meaning": {
+          "n": 6,
+          "ndcg": 0.27182162559524287,
+          "mrr": 0.25,
+          "recall": 0.3333333333333333
+        },
+        "words/all": {
+          "n": 18,
+          "ndcg": 0.5495994033730206,
+          "mrr": 0.5277777777777778,
+          "recall": 0.6111111111111112
+        },
+        "full/mixed": {
+          "n": 12,
+          "ndcg": 0.9384882922619097,
+          "mrr": 0.9166666666666666,
+          "recall": 1
+        },
+        "full/meaning": {
+          "n": 6,
+          "ndcg": 0.9051127596788988,
+          "mrr": 0.875,
+          "recall": 1
+        },
+        "full/all": {
+          "n": 18,
+          "ndcg": 0.9273631147342394,
+          "mrr": 0.9027777777777778,
+          "recall": 1
+        }
+      }
+    },
+    {
+      "set": "audit",
+      "source": "real Granite",
+      "files": 57,
+      "packages": 20,
+      "summary": {
+        "words/words": {
+          "n": 7,
+          "ndcg": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "words/mixed": {
+          "n": 12,
+          "ndcg": 0.75,
+          "mrr": 0.75,
+          "recall": 0.75
+        },
+        "words/meaning": {
+          "n": 1,
+          "ndcg": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "words/all": {
+          "n": 20,
+          "ndcg": 0.85,
+          "mrr": 0.85,
+          "recall": 0.85
+        },
+        "full/words": {
+          "n": 7,
+          "ndcg": 0.9285714285714286,
+          "mrr": 0.9047619047619048,
+          "recall": 1
+        },
+        "full/mixed": {
+          "n": 12,
+          "ndcg": 0.9855195547607133,
+          "mrr": 1,
+          "recall": 0.9583333333333334
+        },
+        "full/meaning": {
+          "n": 1,
+          "ndcg": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "full/all": {
+          "n": 20,
+          "ndcg": 0.9663117328564279,
+          "mrr": 0.9666666666666668,
+          "recall": 0.975
+        }
+      }
+    }
+  ],
+  "queries": [
+    {"set":"tuning","stage":"words","q":"plumber kitchen sink","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt"]},
+    {"set":"tuning","stage":"words","q":"roof repair quote","type":"words","ndcg":0.8262346571285599,"mrr":1,"recall":0.5,"top":["Documents/home/roof-quote.md"]},
+    {"set":"tuning","stage":"words","q":"sourdough starter","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md"]},
+    {"set":"tuning","stage":"words","q":"japan itinerary kyoto","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/japan-itinerary.md"]},
+    {"set":"tuning","stage":"words","q":"lease deposit","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/lease-agreement.txt","Documents/home/moving-checklist.md"]},
+    {"set":"tuning","stage":"words","q":"dentist appointment","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/dentist.txt","Documents/health/vet-max.txt"]},
+    {"set":"tuning","stage":"words","q":"churn dashboard","type":"words","ndcg":0.944847956559586,"mrr":1,"recall":1,"top":["Documents/work/meeting-2024-10-07.md","Projects/webapp/README.md","Projects/webapp/CHANGELOG.md","Documents/study/thesis-draft.md","Documents/work/cover-letter.txt"]},
+    {"set":"tuning","stage":"words","q":"timing belt","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/service-record.txt"]},
+    {"set":"tuning","stage":"words","q":"vitamin d supplement","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/blood-test-results.txt"]},
+    {"set":"tuning","stage":"words","q":"permission slip museum","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/school-letter.txt"]},
+    {"set":"tuning","stage":"words","q":"handbook","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/study/statistics-notes.md","Documents/personal/gift-ideas.txt"]},
+    {"set":"tuning","stage":"words","q":"handbook type:markdown","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"words","q":"resume","type":"words","ndcg":0.8262346571285599,"mrr":1,"recall":0.5,"top":["Documents/work/resume.md"]},
+    {"set":"tuning","stage":"words","q":"how much was the plumber","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt","Documents/personal/journal-2024-08.md"]},
+    {"set":"tuning","stage":"words","q":"when does my passport expire","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/passport-renewal.txt"]},
+    {"set":"tuning","stage":"words","q":"what time is my flight to london","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/lisbon-flights.txt"]},
+    {"set":"tuning","stage":"words","q":"notice period to leave the flat","type":"mixed","ndcg":0.5,"mrr":0.3333333333333333,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/car/parking-fine.txt","Documents/home/lease-agreement.txt"]},
+    {"set":"tuning","stage":"words","q":"when is the tax deadline","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/money/tax-notes-2024.md","Documents/money/budget-notes.txt","Documents/home/moving-checklist.md"]},
+    {"set":"tuning","stage":"words","q":"interest rate on the car loan","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/money/car-loan.txt"]},
+    {"set":"tuning","stage":"words","q":"salary increase from my review","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/performance-review.md"]},
+    {"set":"tuning","stage":"words","q":"dog vaccinations","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/vet-max.txt"]},
+    {"set":"tuning","stage":"words","q":"how long to bake the bread","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md"]},
+    {"set":"tuning","stage":"words","q":"water leak in the attic","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/insurance-claim.txt","Documents/home/roof-quote.md"]},
+    {"set":"tuning","stage":"words","q":"fixing the leaking faucet","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"tuning","stage":"words","q":"car maintenance","type":"meaning","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/car/parking-fine.txt","Documents/car/service-record.txt","Documents/money/car-loan.txt","Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"tuning","stage":"words","q":"vegetarian dinner ideas","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"tuning","stage":"words","q":"cholesterol levels","type":"meaning","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/study/statistics-notes.md","Documents/health/blood-test-results.txt"]},
+    {"set":"tuning","stage":"words","q":"job application","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"tuning","stage":"words","q":"holiday in asia","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"tuning","stage":"words","q":"exercise routine","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"tuning","stage":"words","q":"monthly spending","type":"meaning","ndcg":0.2943107231069255,"mrr":0.16666666666666666,"recall":0.5,"top":["Projects/webapp/README.md","Projects/webapp/CHANGELOG.md","Documents/work/employee-handbook.md","Documents/work/cover-letter.txt","Documents/money/car-loan.txt","Documents/money/budget-notes.txt","Documents/home/lease-agreement.txt"]},
+    {"set":"tuning","stage":"words","q":"growing vegetables","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":["Documents/health/running-plan.md"]},
+    {"set":"tuning","stage":"words","q":"toast at a wedding","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/wedding-speech.md"]},
+    {"set":"tuning","stage":"words","q":"mountain hike","type":"meaning","ndcg":0.6131471927654584,"mrr":1,"recall":0.5,"top":["Documents/personal/journal-2024-08.md"]},
+    {"set":"tuning","stage":"words","q":"traffic ticket","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":["Documents/study/thesis-draft.md","Documents/personal/gift-ideas.txt"]},
+    {"set":"tuning","stage":"words","q":"statistical significance","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"words","q":"internet keeps disconnecting","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":["Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"tuning","stage":"full","q":"plumber kitchen sink","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt","Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"tuning","stage":"full","q":"roof repair quote","type":"words","ndcg":0.8262346571285599,"mrr":1,"recall":0.5,"top":["Documents/home/roof-quote.md","Documents/home/lease-agreement.txt"]},
+    {"set":"tuning","stage":"full","q":"sourdough starter","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md"]},
+    {"set":"tuning","stage":"full","q":"japan itinerary kyoto","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/japan-itinerary.md","Documents/travel/packing-list.md"]},
+    {"set":"tuning","stage":"full","q":"lease deposit","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/lease-agreement.txt","Documents/home/moving-checklist.md"]},
+    {"set":"tuning","stage":"full","q":"dentist appointment","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/dentist.txt","Documents/health/vet-max.txt"]},
+    {"set":"tuning","stage":"full","q":"churn dashboard","type":"words","ndcg":0.639909328045346,"mrr":0.5,"recall":1,"top":["Projects/webapp/CHANGELOG.md","Documents/work/meeting-2024-10-07.md","Projects/webapp/README.md","Documents/study/thesis-draft.md","Documents/work/cover-letter.txt"]},
+    {"set":"tuning","stage":"full","q":"timing belt","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/service-record.txt","Documents/health/running-plan.md"]},
+    {"set":"tuning","stage":"full","q":"vitamin d supplement","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/blood-test-results.txt","Documents/recipes/sourdough.md"]},
+    {"set":"tuning","stage":"full","q":"permission slip museum","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/school-letter.txt","Projects/webapp/LICENSE"]},
+    {"set":"tuning","stage":"full","q":"handbook","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/personal/gift-ideas.txt","Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"full","q":"handbook type:markdown","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"full","q":"resume","type":"words","ndcg":0.8262346571285599,"mrr":1,"recall":0.5,"top":["Documents/work/resume.md","Documents/travel/passport-renewal.txt"]},
+    {"set":"tuning","stage":"full","q":"how much was the plumber","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt","Documents/home/insurance-claim.txt","Documents/personal/journal-2024-08.md"]},
+    {"set":"tuning","stage":"full","q":"when does my passport expire","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/passport-renewal.txt"]},
+    {"set":"tuning","stage":"full","q":"what time is my flight to london","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/lisbon-flights.txt","Documents/travel/japan-itinerary.md"]},
+    {"set":"tuning","stage":"full","q":"notice period to leave the flat","type":"mixed","ndcg":0.5,"mrr":0.3333333333333333,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/home/moving-checklist.md","Documents/home/lease-agreement.txt","Documents/car/parking-fine.txt"]},
+    {"set":"tuning","stage":"full","q":"when is the tax deadline","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/money/tax-notes-2024.md","Documents/money/budget-notes.txt","Documents/home/moving-checklist.md"]},
+    {"set":"tuning","stage":"full","q":"interest rate on the car loan","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/money/car-loan.txt"]},
+    {"set":"tuning","stage":"full","q":"salary increase from my review","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/performance-review.md"]},
+    {"set":"tuning","stage":"full","q":"dog vaccinations","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/vet-max.txt"]},
+    {"set":"tuning","stage":"full","q":"how long to bake the bread","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md","Documents/recipes/pancakes.txt","Documents/recipes/lasagna.md"]},
+    {"set":"tuning","stage":"full","q":"water leak in the attic","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/insurance-claim.txt","Documents/home/roof-quote.md","Documents/home/plumber-visit.txt"]},
+    {"set":"tuning","stage":"full","q":"fixing the leaking faucet","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt","Documents/manuals/dishwasher-manual.txt","Documents/home/insurance-claim.txt","Documents/home/roof-quote.md"]},
+    {"set":"tuning","stage":"full","q":"car maintenance","type":"meaning","ndcg":0.5,"mrr":0.3333333333333333,"recall":1,"top":["Documents/money/car-loan.txt","Documents/car/parking-fine.txt","Documents/car/service-record.txt","Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"tuning","stage":"full","q":"vegetarian dinner ideas","type":"meaning","ndcg":0.5,"mrr":0.3333333333333333,"recall":1,"top":["Documents/personal/gift-ideas.txt","Documents/recipes/lasagna.md","Documents/recipes/lentil-curry.txt"]},
+    {"set":"tuning","stage":"full","q":"cholesterol levels","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/blood-test-results.txt","Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"full","q":"job application","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"tuning","stage":"full","q":"holiday in asia","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/japan-itinerary.md","Documents/work/employee-handbook.md"]},
+    {"set":"tuning","stage":"full","q":"exercise routine","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/running-plan.md"]},
+    {"set":"tuning","stage":"full","q":"monthly spending","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/money/budget-notes.txt","Documents/home/electricity-bill-2024-11.txt","Documents/work/cover-letter.txt","Documents/money/car-loan.txt","Documents/work/employee-handbook.md","Projects/webapp/README.md","Projects/webapp/CHANGELOG.md","Documents/home/lease-agreement.txt"]},
+    {"set":"tuning","stage":"full","q":"growing vegetables","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/garden-plan.md","Documents/recipes/lentil-curry.txt","Documents/recipes/lasagna.md","Documents/health/running-plan.md"]},
+    {"set":"tuning","stage":"full","q":"toast at a wedding","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/wedding-speech.md","Documents/personal/gift-ideas.txt"]},
+    {"set":"tuning","stage":"full","q":"mountain hike","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/packing-list.md","Documents/personal/journal-2024-08.md","Documents/health/running-plan.md"]},
+    {"set":"tuning","stage":"full","q":"traffic ticket","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/parking-fine.txt","Documents/personal/gift-ideas.txt","Documents/study/thesis-draft.md"]},
+    {"set":"tuning","stage":"full","q":"statistical significance","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/study/statistics-notes.md"]},
+    {"set":"tuning","stage":"full","q":"internet keeps disconnecting","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/wifi-setup.txt","Documents/manuals/router-manual.txt","Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"validation","stage":"words","q":"tenant moving out notice","type":"mixed","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/home/lease-agreement.txt","Downloads/packages/@babel_helper-module-imports_LICENSE","Downloads/packages/@babel_helper-member-expression-to-functions_LICENSE","Downloads/packages/@babel_helper-globals_LICENSE","Downloads/packages/@babel_helper-create-class-features-plugin_LICENSE","Downloads/packages/@babel_helper-compilation-targets_LICENSE","Downloads/packages/@babel_helper-annotate-as-pure_LICENSE","Downloads/packages/@babel_generator_LICENSE","Downloads/packages/@babel_core_LICENSE"]},
+    {"set":"validation","stage":"words","q":"paid annual leave entitlement","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/home/boiler-service-invoice.txt"]},
+    {"set":"validation","stage":"words","q":"home office allowance","type":"meaning","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/home/moving-checklist.md","Documents/work/employee-handbook.md"]},
+    {"set":"validation","stage":"words","q":"CV data analyst","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/resume.md","Documents/work/cover-letter.txt"]},
+    {"set":"validation","stage":"words","q":"repair invoice for sink","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"cultivating tomatoes","type":"mixed","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/recipes/lasagna.md","Documents/home/garden-plan.md"]},
+    {"set":"validation","stage":"words","q":"training for a 10k race","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/running-plan.md"]},
+    {"set":"validation","stage":"words","q":"wedding toast speech","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/wedding-speech.md"]},
+    {"set":"validation","stage":"words","q":"household electricity charges","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"write my resignation notice","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"how much did boiler repair cost","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"coverage for broken window seals","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt"]},
+    {"set":"validation","stage":"words","q":"hotel in Germany confirmation","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"bill for having my teeth cleaned","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"rules for claiming business meals","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/expense-policy.txt","Documents/work/employee-handbook.md"]},
+    {"set":"validation","stage":"words","q":"cost of fixing my bike","type":"meaning","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"validation","stage":"words","q":"how long can I borrow library books","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"validation","stage":"words","q":"instructions for feeding the cat","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt"]},
+    {"set":"validation","stage":"full","q":"tenant moving out notice","type":"mixed","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/home/moving-checklist.md","Documents/home/lease-agreement.txt","Documents/work/employee-handbook.md","Downloads/packages/@babel_helper-globals_LICENSE","Downloads/packages/@babel_helper-member-expression-to-functions_LICENSE","Downloads/packages/@babel_core_LICENSE","Downloads/packages/@babel_code-frame_LICENSE","Downloads/packages/@babel_compat-data_LICENSE","Downloads/packages/@babel_helper-annotate-as-pure_LICENSE","Downloads/packages/@babel_helper-compilation-targets_LICENSE"]},
+    {"set":"validation","stage":"full","q":"paid annual leave entitlement","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/home/boiler-service-invoice.txt"]},
+    {"set":"validation","stage":"full","q":"home office allowance","type":"meaning","ndcg":0.4306765580733931,"mrr":0.25,"recall":1,"top":["Documents/home/moving-checklist.md","Documents/work/expense-policy.txt","Documents/money/budget-notes.txt","Documents/work/employee-handbook.md"]},
+    {"set":"validation","stage":"full","q":"CV data analyst","type":"mixed","ndcg":0.6309297535714574,"mrr":0.5,"recall":1,"top":["Documents/work/cover-letter.txt","Documents/work/resume.md"]},
+    {"set":"validation","stage":"full","q":"repair invoice for sink","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/plumber-visit.txt","Documents/home/boiler-service-invoice.txt","Documents/manuals/dishwasher-manual.txt"]},
+    {"set":"validation","stage":"full","q":"cultivating tomatoes","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/garden-plan.md","Documents/recipes/lentil-curry.txt","Documents/recipes/lasagna.md"]},
+    {"set":"validation","stage":"full","q":"training for a 10k race","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/running-plan.md"]},
+    {"set":"validation","stage":"full","q":"wedding toast speech","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/wedding-speech.md"]},
+    {"set":"validation","stage":"full","q":"household electricity charges","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/electricity-bill-2024-11.txt","Documents/money/budget-notes.txt"]},
+    {"set":"validation","stage":"full","q":"write my resignation notice","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"validation","stage":"full","q":"how much did boiler repair cost","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/boiler-service-invoice.txt","Documents/car/bicycle-service.txt"]},
+    {"set":"validation","stage":"full","q":"coverage for broken window seals","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt","Documents/home/roof-quote.md","Documents/home/insurance-claim.txt"]},
+    {"set":"validation","stage":"full","q":"hotel in Germany confirmation","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"validation","stage":"full","q":"bill for having my teeth cleaned","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/dental-cleaning-receipt.txt","Documents/health/dentist.txt"]},
+    {"set":"validation","stage":"full","q":"rules for claiming business meals","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/expense-policy.txt","Documents/work/employee-handbook.md","Documents/money/tax-notes-2024.md"]},
+    {"set":"validation","stage":"full","q":"cost of fixing my bike","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/bicycle-service.txt","Documents/car/service-record.txt","Documents/car/parking-fine.txt"]},
+    {"set":"validation","stage":"full","q":"how long can I borrow library books","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"validation","stage":"full","q":"instructions for feeding the cat","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt","Documents/health/vet-max.txt"]},
+    {"set":"audit","stage":"words","q":"BL2847","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"audit","stage":"words","q":"L48293","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"audit","stage":"words","q":"what is the hotel cancellation deadline","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"audit","stage":"words","q":"double glazing condensation between panes","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt"]},
+    {"set":"audit","stage":"words","q":"cat spare key","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt"]},
+    {"set":"audit","stage":"words","q":"library renewal reservations","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"audit","stage":"words","q":"bicycle brake pad replacement","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/bicycle-service.txt"]},
+    {"set":"audit","stage":"words","q":"doctor note after sickness","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"words","q":"company equipment return","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"words","q":"training allowance courses books","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"words","q":"reservation for room with breakfast","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"audit","stage":"words","q":"rent due first working day","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/lease-agreement.txt","Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"words","q":"property roof contractor estimate","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"audit","stage":"words","q":"starter bread overnight proof","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md"]},
+    {"set":"audit","stage":"words","q":"meal reimbursement limit","type":"mixed","ndcg":0,"mrr":0,"recall":0,"top":[]},
+    {"set":"audit","stage":"words","q":"gas ignition electrode labour charge","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/boiler-service-invoice.txt"]},
+    {"set":"audit","stage":"words","q":"information on looking after Miso","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt"]},
+    {"set":"audit","stage":"words","q":"proof I paid for dental hygiene","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/dental-cleaning-receipt.txt"]},
+    {"set":"audit","stage":"words","q":"book borrowing duration","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"audit","stage":"words","q":"damage guarantee for glass panes","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt"]},
+    {"set":"audit","stage":"full","q":"BL2847","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt","Downloads/packages/@babel_code-frame_LICENSE","Documents/work/meeting-2024-10-07.md","Downloads/packages/@babel_helper-compilation-targets_LICENSE"]},
+    {"set":"audit","stage":"full","q":"L48293","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"audit","stage":"full","q":"what is the hotel cancellation deadline","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"audit","stage":"full","q":"double glazing condensation between panes","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt"]},
+    {"set":"audit","stage":"full","q":"cat spare key","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt"]},
+    {"set":"audit","stage":"full","q":"library renewal reservations","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt","Documents/travel/passport-renewal.txt"]},
+    {"set":"audit","stage":"full","q":"bicycle brake pad replacement","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/car/bicycle-service.txt","Documents/car/service-record.txt"]},
+    {"set":"audit","stage":"full","q":"doctor note after sickness","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"full","q":"company equipment return","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md"]},
+    {"set":"audit","stage":"full","q":"training allowance courses books","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/personal/library-card.txt","Documents/travel/packing-list.md","Documents/money/budget-notes.txt"]},
+    {"set":"audit","stage":"full","q":"reservation for room with breakfast","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/travel/berlin-hotel.txt"]},
+    {"set":"audit","stage":"full","q":"rent due first working day","type":"words","ndcg":0.5,"mrr":0.3333333333333333,"recall":1,"top":["Documents/work/employee-handbook.md","Documents/money/tax-notes-2024.md","Documents/home/lease-agreement.txt"]},
+    {"set":"audit","stage":"full","q":"property roof contractor estimate","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/roof-quote.md","Documents/home/lease-agreement.txt","Documents/home/window-warranty.txt"]},
+    {"set":"audit","stage":"full","q":"starter bread overnight proof","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/recipes/sourdough.md"]},
+    {"set":"audit","stage":"full","q":"meal reimbursement limit","type":"mixed","ndcg":0.8262346571285599,"mrr":1,"recall":0.5,"top":["Documents/work/expense-policy.txt","Documents/money/budget-notes.txt","Documents/money/tax-notes-2024.md"]},
+    {"set":"audit","stage":"full","q":"gas ignition electrode labour charge","type":"words","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/boiler-service-invoice.txt"]},
+    {"set":"audit","stage":"full","q":"information on looking after Miso","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/pet-sitter.txt"]},
+    {"set":"audit","stage":"full","q":"proof I paid for dental hygiene","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/health/dental-cleaning-receipt.txt","Documents/health/dentist.txt"]},
+    {"set":"audit","stage":"full","q":"book borrowing duration","type":"meaning","ndcg":1,"mrr":1,"recall":1,"top":["Documents/personal/library-card.txt"]},
+    {"set":"audit","stage":"full","q":"damage guarantee for glass panes","type":"mixed","ndcg":1,"mrr":1,"recall":1,"top":["Documents/home/window-warranty.txt"]}
+  ]
+}

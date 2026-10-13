@@ -26,7 +26,7 @@ export interface EmbedderInfo {
   maxSeqs: number
 }
 
-/** What the indexer and search need of a model: the helper, or Potion in-process (`potion.ts`). */
+/** What the indexer and search need of a model: the local embedding helper. */
 export interface TextEmbedder {
   /** One L2-normalized vector per text, `dim` floats each, in one array; and the tokens they took. */
   embedTexts(texts: string[]): Promise<{ vectors: Float32Array; dim: number; tokens: number }>

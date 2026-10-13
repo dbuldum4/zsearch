@@ -69,19 +69,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## potion-retrieval-32M
-
-Minish Lab's potion-retrieval-32M (`minishlab/potion-retrieval-32M` at revision
-6fc8051fab2a1e0ee76689cf08c853792ac285e7), a Model2Vec static embedding model, MIT License
-(https://huggingface.co/minishlab/potion-retrieval-32M). zsearch doesn't include it: the Mac app
-(when it starts) or `zsearch semantic install` downloads it from Hugging Face and checks its
-checksums. `src/semantic/potion.ts` runs it the way Model2Vec (MIT,
-https://github.com/MinishLab/model2vec) does.
-
 ## granite-embedding-small-english-r2
 
 IBM's granite-embedding-small-english-r2, Apache License 2.0
 (https://huggingface.co/ibm-granite/granite-embedding-small-english-r2), in mradermacher's 8-bit
 GGUF conversion (`mradermacher/granite-embedding-small-english-r2-GGUF` at revision
-2b2ad9b58f3e382821e007f4c924101d6bd4a5e2). zsearch doesn't include it: it is downloaded the same
-way and its SHA-256 checked.
+2b2ad9b58f3e382821e007f4c924101d6bd4a5e2). zsearch doesn't include it: the Mac app at startup
+or `zsearch semantic install` downloads it from Hugging Face and checks its SHA-256.

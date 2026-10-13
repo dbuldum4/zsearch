@@ -139,7 +139,7 @@ export function titleOf(name: string): string {
 
 /**
  * The text a passage is embedded as: its file's title, then the passage. Neither model takes a
- * prompt (Granite's model card uses none, and Potion only averages words).
+ * prompt (Granite's model card uses none).
  */
 export function documentPrompt(title: string, text: string): string {
   return title ? `${title}\n\n${text}` : text

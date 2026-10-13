@@ -112,8 +112,6 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
 }
 
 public struct MeaningProgress: Decodable, Hashable, Sendable {
-    /// Which model's pass: "fast" (Potion) or "full" (Granite). Nil from older engines.
-    public var tier: String?
     public var total: Int
     public var done: Int
     public var embedded: Int
@@ -182,7 +180,7 @@ public struct Config: Codable, Hashable, Sendable {
 
 public struct SemanticConfig: Codable, Hashable, Sendable {
     public var enabled: Bool
-    /// Someone turned semantic search off: the app doesn't download its models when it starts.
+    /// Someone turned semantic search off: the app doesn't download its model when it starts.
     /// Nil from older engines.
     public var declined: Bool?
     /// Also embed source code and data files.
@@ -197,14 +195,10 @@ public struct SemanticConfig: Codable, Hashable, Sendable {
 
 /// What semantic search has: its setting, model, helper and index (`semanticStatus` replies).
 public struct SemanticStatus: Decodable, Hashable, Sendable {
-    /// The two models: Potion ("fast", reads everything first) and Granite ("full", better, after).
+    /// The local Granite model.
     public struct Model: Decodable, Hashable, Sendable {
-        public var fast: Bool
-        public var full: Bool
-        public var fastBytes: Int
-        public var fullBytes: Int
-
-        public var ready: Bool { fast && full }
+        public var ready: Bool
+        public var bytes: Int
     }
 
     public struct Index: Decodable, Hashable, Sendable {
@@ -226,9 +220,8 @@ public struct SemanticStatus: Decodable, Hashable, Sendable {
     public var model: Model
     /// Why reading files for meaning doesn't run, or nil when it does.
     public var blocked: String?
-    /// Granite's index, and Potion's.
+    /// Granite's index.
     public var index: Index?
-    public var fastIndex: Index?
 }
 
 /// How far the model download is (`semanticDownload` events).
@@ -265,7 +258,7 @@ public enum Request: Sendable {
     /// Only the fields that are set are changed.
     case setConfig(ConfigPatch)
     case index
-    /// Build only the semantic indexes (Potion, then Granite), from text earlier runs already read:
+    /// Build only the Granite semantic index, from text earlier runs already read:
     /// no scanning and no word-index pass.
     case meaningIndex
     /// An update the app started on its own (its schedule): a big one waits in Low Power Mode,
@@ -281,7 +274,7 @@ public enum Request: Sendable {
     /// How long a first index of these folders takes. A newer one supersedes it (`cancelled`).
     case estimate(roots: [String])
     case semanticStatus
-    /// Download both models and turn semantic search on.
+    /// Download Granite and turn semantic search on.
     case semanticInstall
     case semanticCancelInstall
     /// Turn semantic search off and delete its model and index.

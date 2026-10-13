@@ -380,7 +380,7 @@ struct IndexProgressView: View {
     }
 
     private func meaningModel(_ p: IndexProgress) -> String {
-        p.meaning?.tier == "fast" ? "Potion, quick pass" : "Granite"
+        "Granite"
     }
 }
 

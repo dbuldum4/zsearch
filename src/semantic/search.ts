@@ -1,18 +1,7 @@
 /**
- * Semantic search: DigUp's hybrid ranking (its `Searcher.swift`, MIT, Copyright (c) 2026 Abdur
- * Rahim, https://github.com/ARahim3/DigUp at 6faa29e), over zsearch's semantic indexes (`store.ts`)
- * and its keyword index.
- *
- * Every stored vector is scored against the query, and the scores are put on one scale for this
- * query (`meaning`): how many standard deviations a passage stands out from the rest. Each model's
- * index is scored with its own query vector and put on its own scale, over all of its passages;
- * a file then takes its passages from Granite's index once Granite has read it as it is, and from
- * Potion's until then (`bestByFile`). A file counts
- * as a meaning match when its best passage stands out by Z_GATE or more, and as a word match when
- * it holds at least half of the query's words; its score is its meaning plus a bonus growing with
- * the share of words it holds, plus one for the kind of file the query asks for ("photo of…",
- * "…in a pdf"). Queries of codes and numbers weigh words double and meaning half. The engine
- * (`SearchEngine.runSemantic`) does the parts that need the main index: words, filters, snippets.
+ * Semantic retrieval over a complete, current Granite index. Each file takes its best
+ * normalized passage score, discounted for length and shared boilerplate. Finite name
+ * and word evidence helps find saved files without hiding better semantic answers.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -25,6 +14,44 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 
 /** A file's best passage must stand out by this many deviations to count as a meaning match. */
 export const Z_GATE = 2.0
+
+/** How results are put together; benchmarks (`scripts/semantic-bench.ts`) try others. */
+export interface Ranking {
+  /** "score": by the scores above; "rrf": reciprocal rank fusion of the word and meaning orders. */
+  fusion: "score" | "rrf"
+  /** What the query's words in a file's name or folders add (all of them). */
+  name: number
+  /** A file's best passage stands out by this much less per e-fold of passages it has: the best of many stands out by chance. */
+  length: number
+  /** ...and per e-fold of passages sharing its text: a header many files repeat says little about any one of them. */
+  shared: number
+  /** Optional finite bonus for holding every word (zero in semantic search). */
+  everyWord: number
+  /** How much words and meaning count (meaning-only search: words 0). */
+  words: number
+  meaning: number
+  /** What keyword search's own order of the word matches (BM25) adds, at most. */
+  strength: number
+  /** Semantic-stage coverage weight; name evidence is controlled independently. */
+  coverage?: number
+  namePower?: number
+  /** Weights when there are no model vectors. */
+  keywordName?: number
+  keywordCoverage?: number
+  keywordEveryWord?: number
+  /** Keyword search's order of the word matches (BM25), at most, without model vectors. */
+  keywordStrength?: number
+  /** Without model vectors, a long query's file is a word match with this many of its words (else half). */
+  keywordCover?: number
+}
+
+export const RANKING: Ranking = {
+  fusion: "score", name: 2, namePower: 2, length: 0.7, shared: 0.5,
+  everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 0.5,
+  keywordName: 1, keywordCoverage: 1, keywordEveryWord: 0.5, keywordStrength: 0.5, keywordCover: 3,
+}
+/** DigUp's, as zsearch ranked before. */
+export const DIGUP_RANKING: Ranking = { fusion: "score", name: 0, length: 0, shared: 0, everyWord: 0, words: 1, meaning: 1, strength: 0 }
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -71,6 +98,7 @@ export function meaning(scores: Float32Array | number[], modality: ArrayLike<num
 
 /** Words that say what to look for rather than what is in it (DigUp's English stopwords and kind words). */
 const STOPWORDS = new Set([
+  "how", "does", "did", "do", "can", "could", "would", "should",
   "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",
   "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
   "it", "its", "some", "any", "find", "show", "file", "files", "photo", "photos", "picture", "image", "images",
@@ -129,23 +157,52 @@ export interface Ranked {
 
 /**
  * Score the candidates: files whose best passage stands out (`best`), and files holding at least
- * half of the query's words (`coverage`, 0..1).
+ * half of the query's words (`coverage`, 0..1). Finite name evidence helps find saved files
+ * without letting incidental body words overwhelm semantic answers. Keyword-only searches
+ * use separate weights; code and number lookups retain their exact-word preference.
+ * Alternative benchmark pipelines can request rank fusion.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more, used without vectors. */ weighted?: Map<number, number> }): Ranked[] {
+  const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? Z_GATE
-  const [meaningWeight, wordsWeight] = opts.lookup ? [0.5, opts.wordWeight * 2] : [1, opts.wordWeight]
+  const hasMeaning = opts.best.size > 0
+  const coverageWeight = opts.lookup ? 1 : hasMeaning ? (R.coverage ?? 1) : (R.keywordCoverage ?? 1)
+  const nameWeight = hasMeaning ? R.name : (R.keywordName ?? R.name)
+  const namePower = hasMeaning ? (R.namePower ?? 1) : 1
+  const everyWord = hasMeaning ? R.everyWord : (R.keywordEveryWord ?? R.everyWord)
+  const strength = hasMeaning ? R.strength : (R.keywordStrength ?? R.strength)
+  const gate = hasMeaning ? 0.5 : Math.min(0.5, (R.keywordCover ?? Infinity) / Math.max(opts.terms ?? 1, 1))
+  const [meaningWeight, baseWordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
+  const wordsWeight = baseWordsWeight * coverageWeight
   const candidates = new Set<number>()
   for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
-  for (const [file, share] of opts.coverage) if (share >= 0.5) candidates.add(file)
+  if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= gate) candidates.add(file)
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
-    let score = meaningWeight * Math.max(b?.z ?? 0, 0) + wordsWeight * (opts.coverage.get(file) ?? 0) ** 1.5
+    const words = (!hasMeaning && !opts.lookup && opts.weighted ? opts.weighted : opts.coverage).get(file) ?? 0
+    const z = b?.z ?? 0
+    const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
+    // No word match automatically outranks a better semantic answer.
+    let score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
   }
+  if (R.fusion === "rrf") {
+    // Each file's rank by words (and name) and by meaning, fused: 1/(60 + rank) from each list it is in.
+    const byWords = out.filter((r) => (opts.coverage.get(r.file) ?? 0) >= gate).sort((a, b) => wordsOf(b.file) - wordsOf(a.file) || a.file - b.file)
+    const byMeaning = out.filter((r) => r.z !== null).sort((a, b) => b.z! - a.z! || a.file - b.file)
+    const fused = new Map<number, number>()
+    byWords.forEach((r, i) => fused.set(r.file, (fused.get(r.file) ?? 0) + 1 / (60 + i)))
+    byMeaning.forEach((r, i) => fused.set(r.file, (fused.get(r.file) ?? 0) + 1 / (60 + i)))
+    for (const r of out) r.score = fused.get(r.file) ?? 0
+  }
   return out.sort((a, b) => b.score - a.score || a.file - b.file)
+
+  function wordsOf(file: number): number {
+    return (opts.coverage.get(file) ?? 0) ** 1.5 * 2 + R.name * (opts.named?.get(file) ?? 0) + strength * (opts.strength?.get(file) ?? 0)
+  }
 }
 
 /* ------------------------------------------------------- the vectors -- */
@@ -156,6 +213,8 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; cove
  */
 export class VectorIndex {
   dim = 0
+  complete = true
+  completeSeq: string | null = null
   /** Passages: file id (negative for an image's own vector), number, place in the text, and vector. */
   file = new Int32Array(0)
   start = new Int32Array(0)
@@ -163,8 +222,6 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
-  /** What each file's passages were read from (its size, date and text length), by file id. */
-  sigs = new Map<number, string>()
   private values = new Float16Array(0)
   private distinct = 0
 
@@ -172,7 +229,32 @@ export class VectorIndex {
     return this.file.length
   }
 
-  /** An index of these passages, one vector each (passages reranked at search time). */
+  /** Granite is usable only after every passage of the current snapshot is committed. */
+  isCompleteFor(sequence: string): boolean {
+    return this.complete && this.completeSeq === sequence
+  }
+
+  private counts: Map<number, number> | null = null
+  /** How many passages each file has here. */
+  passages(file: number): number {
+    if (!this.counts) {
+      this.counts = new Map()
+      for (const f of this.file) this.counts.set(f, (this.counts.get(f) ?? 0) + 1)
+    }
+    return this.counts.get(file) ?? 0
+  }
+
+  private uses: Int32Array | null = null
+  /** How many passages share this passage's text (its vector): boilerplate many files hold. */
+  sharing(row: number): number {
+    if (!this.uses) {
+      this.uses = new Int32Array(this.distinct)
+      for (const k of this.vector) this.uses[k]!++
+    }
+    return this.uses[this.vector[row]!] ?? 1
+  }
+
+  /** An index of these passages, one vector each (tests and small evaluations). */
   static of(rows: { file: number; start: number; end: number; vector: Float32Array }[]): VectorIndex {
     const v = new VectorIndex()
     const n = rows.length
@@ -222,7 +304,11 @@ export class VectorIndex {
       v.modality[i] = image ? 1 : 0
       v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
     })
-    for (const [file, sig] of db.query("SELECT file, sig FROM files").values() as [number, string][]) v.sigs.set(file, sig)
+    v.completeSeq = getMeta(db, "complete_seq")
+    v.complete = !!v.completeSeq && keep.length === rows.length
+    for (const [upto, total] of db.query("SELECT upto, total FROM files").values() as [number, number][]) {
+      if (upto !== total) v.complete = false
+    }
     return v
   }
 
@@ -264,12 +350,12 @@ export class SemanticVectors {
    * The vectors, if they belong to the main index as it is (`generation`, see `mainGeneration`):
    * after a rebuild, file ids mean other files until the next semantic pass.
    */
-  get(generation: string | null): VectorIndex | null {
-    const index = this.load()
+  get(generation: string | null, completeSequence?: string): VectorIndex | null {
+    const index = this.load(completeSequence)
     return index && generation !== null && this.generation === generation ? index : null
   }
 
-  private load(): VectorIndex | null {
+  private load(completeSequence?: string): VectorIndex | null {
     // Removed, or removed and made again (`zsearch semantic remove`, then install): an open
     // connection would go on reading the deleted file, so follow the file itself.
     const ino = fileIno(this.path)
@@ -281,8 +367,11 @@ export class SemanticVectors {
       this.ino = ino
     }
     try {
+      // Do not load a growing Granite vector table just to discard it. Its completion
+      // marker is cleared before indexing and published only after the entire pass.
+      if (completeSequence !== undefined && getMeta(this.db, "complete_seq") !== completeSequence) return null
       const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
-      if (this.index && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
+      if (this.index && (completeSequence === undefined || this.index.completeSeq === completeSequence) && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()
       this.db.transaction(() => {
         this.index = hasTables ? VectorIndex.load(this.db!) : new VectorIndex()
@@ -291,7 +380,8 @@ export class SemanticVectors {
       this.version = dv
       this.loadedAt = Date.now()
     } catch {
-      // Being rebuilt, or removed: the last one loaded, if any.
+      // Being rebuilt, or removed: complete Granite must not fall back to a stale snapshot.
+      if (completeSequence !== undefined) return null
     }
     return this.index
   }
@@ -313,42 +403,20 @@ function fileIno(path: string): number | null {
 
 /* ---------------------------------------------------- query vectors -- */
 
-/**
- * The files Granite read in a version that has changed since, and that Potion has read as they
- * are now (`current`: what a file's passages would be read from today): Potion's are the ones to use.
- */
-export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (file: number) => string | null): Set<number> {
-  const out = new Set<number>()
-  for (const [file, sig] of full.sigs) {
-    const now = fast.sigs.get(file)
-    if (now !== undefined && now !== sig && current(file) === now) out.add(file)
-  }
-  return out
-}
-
-/**
- * Each file's best passage for this query, by how far it stands out (`meaning`): from `full` (Granite's
- * index) for the files it has, from `fast` (Potion's) for the others. A part's `outdated` files
- * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
- */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
+/** Best authorized passage per file, discounted for length and shared boilerplate. */
+export function bestByFile(index: VectorIndex, z: Float64Array, usable: (file: number) => boolean, ranking: Ranking = RANKING): Map<number, { z: number; row: number; index: VectorIndex }> {
   const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
   const ok = new Map<number, boolean>()
-  const upgraded = new Set<number>()
-  // An image's own vector is stored under its file's negative id.
-  const isOutdated = (outdated: Set<number> | undefined, file: number) => !!outdated?.has(Math.abs(file))
-  for (const p of parts) if (p.tier === "full") for (const f of p.index.file) if (!isOutdated(p.outdated, f)) upgraded.add(f)
-  for (const { index, z, tier, outdated } of parts) {
-    for (let row = 0; row < z.length; row++) {
-      const file = index.file[row]!
-      if (tier === "fast" && upgraded.has(file)) continue
-      if (isOutdated(outdated, file)) continue
-      const b = best.get(file)
-      if (b && b.z >= z[row]!) continue
-      let allowed = ok.get(file)
-      if (allowed === undefined) ok.set(file, (allowed = usable(file)))
-      if (allowed) best.set(file, { z: z[row]!, row, index })
-    }
+  for (let row = 0; row < z.length; row++) {
+    const file = index.file[row]!
+    const b = best.get(file)
+    if (b && b.z >= z[row]!) continue
+    let allowed = ok.get(file)
+    if (allowed === undefined) ok.set(file, (allowed = usable(file)))
+    if (allowed) best.set(file, { z: z[row]!, row, index })
+  }
+  for (const [file, b] of best) {
+    b.z -= ranking.length * Math.log(Math.max(index.passages(file), 1)) + ranking.shared * Math.log(Math.max(index.sharing(b.row), 1))
   }
   return best
 }
@@ -358,8 +426,6 @@ export class QueryEmbedder {
   private embedder: TextEmbedder | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private cache = new Map<string, Float32Array>()
-  /** Passages embedded at search time (to rerank files the indexer hasn't reached), by their text. */
-  private passages = new Map<string, Float32Array>()
 
   constructor(private start: () => TextEmbedder, private idleMs = 120_000) {}
 
@@ -384,29 +450,6 @@ export class QueryEmbedder {
     }
   }
 
-  /** Passages' vectors, embedded together (those not kept from an earlier search). */
-  async embedPassages(texts: string[]): Promise<Float32Array[]> {
-    const missing = [...new Set(texts.filter((t) => !this.passages.has(t)))]
-    if (missing.length) {
-      this.embedder ??= this.start()
-      if (this.idle) clearTimeout(this.idle)
-      try {
-        const { vectors, dim } = await this.embedder.embedTexts(missing)
-        missing.forEach((t, i) => {
-          if (this.passages.size >= 4096) this.passages.delete(this.passages.keys().next().value!)
-          this.passages.set(t, vectors.slice(i * dim, (i + 1) * dim))
-        })
-      } catch (err) {
-        this.embedder?.kill()
-        this.embedder = null
-        throw err
-      } finally {
-        this.idle = setTimeout(() => this.close(), this.idleMs)
-        this.idle.unref?.()
-      }
-    }
-    return texts.map((t) => this.passages.get(t)!)
-  }
 
   close() {
     if (this.idle) clearTimeout(this.idle)

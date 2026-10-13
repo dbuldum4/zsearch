@@ -1,8 +1,7 @@
 /**
- * The semantic passes of an index run: after the main index has read the files' text, embed what
- * is new or changed, and keep the semantic indexes (`store.ts`) in step with the main one. There
- * are two passes, one per model (`model.ts`): Potion first, which reads everything in moments, then
- * Granite, which takes far longer and whose vectors search prefers for the files it has done.
+ * The Granite pass of an index run: embed new or changed passages from text the main
+ * index already extracted. Completed snapshots become available to semantic search;
+ * interrupted runs resume from stored passages and reuse their vectors.
  *
  * DigUp reads and embeds one file at a time, up to 16 passages per model call, and reads each
  * file again for it. This pass is built to do much less work for the same vectors:
@@ -10,19 +9,19 @@
  * - It reads the text the main index already extracted, rather than opening the files again.
  * - Passages from many files go to the helper together; the helper sorts them by length and packs
  *   them into as few model calls as fit, and the next group is prepared while one runs.
- * - Files are cut into passages on worker threads (`workers.ts`), which also run Potion: this
+ * - Files are cut into passages on worker threads (`workers.ts`): this
  *   thread only checks which passages are new and stores them.
  * - A passage is embedded once, wherever it appears: by a hash of the exact text the model reads,
  *   so copies of a file, boilerplate shared between files, and files that were renamed, moved or
  *   re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded.
  * - Passages don't overlap (see `chunk.ts`), and text that is mostly digits is left to keyword search.
  * - Source code and data files are left out unless `semantic.code` is on (as DigUp's code search
- *   is off by default).
+ *   is off by default), and Lean proofs always are (see `semanticExcluded`).
  *
  * Like the main index it respects the index settings: it runs only as part of an index run (so
  * not at all with "only when I ask" until someone asks), and so only while zsearch runs (the Mac
- * app is open); the Granite pass waits on power in a background run with a lot to do; neither reads
- * keys and password files (they have no stored text); and both stop at once when the run is
+ * app is open); the pass waits on power in a background run with a lot to do; it never reads
+ * keys and password files (they have no stored text); and it stops at once when the run is
  * cancelled. Long files get their first passages in a first round and the rest after every file has
  * its start, as DigUp does.
  */
@@ -35,11 +34,11 @@ import { loadShare } from "../index/load.ts"
 import type { PowerGate } from "../index/power.ts"
 import { crawlOptionsFor, policyFor } from "../index/policy.ts"
 import { secretFile } from "../index/secrets.ts"
-import type { Kind } from "../kinds.ts"
+import { type Kind, semanticExcluded } from "../kinds.ts"
 import { CHUNK_CHARS, CHUNKER_VERSION } from "./chunk.ts"
 import type { Cut, CutJob } from "./cut.ts"
 import { Embedder, type TextEmbedder } from "./helper.ts"
-import { installedModel, modelFingerprint, modelSpec, POTION, type Tier } from "./model.ts"
+import { GRANITE, installedModel, modelFingerprint } from "./model.ts"
 import { SemanticWorkers } from "./workers.ts"
 import { clearAll, clearPassages, getMeta, openSemanticDb, packVector, semanticDbPath, setMeta } from "./store.ts"
 
@@ -50,22 +49,14 @@ const CODE_KINDS = new Set<Kind>(["code", "data"])
 const FIRST_ROUND = 40
 /** Passages after which a file's passages stop setting the scale of meaning scores (see `search.ts`). */
 export const SCALE_PASSAGES = FIRST_ROUND
-/**
- * Characters of text to cut into passages for one group, about: Granite's helper is sent each
- * group's new passages (about 280) and packs them into model calls, while Potion's are embedded by
- * the workers, for whom a bigger group costs fewer messages and commits.
- */
-const GROUP_CHARS: Record<Tier, number> = { full: 512 * 1024, fast: 8 << 20 }
+/** Characters of text to cut into passages for one group, prepared while the helper embeds the previous group. */
+const GROUP_CHARS = 512 * 1024
 /** Passages, at most, sent to the helper in one request. */
 const REQUEST_INPUTS = 256
 /** Files to embed, at least, for a background Granite run to wait on power. Embedding costs far more per file than reading. */
 const BIG_RUN = 100
-/** Potion's version here: bump it with anything that changes its vectors (`potion.ts`). */
-const POTION_VERSION = 1
 
 export interface SemanticProgress {
-  /** Which pass: Potion's ("fast") or Granite's ("full"). */
-  tier?: Tier
   /** Files to embed in this run, and done so far. */
   total: number
   done: number
@@ -77,8 +68,6 @@ export interface SemanticProgress {
 }
 
 export interface SemanticOptions {
-  /** Which model's pass: "fast" (Potion) or "full" (Granite, the default). */
-  tier?: Tier
   signal?: AbortSignal
   /** Wait on power during a big pass (background runs). */
   power?: PowerGate
@@ -104,18 +93,12 @@ export interface SemanticSummary {
   error?: string
 }
 
-/** Whether semantic indexing can run with these settings: the setting, and Potion at least. */
+/** Why semantic indexing cannot run, or null when Granite and its helper are ready. */
 export function semanticAvailable(config: Config, tool: string | null): string | null {
   if (!config.semantic.enabled) return "semantic search is off"
   if (!config.content.enabled) return "file contents are off"
-  if (!installedModel(POTION)) return "the models are not downloaded (zsearch semantic install)"
-  return tierBlocked("full", tool) && tierBlocked("fast", tool)
-}
-
-/** Why one model's pass can't run (its files, and Granite's helper), or null. */
-export function tierBlocked(tier: Tier, tool: string | null): string | null {
-  if (!installedModel(modelSpec(tier))) return `${modelSpec(tier).name} is not downloaded (zsearch semantic install)`
-  if (tier === "full" && !tool) return "the embedding helper (zsearch-embed) is not installed"
+  if (!installedModel(GRANITE)) return `${GRANITE.name} is not downloaded (zsearch semantic install)`
+  if (!tool) return "the embedding helper (zsearch-embed) is not installed"
   return null
 }
 
@@ -145,8 +128,8 @@ export function mainGeneration(main: Database, create = false): string | null {
   return `${key}:${getMainMeta(main, "generation") ?? "0"}`
 }
 
-export function semanticFingerprint(tier: Tier, vectorVersion: number): string {
-  return `${modelFingerprint(modelSpec(tier))} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
+export function semanticFingerprint(vectorVersion: number): string {
+  return `${modelFingerprint(GRANITE)} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
 }
 
 /** What a file's passages are read from: its size, date and text length. */
@@ -195,10 +178,9 @@ export class SemanticIndexer {
   private progress: SemanticProgress
   private lastEmit = 0
   private embedder: TextEmbedder | null = null
-  /** The workers that cut files into passages (and, for Potion, embed them: then they are `embedder` too). */
+  /** The worker that cuts files into passages while the helper embeds. */
   private workers: SemanticWorkers | null = null
   private tokens = 0
-  private tier: Tier
 
   constructor(
     private main: Database,
@@ -206,8 +188,7 @@ export class SemanticIndexer {
     private tool: string | null,
     private opts: SemanticOptions = {},
   ) {
-    this.tier = opts.tier ?? "full"
-    this.progress = { tier: this.tier, total: 0, done: 0, embedded: 0, reused: 0, current: "" }
+    this.progress = { total: 0, done: 0, embedded: 0, reused: 0, current: "" }
   }
 
   private get aborted() {
@@ -222,8 +203,7 @@ export class SemanticIndexer {
   }
 
   private waitReason(big: boolean): string | undefined {
-    // Potion costs next to nothing: only Granite waits on power.
-    if (!big || this.tier === "fast" || this.opts.goNow?.()) return undefined
+    if (!big || this.opts.goNow?.()) return undefined
     return this.opts.power?.reason() ?? undefined
   }
 
@@ -273,13 +253,8 @@ export class SemanticIndexer {
 
   private startWorkers(): SemanticWorkers {
     if (this.workers) return this.workers
-    if (this.tier === "fast" && !this.opts.embedder) {
-      const [model, tokenizer] = installedModel(POTION)!
-      this.workers = new SemanticWorkers(this.threads(), { model: model!, tokenizer: tokenizer! })
-    } else {
-      // Granite's helper takes the cores: cutting is a small part of its pass.
-      this.workers = new SemanticWorkers(this.tier === "fast" ? this.threads() : 1)
-    }
+    // The helper takes the cores: cutting is a small part of the pass.
+    this.workers = new SemanticWorkers(1)
     return this.workers
   }
 
@@ -288,15 +263,14 @@ export class SemanticIndexer {
     const threads = this.threads()
     const low = this.opts.low ?? loadShare(this.config.indexLoad) < 1
     if (this.opts.embedder) this.embedder = this.opts.embedder({ threads, low })
-    else if (this.tier === "fast") this.embedder = this.startWorkers()
-    else this.embedder = new Embedder({ tool: this.tool!, model: installedModel(modelSpec("full"))![0]!, pooling: "cls", threads, low })
+    else this.embedder = new Embedder({ tool: this.tool!, model: installedModel(GRANITE)![0]!, pooling: "cls", threads, low })
     return this.embedder
   }
 
   async run(): Promise<SemanticSummary> {
     const summary: SemanticSummary = { status: "done", files: 0, embedded: 0, reused: 0, removed: 0, tokens: 0 }
     const dbPath = this.main.filename && this.main.filename !== "" ? this.main.filename : ":memory:"
-    const store = openSemanticDb(semanticDbPath(dbPath, this.tier))!
+    const store = openSemanticDb(semanticDbPath(dbPath))!
     try {
       return await this.runWith(store, summary)
     } catch (err) {
@@ -313,8 +287,8 @@ export class SemanticIndexer {
   }
 
   private async runWith(store: Database, summary: SemanticSummary): Promise<SemanticSummary> {
-    const version = this.opts.vectorVersion ?? (this.tier === "fast" ? POTION_VERSION : this.tool ? helperVectorVersion(this.tool) : 0)
-    const fingerprint = semanticFingerprint(this.tier, version)
+    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : 0)
+    const fingerprint = semanticFingerprint(version)
     if (getMeta(store, "fingerprint") !== fingerprint) {
       // Vectors of another model or helper can't be compared with new ones.
       clearAll(store)
@@ -327,6 +301,8 @@ export class SemanticIndexer {
       setMeta(store, "generation", generation)
     }
 
+    setMeta(store, "complete_seq", "")
+    setMeta(store, "indexing_seq", getMainMeta(this.main, "change_seq") ?? "0")
     const candidates = this.candidates()
     const known = new Map<number, { sig: string; upto: number; total: number }>()
     for (const r of store.query("SELECT file, sig, upto, total FROM files").all() as { file: number; sig: string; upto: number; total: number }[]) known.set(r.file, r)
@@ -373,6 +349,7 @@ export class SemanticIndexer {
     if (complete) {
       // Vectors no passage uses any more: of deleted files and edited passages.
       store.exec("DELETE FROM vectors WHERE hash NOT IN (SELECT hash FROM passages)")
+      setMeta(store, "complete_seq", getMeta(store, "indexing_seq") ?? "0")
       setMeta(store, "last_run_at", String(Date.now()))
       setMeta(store, "last_error", "")
     }
@@ -391,7 +368,7 @@ export class SemanticIndexer {
       .query("SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0")
       .all(ContentState.Indexed) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
     for (const r of rows) {
-      if (!kinds.has(r.kind)) continue
+      if (!kinds.has(r.kind) || semanticExcluded(r.path)) continue
       const p = policy(r.path)
       if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime, len: r.len })
     }
@@ -411,7 +388,7 @@ export class SemanticIndexer {
       const batch: Queued[] = []
       const jobs: CutJob[] = []
       let chars = 0
-      while (next < files.length && chars < GROUP_CHARS[this.tier]) {
+      while (next < files.length && chars < GROUP_CHARS) {
         const file = files[next++]!
         // Finished in round one.
         if (file.total !== undefined && file.from >= file.total) continue
@@ -514,7 +491,7 @@ export class SemanticIndexer {
   /** The texts' vectors: from the helper, in requests of at most REQUEST_INPUTS. */
   private async embedAll(texts: string[]): Promise<{ vectors: Float32Array; dim: number; tokens: number }> {
     const embedder = this.startEmbedder()
-    if (embedder === this.workers || texts.length <= REQUEST_INPUTS) return embedder.embedTexts(texts)
+    if (texts.length <= REQUEST_INPUTS) return embedder.embedTexts(texts)
     const parts: { vectors: Float32Array; dim: number; tokens: number }[] = []
     for (let i = 0; i < texts.length; i += REQUEST_INPUTS) parts.push(await embedder.embedTexts(texts.slice(i, i + REQUEST_INPUTS)))
     const dim = parts[0]!.dim
@@ -535,18 +512,10 @@ export class SemanticIndexer {
   }
 }
 
-/**
- * Both passes of an index run: Potion's, which reads every file in moments, then Granite's, where
- * its helper and model are there. The summary is Granite's (Potion's, without it), with the
- * passages of both; a cancelled or failed Potion pass stops there.
- */
-export async function runSemanticPasses(main: Database, config: Config, tool: string | null, opts: Omit<SemanticOptions, "tier"> = {}): Promise<SemanticSummary> {
-  let summary: SemanticSummary | null = null
-  for (const tier of ["fast", "full"] as const) {
-    if (tierBlocked(tier, tool) && !opts.embedder) continue
-    const s = await new SemanticIndexer(main, config, tool, { ...opts, tier }).run()
-    summary = summary ? { ...s, embedded: summary.embedded + s.embedded, reused: summary.reused + s.reused, tokens: summary.tokens + s.tokens } : s
-    if (s.status !== "done") break
+/** Run Granite once; unavailable configurations skip without creating an index. */
+export async function runSemanticPass(main: Database, config: Config, tool: string | null, opts: SemanticOptions = {}): Promise<SemanticSummary> {
+  if (!config.semantic.enabled || !config.content.enabled || (!opts.embedder && semanticAvailable(config, tool))) {
+    return { status: "skipped", files: 0, embedded: 0, reused: 0, removed: 0, tokens: 0 }
   }
-  return summary ?? { status: "skipped", files: 0, embedded: 0, reused: 0, removed: 0, tokens: 0 }
+  return new SemanticIndexer(main, config, tool, opts).run()
 }

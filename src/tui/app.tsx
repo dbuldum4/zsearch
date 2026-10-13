@@ -515,9 +515,9 @@ export function App(props: AppProps) {
         if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
       } else if (p.phase === "meaning") {
         const m = p.meaning ?? { total: 0, done: 0, embedded: 0, reused: 0 }
-        if (p.waiting) segs.push({ text: `Semantic index (${m.tier === "fast" ? "Potion" : "Granite"}) · waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(m.done)}/${formatCount(m.total)} files read · resumes on its own`, fg: t().muted })
+        if (p.waiting) segs.push({ text: `Semantic index (Granite) · waiting: ${p.waiting} `, fg: t().warn, bold: true }, { text: `${formatCount(m.done)}/${formatCount(m.total)} files read · resumes on its own`, fg: t().muted })
         else {
-          segs.push({ text: `Semantic index (${m.tier === "fast" ? "Potion" : "Granite"}) `, fg: t().text, bold: true }, ...bar(m.total ? m.done / m.total : 1, 18, t()), { text: ` ${formatCount(m.done)}/${formatCount(m.total)} files`, fg: t().muted })
+          segs.push({ text: `Semantic index (Granite) `, fg: t().text, bold: true }, ...bar(m.total ? m.done / m.total : 1, 18, t()), { text: ` ${formatCount(m.done)}/${formatCount(m.total)} files`, fg: t().muted })
           if (p.current) segs.push({ text: `  ${tildify(p.current)}`, fg: t().subtle })
         }
       } else segs.push({ text: "Finishing up…", fg: t().muted })

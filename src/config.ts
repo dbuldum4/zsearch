@@ -17,11 +17,11 @@ export interface ContentConfig {
   ocr: boolean
 }
 
-/** Semantic search (the semantic tab), with two models the app downloads when it starts. See src/semantic. */
+/** Semantic search (the semantic tab), with Granite, which the app downloads when it starts. See src/semantic. */
 export interface SemanticConfig {
   /** Embed files' text when indexing, so the semantic tab can find them. Needs the model. */
   enabled: boolean
-  /** Turned off by someone (`semantic remove`, or the app's settings): the app no longer downloads the models when it starts. */
+  /** Turned off by someone (`semantic remove`, or the app's settings): the app no longer downloads the model when it starts. */
   declined: boolean
   /** Also embed source code and data files (off, as in DigUp: keyword search suits them better). */
   code: boolean

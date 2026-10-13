@@ -6,7 +6,7 @@ import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
-import type { Kind } from "../kinds.ts"
+import { type Kind, semanticExcluded } from "../kinds.ts"
 import { escapeRegExp, foldTerm, ftsPrefixExpr, ftsTerm, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
@@ -19,12 +19,10 @@ import { TopK } from "../util/top-k.ts"
 import { retryClock, type RetryClock } from "../util/clock.ts"
 import { availableParallelism } from "node:os"
 import { Embedder, embedToolPath } from "../semantic/helper.ts"
-import { GRANITE, installedModel, POTION, type Tier } from "../semantic/model.ts"
-import { PotionEmbedder, PotionModel } from "../semantic/potion.ts"
-import { documentPrompt, titleOf } from "../semantic/chunk.ts"
-import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, outdatedFiles, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
+import { GRANITE, installedModel } from "../semantic/model.ts"
+import { bestByFile, CODE_WORD_WEIGHT, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
-import { mainGeneration, textSig } from "../semantic/indexer.ts"
+import { mainGeneration } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -156,18 +154,6 @@ class TextCache {
 type TermGroup = { expr: string; terms: string[]; prefix: boolean; check?: RegExp }
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
-
-/** Files reranked with Granite at search time, at most, while Granite hasn't read every file. */
-const RERANK = 12
-/** Passages Granite's index needs before its scale is worth putting reranked passages on. */
-const RERANK_MIN_PASSAGES = 200
-
-function concatScores(a: Float32Array, b: Float32Array): Float32Array {
-  const out = new Float32Array(a.length + b.length)
-  out.set(a)
-  out.set(b, a.length)
-  return out
-}
 
 export class SearchEngine {
   readonly catalog = new Catalog()
@@ -354,84 +340,36 @@ export class SearchEngine {
 
   /* ---------------------------------------------------------- semantic -- */
 
-  /** The semantic indexes (Potion's and Granite's), loaded on the first semantic search. */
-  private vectors: Partial<Record<Tier, SemanticVectors>> = {}
-  private queryEmbedders: Partial<Record<Tier, QueryEmbedder>> = {}
-  /** Turns a query into one model's vector (tests pass their own). Null: no model is there. */
-  embedQuery: ((text: string, tier: Tier) => Promise<Float32Array>) | null | undefined
+  /** Granite vectors and query helper, loaded on the first semantic search. */
+  private vectors: SemanticVectors | null = null
+  private queryEmbedder: QueryEmbedder | null = null
+  /** Tests and benchmarks may supply query vectors; null disables the model. */
+  embedQuery: ((text: string) => Promise<Float32Array>) | null | undefined
 
-  /** The query's vector for a model, or null when that model (or Granite's helper) is missing. */
-  private queryVectorFn(tier: Tier): ((text: string) => Promise<Float32Array>) | null {
-    if (this.embedQuery !== undefined) return this.embedQuery && ((text) => this.embedQuery!(text, tier))
-    let embedder = this.queryEmbedders[tier]
-    if (!embedder) {
-      if (tier === "fast") {
-        const files = installedModel(POTION)
-        if (!files) return null
-        embedder = new QueryEmbedder(() => new PotionEmbedder(PotionModel.load(files[0]!, files[1]!)))
-      } else {
-        const tool = embedToolPath()
-        const files = installedModel(GRANITE)
-        if (!tool || !files) return null
-        embedder = new QueryEmbedder(() => new Embedder({ tool, model: files[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }))
-      }
-      this.queryEmbedders[tier] = embedder
+  private queryVectorFn(): ((text: string) => Promise<Float32Array>) | null {
+    if (this.embedQuery !== undefined) return this.embedQuery
+    if (!this.queryEmbedder) {
+      const tool = embedToolPath()
+      const files = installedModel(GRANITE)
+      if (!tool || !files) return null
+      this.queryEmbedder = new QueryEmbedder(() => new Embedder({ tool, model: files[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }))
     }
-    return (text) => embedder.embed(text)
+    return (text) => this.queryEmbedder!.embed(text)
   }
 
-  /** Passages Granite's index needs before its scale is worth putting reranked passages on (tests lower it). */
-  rerankMinPassages = RERANK_MIN_PASSAGES
-  /** Embeds passages with Granite at search time (tests pass their own). */
-  embedPassages: ((texts: string[]) => Promise<Float32Array[]>) | undefined
-
-  /**
-   * The best passage of each of the RERANK files Potion ranks highest that Granite hasn't read
-   * yet, embedded with Granite now (and kept for later searches), as a small index of its own.
-   */
-  private async rerankWithGranite(fast: { index: VectorIndex; z: Float64Array; tier: Tier }, full: VectorIndex, outdated: Set<number>, authorized: (file: number) => boolean): Promise<VectorIndex | null> {
-    const upgraded = new Set(full.file.filter((f) => !outdated.has(Math.abs(f))))
-    const pool = [...bestByFile([fast], (f) => !upgraded.has(f) && authorized(f))].sort((a, b) => b[1].z - a[1].z).slice(0, RERANK)
-    const picked: { file: number; start: number; end: number; text: string }[] = []
-    for (const [file, b] of pool) {
-      const stored = this.storedText(file)
-      const i = this.catalog.indexOf(file)
-      if (stored === null || i === undefined) continue
-      const start = fast.index.start[b.row]!
-      const end = fast.index.end[b.row]!
-      const name = this.catalog.paths[i]!.slice(this.catalog.paths[i]!.lastIndexOf("/") + 1)
-      picked.push({ file, start, end, text: documentPrompt(titleOf(name), stored.slice(start, end).replace(/[ \t ]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n")) })
-    }
-    if (!picked.length) return null
-    const embed = this.embedPassages ?? this.granitePassagesFn()
-    if (!embed) return null
-    const vectors = await embed(picked.map((p) => p.text))
-    return VectorIndex.of(picked.map((p, k) => ({ file: p.file, start: p.start, end: p.end, vector: vectors[k]! })))
-  }
-
-  /** What a file's passages would be read from now (see `textSig`), or null if it has no text. */
-  private semanticSig(file: number): string | null {
-    const r = this.db.query("SELECT size, mtime, content_len AS len FROM files WHERE id = ?").get(file) as { size: number; mtime: number; len: number } | null
-    return r ? textSig(r.size, r.mtime, r.len) : null
-  }
-
-  private granitePassagesFn(): ((texts: string[]) => Promise<Float32Array[]>) | null {
-    if (this.embedQuery !== undefined) return this.embedQuery && ((texts) => Promise.all(texts.map((t) => this.embedQuery!(t, "full"))))
-    if (!this.queryVectorFn("full")) return null
-    const embedder = this.queryEmbedders.full!
-    return (texts) => embedder.embedPassages(texts)
-  }
+  /** How semantic results are put together (benchmarks try others). */
+  ranking: Ranking = RANKING
 
   /** Stop the query models and let go of the vectors (the worker is shutting down, or idle). */
   closeSemantic() {
-    for (const e of Object.values(this.queryEmbedders)) e.close()
-    this.queryEmbedders = {}
-    for (const v of Object.values(this.vectors)) v.close()
-    this.vectors = {}
+    this.queryEmbedder?.close()
+    this.queryEmbedder = null
+    this.vectors?.close()
+    this.vectors = null
   }
 
   /**
-   * Semantic search, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
+   * Semantic search with finite word, filename and model evidence: files whose best passage
    * stands out for the query, and files holding at least half of its words. Without the model, or
    * before files have vectors, only the words count, and a notice says why.
    */
@@ -447,74 +385,43 @@ export class SearchEngine {
     const check = policyFor(crawlOptionsFor(this.config))
     const usable = (id: number): number | undefined => {
       const i = cat.indexOf(id)
-      return i !== undefined && cat.passes(i, q.filters) ? i : undefined
+      return i !== undefined && cat.passes(i, q.filters) && !cat.isDir[i] && !semanticExcluded(cat.paths[i]!) ? i : undefined
     }
 
-    // Meaning: every passage of each model's index on that model's scale for this query, and
-    // each file's best, from Granite's index once Granite has read the file, Potion's until then.
-    // While Granite is part way, the files Potion ranks highest that Granite hasn't read yet
-    // have their best passage embedded with Granite now (see `rerankWithGranite`).
+    // Query only a complete, current Granite snapshot. Words remain available during indexing.
     let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
-    const indexes: Partial<Record<Tier, VectorIndex>> = {}
     if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
     else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
     else {
-      const generation = mainGeneration(this.db)
-      const scored: Partial<Record<Tier, { index: VectorIndex; scores: Float32Array; vector: Float32Array }>> = {}
-      const errors: string[] = []
-      let models = 0
-      for (const tier of ["full", "fast"] as const) {
-        const embed = this.queryVectorFn(tier)
-        if (!embed) continue
-        models++
-        const vectors = (this.vectors[tier] ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:", tier)))
-        const index = vectors.get(generation)
-        if (!index?.size || !text.trim()) continue
+      const tool = embedToolPath()
+      const modelReady = this.embedQuery !== undefined ? !!this.embedQuery : !!installedModel(GRANITE)
+      const helperReady = this.embedQuery !== undefined ? !!this.embedQuery : !!tool
+      const sequence = getMeta(this.db, "change_seq") ?? "0"
+      const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:")))
+      const index = vectors.get(mainGeneration(this.db), sequence)
+      if (!modelReady) notices.push("Semantic search needs its model: run `zsearch semantic install`. Showing word matches")
+      else if (!helperReady) notices.push("Semantic search needs the embedding helper (zsearch-embed). Showing word matches")
+      else if (!index?.size || !index.isCompleteFor(sequence)) {
+        if (text.trim()) notices.push("Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches")
+      } else if (text.trim()) {
+        const embed = this.queryVectorFn()!
         try {
           const vector = await embed(text)
           if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
-          indexes[tier] = index
-          scored[tier] = { index, scores: index.score(vector), vector }
+          best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale), (file) => {
+            const i = usable(file)
+            return i !== undefined && this.contentAuthorized(i, check)
+          }, this.ranking)
         } catch (err) {
-          errors.push((err as Error).message)
+          notices.push(`Semantic search failed (${(err as Error).message}). Showing word matches`)
         }
       }
-      const authorized = (file: number) => {
-        const i = usable(file)
-        return i !== undefined && this.contentAuthorized(i, check)
-      }
-      const parts: { index: VectorIndex; z: Float64Array; tier: Tier; outdated?: Set<number> }[] = []
-      if (scored.fast) parts.push({ ...scored.fast, z: meaning(scored.fast.scores, scored.fast.index.modality, scored.fast.index.setsScale), tier: "fast" })
-      if (scored.full) {
-        const { index, scores, vector } = scored.full
-        // Files edited since Granite read them, that Potion has read again: Potion's passages count.
-        const outdated = scored.fast ? outdatedFiles(index, scored.fast.index, (file) => this.semanticSig(file)) : new Set<number>()
-        let extra: VectorIndex | null = null
-        if (scored.fast && index.size >= this.rerankMinPassages) {
-          try {
-            extra = await this.rerankWithGranite(parts[0]!, index, outdated, authorized)
-          } catch (err) {
-            errors.push((err as Error).message)
-          }
-          if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
-        }
-        // Reranked passages are put on the scale of Granite's index, without moving it.
-        const all = extra ? concatScores(scores, extra.score(vector)) : scores
-        const modality = extra ? new Uint8Array(all.length) : index.modality
-        const setsScale = extra ? Uint8Array.from({ length: all.length }, (_, i) => (i < scores.length ? index.setsScale[i]! : 0)) : index.setsScale
-        const z = meaning(all, modality, setsScale)
-        parts.push({ index, z: z.subarray(0, scores.length), tier: "full", outdated })
-        if (extra) parts.push({ index: extra, z: z.subarray(scores.length), tier: "full" })
-      }
-      if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
-      else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Semantic search failed (${errors[0]}). Showing word matches`)
-      else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for semantic search yet: they are with the next index update")
-      best = bestByFile(parts, authorized)
     }
 
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
     const terms = queryTerms(text)
     const coverage = new Map<number, number>()
+    const named = new Map<number, number>()
     const nameMatch = new Set<number>()
     const bodyMatch = new Set<number>()
     const matching = (column: string, term: string, prefix: boolean): number[] => {
@@ -543,37 +450,58 @@ export class SearchEngine {
       if (ok === undefined) contentOk.set(id, (ok = this.contentAuthorized(i, check)))
       return ok
     }
+    const sets: Set<number>[] = []
+    const weighted = new Map<number, number>()
     terms.forEach((term, t) => {
       // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
       const stem = stemOf(term)
       const prefix = stem !== term || (q.typing && t === terms.length - 1)
       const has = new Set<number>()
-      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id) }
+      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
       if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) {
         if (has.has(id)) continue
         const i = usable(id)
         if (i !== undefined && canRead(id, i)) { has.add(id); bodyMatch.add(id) }
       }
-      for (const id of has) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
+      sets.push(has)
     })
+    // Without vectors, rare words count for more of a file's coverage (whether it matches at all still counts words).
+    const idf = sets.map((h) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(h.size, 1)))
+    const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
+    sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
     // Words after `-` or `!` rule a file out.
     for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
-      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id) }
+      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id); named.delete(id) }
       for (const id of matching("body", n, false)) { best.delete(id); coverage.delete(id) }
     }
 
+    // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
+    const strength = new Map<number, number>()
+    if ((best.size ? this.ranking.strength : (this.ranking.keywordStrength ?? this.ranking.strength)) > 0 && coverage.size) {
+      // Content words only: stopwords would let a long query's filler decide the order.
+      const kw = this.keywordMatches({ ...parseQuery(terms.join(" ")), filters: q.filters }, Math.min(coverage.size, 2000), q.typing)
+      const top = kw.reduce((m, r) => Math.max(m, r.raw ?? 0), 0)
+      if (top > 0) for (const r of kw) if (coverage.has(r.id)) strength.set(r.id, (r.raw ?? 0) / top)
+    }
     const ranked = rank({
       best,
       coverage,
+      named,
+      strength,
+      ranking: this.ranking,
+      terms: terms.length,
+      weighted,
       lookup: isLookup(terms),
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),
       kindOf: (file) => { const i = cat.indexOf(file); return i === undefined ? undefined : cat.kinds[i] },
     })
-    // Code's words are everywhere in code: they count for half (DigUp's code index does the same).
+    // Code's word evidence counts half as much as prose. Compute its stage weight once.
+    const codeCoverage = isLookup(terms) ? 1 : best.size ? (this.ranking.coverage ?? 1) : (this.ranking.keywordCoverage ?? 1)
+    const codeWordWeight = this.ranking.words * codeCoverage * (isLookup(terms) ? 2 : 1)
     for (const r of ranked) {
       const i = cat.indexOf(r.file)
-      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * (isLookup(terms) ? 2 : 1) * (coverage.get(r.file) ?? 0) ** 1.5
+      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * codeWordWeight * (coverage.get(r.file) ?? 0) ** 1.5
     }
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
@@ -587,9 +515,23 @@ export class SearchEngine {
       if (nameMatch.has(r.file)) sources.push("name")
       const h = this.hit(r.file, r.score, sources.length ? sources : ["content"])
       if (n >= 60) return h
+      // A saved-name lookup needs the document's heading, not an arbitrary semantic passage
+      // deep inside it (e.g. a conduct paragraph for "handbook"). Keep content authorization.
+      if (terms.length && (named.get(r.file) ?? 0) >= 1 - 1e-9) {
+        const i = cat.indexOf(r.file)
+        if (i !== undefined && canRead(r.file, i)) {
+          const text = this.storedText(r.file)
+          if (text !== null) {
+            h.lines = passageLines(text, 0, Math.min(text.length, 1800), null)
+            h.matchCount = h.lines.length
+            return h
+          }
+        }
+      }
       // Show the passage that matched by meaning; or, matched by words, the lines with them.
       const index = r.row !== null ? best.get(r.file)!.index : undefined
-      const useMeaning = r.row !== null && index && (r.z! >= 2 || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
+      const strong = r.z! >= 2
+      const useMeaning = r.row !== null && index && (strong || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
       if (useMeaning) {
         const t = this.storedText(r.file)
         if (t !== null) {
