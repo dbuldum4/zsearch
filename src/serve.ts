@@ -6,6 +6,7 @@
  * requests supersede older ones of the same type, which then reply `cancelled`.
  * The server exits when stdin closes.
  */
+import { meaningOnly } from "./profile.ts"
 import { createInterface } from "node:readline"
 import { type Config, configExists, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
@@ -228,7 +229,7 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "ok" })
       case "semanticRemove": {
         if (index || lockHolder(p.lock) !== null) return send({ id, type: "error", error: "indexing is running: stop it first" })
-        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false }, defaultMode: "find" })
+        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false }, defaultMode: meaningOnly() ? "semantic" : "find" })
         saveConfig(config)
         client.setConfig(config)
         removeSemantic(p.db)

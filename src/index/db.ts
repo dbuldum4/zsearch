@@ -90,12 +90,16 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
   // size on disk unless told otherwise: after a big run, that can be as much as the index.
   db.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`)
   if (path !== ":memory:") for (const suffix of ["-wal", "-shm"]) if (existsSync(path + suffix)) chmodSync(path + suffix, 0o600)
-  if (!opts.readonly) migrate(db, opts)
-  const profile = getMeta(db, "search_profile") ?? "full"
-  if (profile !== (meaningOnly() ? "meaning-only" : "full")) {
-    db.close()
-    throw new Error("Index belongs to a different search profile; use a separate ZSEARCH_HOME or ZSEARCH_DB")
+  // Reject sharing a database before migrations can change its existing profile.
+  const hasMeta = db.query("SELECT 1 FROM sqlite_master WHERE name = 'meta'").get()
+  if (hasMeta && Number(getMeta(db, "schema_version") ?? 0) > 0) {
+    const profile = getMeta(db, "search_profile") ?? "full"
+    if (profile !== (meaningOnly() ? "meaning-only" : "full")) {
+      db.close()
+      throw new Error("Index belongs to a different search profile; use a separate ZSEARCH_HOME or ZSEARCH_DB")
+    }
   }
+  if (!opts.readonly) migrate(db, opts)
   return db
 }
 
@@ -193,13 +197,13 @@ function migrate(db: Database, opts: OpenOptions) {
  */
 export function clearIndex(db: Database): void {
   db.transaction(() => {
-    if (meaningOnly()) {
-      // There is no FTS table in this profile.
-    } else if (getMeta(db, "fts_delete") === "manual") {
-      db.exec("DROP TABLE fts")
-      db.exec("CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)")
-    } else {
-      db.exec("INSERT INTO fts(fts) VALUES ('delete-all')")
+    if (!meaningOnly()) {
+      if (getMeta(db, "fts_delete") === "manual") {
+        db.exec("DROP TABLE fts")
+        db.exec("CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)")
+      } else {
+        db.exec("INSERT INTO fts(fts) VALUES ('delete-all')")
+      }
     }
     db.exec("DELETE FROM texts")
     db.exec("DELETE FROM content_map")

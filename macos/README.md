@@ -44,6 +44,7 @@ Keep `Sources/ZSearch` (the macOS-only UI) thin and put logic in `Sources/ZSearc
 brew install gh                            # current GitHub CLI; no login needed
 macos/scripts/install-preview.sh 12          # pull request #12
 macos/scripts/install-preview.sh main        # latest main
+macos/scripts/install-preview.sh 12 --meaning-only # semantic-only app, no word index
 macos/scripts/install-preview.sh 12 --open
 macos/scripts/install-preview.sh main --build 123456789-1  # exact versioned build
 ```

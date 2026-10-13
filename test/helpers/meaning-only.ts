@@ -60,6 +60,19 @@ try {
   await index(true)
   clearIndex(db)
   await index(false)
+  process.env.ZSEARCH_MEANING_ONLY = "0"
+  expect(() => openDb(join(dir, "data", "index.db"))).toThrow("different search profile")
+  process.env.ZSEARCH_MEANING_ONLY = "1"
   db.close()
+  saveConfig({ ...config, autoRefreshMinutes: 0, liveUpdates: false })
+  const server = Bun.spawn([process.execPath, join(import.meta.dir, "../../src/main.ts"), "serve"], { env: process.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" })
+  server.stdin.write(JSON.stringify({ id: 9, type: "semanticRemove" }) + "\n")
+  server.stdin.write(JSON.stringify({ id: 10, type: "config" }) + "\n")
+  server.stdin.end()
+  const [status, out, err] = await Promise.all([server.exited, new Response(server.stdout).text(), new Response(server.stderr).text()])
+  expect({status,err}).toEqual({status:0,err:""})
+  const replies = out.trim().split("\n").map(line=>JSON.parse(line))
+  expect(replies.find(r=>r.id===9)).toMatchObject({type:"semantic",status:{enabled:false}})
+  expect(replies.find(r=>r.id===10)?.config.defaultMode).toBe("semantic")
   console.log("meaning-only OK")
 } finally { rmSync(dir, { recursive: true, force: true }) }
