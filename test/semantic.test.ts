@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
@@ -251,22 +251,23 @@ describe("semantic index and search", () => {
     const fast = await semantic({ tier: "fast", embedder: fakePotion })
     expect(fast.status).toBe("done")
     // Granite has read every file: Potion's index is not used, and "sedan" is found as a vehicle.
-    const both = await engine().search("automobile", "semantic")
+    const e = engine()
+    const both = await e.search("automobile", "semantic")
     expect(both.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
-    // Without Granite's index (not read yet), the files have Potion's vectors only.
-    const full = semanticDbPath(dbPath)
-    for (const suffix of ["", "-wal", "-shm"]) if (existsSync(full + suffix)) renameSync(full + suffix, `${full}${suffix}.away`)
-    try {
-      const e = engine()
-      const r = await e.search("canine", "semantic")
-      expect(r.strategy).toBe("semantic + words")
-      expect(r.hits[0]!.display).toBe("notes/pets.md")
-      // Potion's stand-in doesn't know a sedan is a vehicle; Granite's does.
-      expect((await e.search("automobile", "semantic")).hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
-      e.closeSemantic()
-    } finally {
-      for (const suffix of ["", "-wal", "-shm"]) if (existsSync(`${full}${suffix}.away`)) renameSync(`${full}${suffix}.away`, full + suffix)
-    }
+    e.closeSemantic()
+    // Before Granite has read any file, the files have Potion's vectors only.
+    const s = store()
+    s.exec("DELETE FROM passages")
+    s.exec("DELETE FROM files")
+    s.close()
+    const potionOnly = engine()
+    const r = await potionOnly.search("canine", "semantic")
+    expect(r.strategy).toBe("semantic + words")
+    expect(r.hits[0]!.display).toBe("notes/pets.md")
+    // Potion's stand-in doesn't know a sedan is a vehicle; Granite's does.
+    expect((await potionOnly.search("automobile", "semantic")).hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
+    potionOnly.closeSemantic()
+    expect((await semantic()).status).toBe("done")
   })
 
   test("codes are looked up by their words", async () => {
