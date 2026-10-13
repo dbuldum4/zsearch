@@ -27,8 +27,10 @@ import { basename, dirname, join } from "node:path"
 import type { Tier } from "./model.ts"
 
 // 2: vectors went from 8-bit integers with a scale to 16-bit floats.
-// 3: vectors became a rowid table.
+// 3: vectors became a rowid table; version 2's are copied over (`migrate`).
 const SCHEMA_VERSION = 3
+
+const VECTORS_TABLE = "(hash BLOB NOT NULL UNIQUE, vec BLOB NOT NULL)"
 
 export function semanticDbPath(dbPath: string, tier: Tier = "full"): string {
   if (dbPath === ":memory:") return ":memory:"
@@ -51,9 +53,34 @@ function migrate(db: Database) {
   db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
   const version = getMeta(db, "schema_version")
   if (version === String(SCHEMA_VERSION)) return
+  if (version === "2") {
+    // Only the vectors table changed: copy it, so no vector has to be made again (Granite's take hours).
+    // The old table's vectors are scattered over the file, one page each: read through a memory map,
+    // the system reads ahead around each one, and the copy and VACUUM take a third of the time
+    // (1.2 GB of Potion vectors: 21 s to 6.6 s from a cold disk cache).
+    db.exec("PRAGMA mmap_size = 2147418112")
+    try {
+      db.transaction(() => {
+        if (getMeta(db, "schema_version") !== "2") return
+        db.exec(`CREATE TABLE vectors_new ${VECTORS_TABLE}`)
+        db.exec("INSERT INTO vectors_new(hash, vec) SELECT hash, vec FROM vectors")
+        db.exec("DROP TABLE vectors")
+        db.exec("ALTER TABLE vectors_new RENAME TO vectors")
+        setMeta(db, "schema_version", String(SCHEMA_VERSION))
+      })()
+      // Give back the old table's pages: it was about 3x the size of the new one.
+      try {
+        db.exec("VACUUM")
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+      } catch {}
+    } finally {
+      db.exec("PRAGMA mmap_size = 0")
+    }
+    return
+  }
   db.transaction(() => {
     for (const t of ["vectors", "passages", "files"]) db.exec(`DROP TABLE IF EXISTS ${t}`)
-    db.exec("CREATE TABLE vectors (hash BLOB NOT NULL UNIQUE, vec BLOB NOT NULL)")
+    db.exec(`CREATE TABLE vectors ${VECTORS_TABLE}`)
     // start = -1: a vector of the whole file (an image).
     db.exec("CREATE TABLE passages (file INTEGER NOT NULL, n INTEGER NOT NULL, hash BLOB NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, PRIMARY KEY (file, n)) WITHOUT ROWID")
     db.exec("CREATE INDEX passages_hash ON passages(hash)")
@@ -62,8 +89,6 @@ function migrate(db: Database) {
     db.exec("DELETE FROM meta")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
   })()
-  // An index of another version is made again from scratch: give its pages back.
-  if (version) db.exec("VACUUM")
 }
 
 export function getMeta(db: Database, key: string): string | null {
