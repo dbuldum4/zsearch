@@ -10,6 +10,8 @@
  * - It reads the text the main index already extracted, rather than opening the files again.
  * - Passages from many files go to the helper together; the helper sorts them by length and packs
  *   them into as few model calls as fit, and the next group is prepared while one runs.
+ * - Files are cut into passages on worker threads (`workers.ts`), which also run Potion: this
+ *   thread only checks which passages are new and stores them.
  * - A passage is embedded once, wherever it appears: by a hash of the exact text the model reads,
  *   so copies of a file, boilerplate shared between files, and files that were renamed, moved or
  *   re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded.
@@ -25,19 +27,20 @@
  * its start, as DigUp does.
  */
 import type { Database } from "bun:sqlite"
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { availableParallelism } from "node:os"
 import type { Config } from "../config.ts"
-import { ContentState, decompressText, getMeta as getMainMeta, setMeta as setMainMeta } from "../index/db.ts"
+import { ContentState, getMeta as getMainMeta, setMeta as setMainMeta } from "../index/db.ts"
 import { loadShare } from "../index/load.ts"
 import type { PowerGate } from "../index/power.ts"
-import { crawlOptionsFor, pathPolicy } from "../index/policy.ts"
+import { crawlOptionsFor, policyFor } from "../index/policy.ts"
 import { secretFile } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
-import { CHUNKER_VERSION, chunkText, documentPrompt, hasWords, titleOf } from "./chunk.ts"
+import { CHUNK_CHARS, CHUNKER_VERSION } from "./chunk.ts"
+import type { Cut, CutJob } from "./cut.ts"
 import { Embedder, type TextEmbedder } from "./helper.ts"
 import { installedModel, modelFingerprint, modelSpec, POTION, type Tier } from "./model.ts"
-import { PotionEmbedder, PotionModel } from "./potion.ts"
+import { SemanticWorkers } from "./workers.ts"
 import { clearAll, clearPassages, getMeta, openSemanticDb, packVector, semanticDbPath, setMeta } from "./store.ts"
 
 /** Kinds whose text is embedded (images: the text OCR read in them). Code and data files only with `semantic.code`. */
@@ -47,10 +50,14 @@ const CODE_KINDS = new Set<Kind>(["code", "data"])
 const FIRST_ROUND = 40
 /** Passages after which a file's passages stop setting the scale of meaning scores (see `search.ts`). */
 export const SCALE_PASSAGES = FIRST_ROUND
-/** Passages, at most, sent to the helper in one request: it packs them into model calls. */
-const GROUP_INPUTS = 256
-/** ...and characters. */
-const GROUP_CHARS = 512 * 1024
+/**
+ * Characters of text to cut into passages for one group, about: Granite's helper is sent each
+ * group's new passages (about 280) and packs them into model calls, while Potion's are embedded by
+ * the workers, for whom a bigger group costs fewer messages and commits.
+ */
+const GROUP_CHARS: Record<Tier, number> = { full: 512 * 1024, fast: 8 << 20 }
+/** Passages, at most, sent to the helper in one request. */
+const REQUEST_INPUTS = 256
 /** Files to embed, at least, for a background Granite run to wait on power. Embedding costs far more per file than reading. */
 const BIG_RUN = 100
 /** Potion's version here: bump it with anything that changes its vectors (`potion.ts`). */
@@ -154,11 +161,15 @@ interface Candidate {
   kind: Kind
   sig: string
   mtime: number
+  /** Characters of stored text. */
+  len: number
 }
 
 interface Queued extends Candidate {
   /** Passages read already, with this signature. */
   from: number
+  /** All its passages, once this run has cut its text: round two skips the files it finished. */
+  total?: number
 }
 
 /** One passage needing a vector, and the files waiting for it. */
@@ -180,14 +191,12 @@ interface Pending {
 
 const hex = (h: Uint8Array) => Buffer.from(h).toString("hex")
 
-function hashText(s: string): Uint8Array {
-  return new Uint8Array(createHash("sha256").update(s).digest().subarray(0, 16))
-}
-
 export class SemanticIndexer {
   private progress: SemanticProgress
   private lastEmit = 0
   private embedder: TextEmbedder | null = null
+  /** The workers that cut files into passages (and, for Potion, embed them: then they are `embedder` too). */
+  private workers: SemanticWorkers | null = null
   private tokens = 0
   private tier: Tier
 
@@ -254,18 +263,33 @@ export class SemanticIndexer {
   private killEmbedder() {
     this.embedder?.kill()
     this.embedder = null
+    this.workers?.kill()
+    this.workers = null
+  }
+
+  private threads() {
+    return Math.max(1, Math.round(availableParallelism() * loadShare(this.config.indexLoad)))
+  }
+
+  private startWorkers(): SemanticWorkers {
+    if (this.workers) return this.workers
+    if (this.tier === "fast" && !this.opts.embedder) {
+      const [model, tokenizer] = installedModel(POTION)!
+      this.workers = new SemanticWorkers(this.threads(), { model: model!, tokenizer: tokenizer! })
+    } else {
+      // Granite's helper takes the cores: cutting is a small part of its pass.
+      this.workers = new SemanticWorkers(this.tier === "fast" ? this.threads() : 1)
+    }
+    return this.workers
   }
 
   private startEmbedder(): TextEmbedder {
     if (this.embedder) return this.embedder
-    const cores = availableParallelism()
-    const threads = Math.max(1, Math.round(cores * loadShare(this.config.indexLoad)))
+    const threads = this.threads()
     const low = this.opts.low ?? loadShare(this.config.indexLoad) < 1
     if (this.opts.embedder) this.embedder = this.opts.embedder({ threads, low })
-    else if (this.tier === "fast") {
-      const [model, tokenizer] = installedModel(POTION)!
-      this.embedder = new PotionEmbedder(PotionModel.load(model!, tokenizer!))
-    } else this.embedder = new Embedder({ tool: this.tool!, model: installedModel(modelSpec("full"))![0]!, pooling: "cls", threads, low })
+    else if (this.tier === "fast") this.embedder = this.startWorkers()
+    else this.embedder = new Embedder({ tool: this.tool!, model: installedModel(modelSpec("full"))![0]!, pooling: "cls", threads, low })
     return this.embedder
   }
 
@@ -282,6 +306,8 @@ export class SemanticIndexer {
     } finally {
       this.embedder?.close()
       this.embedder = null
+      this.workers?.close()
+      this.workers = null
       store.close()
     }
   }
@@ -358,15 +384,16 @@ export class SemanticIndexer {
   private candidates(): Candidate[] {
     const kinds = new Set(TEXT_KINDS)
     if (this.config.semantic.code) for (const k of CODE_KINDS) kinds.add(k)
-    const crawl = crawlOptionsFor(this.config)
+    // One checker for them all: it resolves the roots and exclusions once, not once a file.
+    const policy = policyFor(crawlOptionsFor(this.config))
     const out: Candidate[] = []
     const rows = this.main
       .query("SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0")
       .all(ContentState.Indexed) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
     for (const r of rows) {
       if (!kinds.has(r.kind)) continue
-      const p = pathPolicy(r.path, crawl)
-      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime })
+      const p = policy(r.path)
+      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime, len: r.len })
     }
     return out
   }
@@ -379,55 +406,76 @@ export class SemanticIndexer {
     // Hashes asked for and not stored yet, across groups, with the prompt to embed.
     const inFlight = new Set<string>()
     let next = 0
-    /** Build the next group: files' passages, and the distinct new ones among them. */
-    const build = (): { pending: Pending[]; needs: Need[] } | null => {
-      const pending: Pending[] = []
-      const needs: Need[] = []
+    /** Start cutting the next files, about a group's worth of text, in the workers. */
+    const startCut = (): { batch: Queued[]; cuts: Promise<Cut[] | null> } | null => {
+      const batch: Queued[] = []
+      const jobs: CutJob[] = []
       let chars = 0
-      while (next < files.length && needs.length < GROUP_INPUTS && chars < GROUP_CHARS) {
+      while (next < files.length && chars < GROUP_CHARS[this.tier]) {
         const file = files[next++]!
+        // Finished in round one.
+        if (file.total !== undefined && file.from >= file.total) continue
         const row = readContent.get(file.id) as { data: Uint8Array } | null
         if (!row) continue
-        const text = decompressText(row.data)
-        const chunks = chunkText(text)
-        const from = file.from
-        const to = Math.min(chunks.length, Math.max(from, cap === Infinity ? chunks.length : cap))
-        if (from >= to && !(from === 0 && chunks.length === 0)) {
-          // Nothing more to read this round (a short file in round two).
-          continue
-        }
-        const title = titleOf(file.name)
-        const p: Pending = { file, total: chunks.length, to, rows: [], waiting: new Map() }
-        for (let n = from; n < to; n++) {
-          const c = chunks[n]!
-          if (!hasWords(c.text)) continue
-          const prompt = documentPrompt(title, c.text)
-          const hash = hashText(prompt)
+        batch.push(file)
+        jobs.push({ data: row.data, name: file.name, from: file.from, cap })
+        chars += Math.min(file.len, (cap - file.from) * CHUNK_CHARS)
+      }
+      if (!batch.length) return null
+      const cuts = this.startWorkers().cut(jobs)
+      cuts.catch(() => {})
+      return { batch, cuts: this.unlessAborted(cuts) }
+    }
+    /** A group, from files cut: their passages, and the distinct new ones among them. */
+    const group = async (started: ReturnType<typeof startCut>): Promise<{ pending: Pending[]; needs: Need[] } | null> => {
+      if (!started) return null
+      const cuts = await started.cuts
+      if (!cuts) return null
+      const pending: Pending[] = []
+      const needs: Need[] = []
+      started.batch.forEach((file, i) => {
+        const { total, to, passages } = cuts[i]!
+        // Nothing more to read this round (a short file in round two).
+        if (file.from >= to && !(file.from === 0 && total === 0)) return
+        const p: Pending = { file, total, to, rows: [], waiting: new Map() }
+        for (const { n, start, end, prompt, hash } of passages) {
           const key = hex(hash)
-          p.rows.push({ n, hash, start: c.start, end: c.end })
+          p.rows.push({ n, hash, start, end })
           if (inFlight.has(key)) { p.waiting.set(key, hash); this.progress.reused++; continue }
           if (hasVector.get(hash)) { this.progress.reused++; continue }
           inFlight.add(key)
           p.waiting.set(key, hash)
           needs.push({ prompt, hash })
-          chars += prompt.length
         }
         pending.push(p)
         this.progress.current = file.path
-      }
-      return pending.length ? { pending, needs } : null
+      })
+      return { pending, needs }
+    }
+    const embed = (g: { needs: Need[] } | null) => {
+      if (!g?.needs.length) return null
+      const job = this.embedAll(g.needs.map((n) => n.prompt))
+      // Left unawaited when the run is cancelled.
+      job.catch(() => {})
+      return job
     }
 
+    // A pipeline: while one group is embedded, the next is checked and the one after it cut, and
+    // while the next is embedded, this one is stored.
     const waitingFiles: Pending[] = []
-    let group = build()
-    while (group) {
+    let current = await group(startCut())
+    if (this.aborted) return false
+    let cutting = startCut()
+    let job = embed(current)
+    while (current) {
       if (this.aborted || !(await this.waitPower(big))) return false
-      const { pending, needs } = group
-      // The model works on this group while the next one is read and cut.
-      const job = needs.length ? this.startEmbedder().embedTexts(needs.map((n) => n.prompt)) : null
-      const following = build()
+      const { pending, needs } = current
+      const following = await group(cutting)
+      if (this.aborted) return false
+      cutting = startCut()
       const result = job ? await this.unlessAborted(job) : null
       if (this.aborted) return false
+      const followingJob = embed(following)
       if (result) this.tokens += result.tokens
       const insertVector = store.prepare("INSERT OR IGNORE INTO vectors(hash, vec) VALUES (?, ?)")
       const done = new Set<string>()
@@ -455,11 +503,24 @@ export class SemanticIndexer {
       this.progress.embedded += needs.length
       this.emit()
       this.opts.onCommit?.()
-      group = following
+      current = following
+      job = followingJob
     }
     // Every passage asked for is in by now; a file still waiting would be finished by the next run.
     if (waitingFiles.length) throw new Error(`${waitingFiles.length} files were left waiting for their passages`)
     return true
+  }
+
+  /** The texts' vectors: from the helper, in requests of at most REQUEST_INPUTS. */
+  private async embedAll(texts: string[]): Promise<{ vectors: Float32Array; dim: number; tokens: number }> {
+    const embedder = this.startEmbedder()
+    if (embedder === this.workers || texts.length <= REQUEST_INPUTS) return embedder.embedTexts(texts)
+    const parts: { vectors: Float32Array; dim: number; tokens: number }[] = []
+    for (let i = 0; i < texts.length; i += REQUEST_INPUTS) parts.push(await embedder.embedTexts(texts.slice(i, i + REQUEST_INPUTS)))
+    const dim = parts[0]!.dim
+    const vectors = new Float32Array(texts.length * dim)
+    parts.forEach((p, k) => vectors.set(p.vectors, k * REQUEST_INPUTS * dim))
+    return { vectors, dim, tokens: parts.reduce((t, p) => t + p.tokens, 0) }
   }
 
   private storeFile(store: Database, p: Pending) {
@@ -470,6 +531,7 @@ export class SemanticIndexer {
     store.query("INSERT INTO files(file, sig, upto, total, note) VALUES (?, ?, ?, ?, ?) ON CONFLICT(file) DO UPDATE SET sig = excluded.sig, upto = excluded.upto, total = excluded.total, note = excluded.note").run(id, p.file.sig, p.to, p.total, p.note ?? null)
     // The next round goes on from here.
     p.file.from = p.to
+    p.file.total = p.total
   }
 }
 

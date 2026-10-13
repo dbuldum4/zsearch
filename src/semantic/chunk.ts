@@ -106,7 +106,18 @@ export function chunkText(text: string, max = Infinity): Chunk[] {
 export function hasWords(text: string): boolean {
   let letters = 0
   let others = 0
-  for (const ch of text) {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    // ASCII without a regular expression: most text is.
+    if (c < 128) {
+      if (c === 32 || (c >= 9 && c <= 13)) continue
+      if ((c | 32) >= 97 && (c | 32) <= 122) letters++
+      else others++
+      continue
+    }
+    const cp = text.codePointAt(i)!
+    if (cp > 0xffff) i++
+    const ch = String.fromCodePoint(cp)
     if (/\s/.test(ch)) continue
     if (/\p{L}/u.test(ch)) letters++
     else others++
