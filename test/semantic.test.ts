@@ -12,7 +12,7 @@ import { parseQuery } from "../src/search/query.ts"
 import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk.ts"
 import { Embedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
-import { normalize, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
+import { normalize, PotionEmbedder, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
 import { isLookup, kindHints, meaning, queryTerms, rank, strongCount } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
@@ -121,6 +121,15 @@ describe("Potion", () => {
     expect(out[1]).toBeCloseTo(Math.SQRT1_2, 3)
     expect(model.embedInto("zebra", out)).toBe(0)
     expect([...out]).toEqual([0, 0])
+  })
+
+  test("lets the event loop run while it embeds, and stops when killed", async () => {
+    const embedder = new PotionEmbedder(PotionModel.of({ "[UNK]": 0, cat: 1, dog: 2 }, [[9, 9], [1, 0], [0, 1]]))
+    const texts = Array.from({ length: 500_000 }, (_, i) => `cat dog cat number ${i}`)
+    let ticked = false
+    setTimeout(() => { ticked = true; embedder.kill() }, 0)
+    await expect(embedder.embedTexts(texts)).rejects.toThrow("stopped")
+    expect(ticked).toBe(true)
   })
 })
 

@@ -177,18 +177,33 @@ export class PotionModel {
   }
 }
 
+/** How long Potion embeds before letting the event loop run (a cancel, say): it works synchronously. */
+const YIELD_MS = 20
+
 /** Potion as an embedder, alike to the helper's (`helper.ts`) for the indexer and search. */
 export class PotionEmbedder implements TextEmbedder {
+  private killed = false
+  private ranSince = performance.now()
+
   constructor(private model: PotionModel) {}
 
   async embedTexts(texts: string[]): Promise<{ vectors: Float32Array; dim: number; tokens: number }> {
     const dim = this.model.dim
     const vectors = new Float32Array(texts.length * dim)
     let tokens = 0
-    texts.forEach((t, i) => { tokens += this.model.embedInto(t, vectors.subarray(i * dim, (i + 1) * dim)) })
+    for (let i = 0; i < texts.length; i++) {
+      if (performance.now() - this.ranSince >= YIELD_MS) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        this.ranSince = performance.now()
+      }
+      if (this.killed) throw new Error("the Potion model was stopped")
+      tokens += this.model.embedInto(texts[i]!, vectors.subarray(i * dim, (i + 1) * dim))
+    }
     return { vectors, dim, tokens }
   }
 
   close() {}
-  kill() {}
+  kill() {
+    this.killed = true
+  }
 }
