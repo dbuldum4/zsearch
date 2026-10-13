@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { normalize, PotionEmbedder, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
-import { isLookup, kindHints, meaning, queryTerms, rank, strongCount } from "../src/semantic/search.ts"
+import { bestByFile, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
@@ -77,9 +77,10 @@ describe("DigUp's ranking", () => {
     const coverage = new Map([[2, 1], [3, 0.4]])
     const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
     expect(r.map((x) => x.file)).toEqual([2, 1])
-    expect(r[0]!.score).toBeCloseTo(1.5 + 2)
+    // Every word puts a file ahead of the files found by meaning.
+    expect(r[0]!.score).toBeCloseTo(1.5 + 2 + 100)
     const l = rank({ best, coverage, lookup: true, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
-    expect(l[0]!.score).toBeCloseTo(0.75 + 4 + 1)
+    expect(l[0]!.score).toBeCloseTo(0.75 + 4 + 1 + 100)
     expect(queryTerms("the photo of my Café receipts")).toEqual(["cafe", "receipts"])
     expect(isLookup(queryTerms("TRX50 K7Q2LM"))).toBe(true)
     expect(isLookup(queryTerms("trip 2024"))).toBe(false)
@@ -100,12 +101,20 @@ describe("DigUp's ranking", () => {
     const coverage = new Map([[1, 1], [2, 1], [3, 0.5]])
     const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
     expect(r.map((x) => x.file)).toEqual([2, 1, 3, 4, 5])
-    // Granite's meaning still counts against words.
+    // Granite's meaning, once it has read every file, still counts against words, after the files with every word.
     const full = rank({ best: new Map([[4, { z: 9, row: 3, anchored: false }]]), coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
-    expect(full[0]!.file).toBe(4)
+    expect(full.map((x) => x.file)).toEqual([1, 2, 4, 3])
     // A file named for the query comes before one that mentions it.
     const named = rank({ best: new Map(), coverage: new Map([[7, 1], [8, 1]]), named: new Map([[8, 1]]), lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
     expect(named.map((x) => x.file)).toEqual([8, 7])
+  })
+
+  test("the best of a long file's many passages stands out by less", () => {
+    const v = new Float32Array([1, 0])
+    const index = VectorIndex.of([{ file: 1, start: 0, end: 1, vector: v }, ...Array.from({ length: 20 }, (_, n) => ({ file: 2, start: n, end: n + 1, vector: v }))])
+    const best = bestByFile([{ index, z: new Float64Array(21).fill(3), tier: "full" }], () => true)
+    expect(best.get(1)!.z).toBeCloseTo(3)
+    expect(best.get(2)!.z).toBeLessThan(2.2)
   })
 
   test("Lean files are left to find and fuzzy", () => {

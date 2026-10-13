@@ -19,7 +19,12 @@
  * is part way, the files it has read would be scored on meaning and words, and the rest on words
  * alone. So until Granite has read every file Potion has, words rank the files as they would
  * without any model, meaning only orders the files the words can't tell apart, and the files found
- * by meaning alone come after every word match.
+ * by meaning alone come after every word match. Once Granite has read everything, the files holding
+ * every word still come first, ordered by meaning; meaning weighs against words among the rest.
+ *
+ * Both ways, a file whose name or folders hold the query's words gains on one that only mentions
+ * them, and a file's best passage stands out by less the more passages it has (`LENGTH_PENALTY`):
+ * the best of a long book's hundreds of passages stands out by chance.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -34,8 +39,12 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 export const Z_GATE = 2.0
 /** How much Potion's meaning counts, against words: enough to order files the words tie. */
 const POTION_WEIGHT = 1e-3
-/** What the query's words in a file's name or folders add to its words (all of them: a quarter of one). */
-export const NAME_WEIGHT = 0.25
+/** What the query's words in a file's name or folders add to its score (all of them: half of what holding them does). */
+export const NAME_WEIGHT = 1
+/** A file's best passage counts for less the more passages it has (deviations per e-fold): the best of many stands out by chance. */
+export const LENGTH_PENALTY = 0.3
+/** What holding every word of the query adds to a file's score with Granite's meaning: it puts them first. */
+const EVERY_WORD = 100
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -163,7 +172,11 @@ export function rank(opts: { best: Map<number, { z: number; row: number; anchore
       // can't reach the next word match), and its own matches after every word match.
       score = (words >= 0.5 ? wordsWeight * words ** 1.5 + name : 0) + POTION_WEIGHT * Math.tanh(z / 4)
       if (words < 0.5) { out.push({ file, score, row: b.row, z }); continue }
-    } else score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + (words >= 0.5 ? name : 0)
+    } else {
+      // Granite's, once it has read every file: meaning and words together, but the files holding
+      // every word first.
+      score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + (words >= 0.5 ? name : 0) + (words >= 1 ? EVERY_WORD : 0)
+    }
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
@@ -193,6 +206,16 @@ export class VectorIndex {
 
   get size(): number {
     return this.file.length
+  }
+
+  private counts: Map<number, number> | null = null
+  /** How many passages each file has here. */
+  passages(file: number): number {
+    if (!this.counts) {
+      this.counts = new Map()
+      for (const f of this.file) this.counts.set(f, (this.counts.get(f) ?? 0) + 1)
+    }
+    return this.counts.get(file) ?? 0
   }
 
   /** An index of these passages, one vector each (passages reranked at search time). */
@@ -374,6 +397,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (allowed) best.set(file, { z: z[row]!, row, index, anchored: anchored ?? tier === "fast" })
     }
   }
+  for (const b of best.values()) b.z -= LENGTH_PENALTY * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1))
   return best
 }
 
