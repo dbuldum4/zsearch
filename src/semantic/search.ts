@@ -6,8 +6,8 @@
  * Every stored vector is scored against the query, and the scores are put on one scale for this
  * query (`meaning`): how many standard deviations a passage stands out from the rest. Each model's
  * index is scored with its own query vector and put on its own scale, over all of its passages;
- * a file then takes its passages from Granite's index once Granite has read it, and from Potion's
- * until then (`bestByFile`). A file counts
+ * a file then takes its passages from Granite's index once Granite has read it as it is, and from
+ * Potion's until then (`bestByFile`). A file counts
  * as a meaning match when its best passage stands out by Z_GATE or more, and as a word match when
  * it holds at least half of the query's words; its score is its meaning plus a bonus growing with
  * the share of words it holds, plus one for the kind of file the query asks for ("photo of…",
@@ -163,6 +163,8 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
+  /** What each file's passages were read from (its size, date and text length), by file id. */
+  sigs = new Map<number, string>()
   private values = new Float16Array(0)
   private distinct = 0
 
@@ -220,6 +222,7 @@ export class VectorIndex {
       v.modality[i] = image ? 1 : 0
       v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
     })
+    for (const [file, sig] of db.query("SELECT file, sig FROM files").values() as [number, string][]) v.sigs.set(file, sig)
     return v
   }
 
@@ -311,19 +314,35 @@ function fileIno(path: string): number | null {
 /* ---------------------------------------------------- query vectors -- */
 
 /**
- * Each file's best passage for this query, by how far it stands out (`meaning`): from `full` (Granite's
- * index) for the files it has, from `fast` (Potion's) for the others. `usable` says whether a file
- * may be shown (filters, access).
+ * The files Granite read in a version that has changed since, and that Potion has read as they
+ * are now (`current`: what a file's passages would be read from today): Potion's are the ones to use.
  */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full" }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
+export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (file: number) => string | null): Set<number> {
+  const out = new Set<number>()
+  for (const [file, sig] of full.sigs) {
+    const now = fast.sigs.get(file)
+    if (now !== undefined && now !== sig && current(file) === now) out.add(file)
+  }
+  return out
+}
+
+/**
+ * Each file's best passage for this query, by how far it stands out (`meaning`): from `full` (Granite's
+ * index) for the files it has, from `fast` (Potion's) for the others. A part's `outdated` files
+ * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
+ */
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
   const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
   const ok = new Map<number, boolean>()
   const upgraded = new Set<number>()
-  for (const p of parts) if (p.tier === "full") for (const f of p.index.file) upgraded.add(f)
-  for (const { index, z, tier } of parts) {
+  // An image's own vector is stored under its file's negative id.
+  const isOutdated = (outdated: Set<number> | undefined, file: number) => !!outdated?.has(Math.abs(file))
+  for (const p of parts) if (p.tier === "full") for (const f of p.index.file) if (!isOutdated(p.outdated, f)) upgraded.add(f)
+  for (const { index, z, tier, outdated } of parts) {
     for (let row = 0; row < z.length; row++) {
       const file = index.file[row]!
       if (tier === "fast" && upgraded.has(file)) continue
+      if (isOutdated(outdated, file)) continue
       const b = best.get(file)
       if (b && b.z >= z[row]!) continue
       let allowed = ok.get(file)

@@ -270,6 +270,24 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("a file edited since Granite read it takes Potion's vectors of it as it is now", async () => {
+    corpus.write("notes/errands.txt", "Errands for Saturday: groceries and laundry.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    expect((await semantic({ tier: "fast", embedder: fakePotion })).status).toBe("done")
+    corpus.write("notes/errands.txt", "Errands for Saturday: walk the puppy, then groceries and laundry.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    // Potion has caught up with the edit; Granite still has the old text.
+    expect((await semantic({ tier: "fast", embedder: fakePotion })).status).toBe("done")
+    const e = engine()
+    const r = await e.search("canine", "semantic")
+    expect(r.hits.some((h) => h.display === "notes/errands.txt")).toBe(true)
+    e.closeSemantic()
+    rmSync(join(corpus.home, "notes/errands.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
+    for (const tier of ["fast", "full"] as const) expect((await semantic(tier === "fast" ? { tier, embedder: fakePotion } : {})).status).toBe("done")
+  })
+
   test("codes are looked up by their words", async () => {
     const r = await engine().search("K7Q2LM", "semantic")
     expect(r.hits[0]!.display).toBe("notes/orders.txt")

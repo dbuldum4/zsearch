@@ -142,6 +142,11 @@ export function semanticFingerprint(tier: Tier, vectorVersion: number): string {
   return `${modelFingerprint(modelSpec(tier))} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
 }
 
+/** What a file's passages are read from: its size, date and text length. */
+export function textSig(size: number, mtime: number, len: number): string {
+  return `t:${size}:${mtime}:${len}`
+}
+
 interface Candidate {
   id: number
   path: string
@@ -361,7 +366,7 @@ export class SemanticIndexer {
     for (const r of rows) {
       if (!kinds.has(r.kind)) continue
       const p = pathPolicy(r.path, crawl)
-      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: `t:${r.size}:${r.mtime}:${r.len}`, mtime: r.mtime })
+      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime })
     }
     return out
   }

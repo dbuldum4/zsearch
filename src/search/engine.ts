@@ -22,9 +22,9 @@ import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel, POTION, type Tier } from "../semantic/model.ts"
 import { PotionEmbedder, PotionModel } from "../semantic/potion.ts"
 import { documentPrompt, titleOf } from "../semantic/chunk.ts"
-import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
+import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, outdatedFiles, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
-import { mainGeneration } from "../semantic/indexer.ts"
+import { mainGeneration, textSig } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -389,8 +389,8 @@ export class SearchEngine {
    * The best passage of each of the RERANK files Potion ranks highest that Granite hasn't read
    * yet, embedded with Granite now (and kept for later searches), as a small index of its own.
    */
-  private async rerankWithGranite(fast: { index: VectorIndex; z: Float64Array; tier: Tier }, full: VectorIndex, authorized: (file: number) => boolean): Promise<VectorIndex | null> {
-    const upgraded = new Set(full.file)
+  private async rerankWithGranite(fast: { index: VectorIndex; z: Float64Array; tier: Tier }, full: VectorIndex, outdated: Set<number>, authorized: (file: number) => boolean): Promise<VectorIndex | null> {
+    const upgraded = new Set(full.file.filter((f) => !outdated.has(Math.abs(f))))
     const pool = [...bestByFile([fast], (f) => !upgraded.has(f) && authorized(f))].sort((a, b) => b[1].z - a[1].z).slice(0, RERANK)
     const picked: { file: number; start: number; end: number; text: string }[] = []
     for (const [file, b] of pool) {
@@ -407,6 +407,12 @@ export class SearchEngine {
     if (!embed) return null
     const vectors = await embed(picked.map((p) => p.text))
     return VectorIndex.of(picked.map((p, k) => ({ file: p.file, start: p.start, end: p.end, vector: vectors[k]! })))
+  }
+
+  /** What a file's passages would be read from now (see `textSig`), or null if it has no text. */
+  private semanticSig(file: number): string | null {
+    const r = this.db.query("SELECT size, mtime, content_len AS len FROM files WHERE id = ?").get(file) as { size: number; mtime: number; len: number } | null
+    return r ? textSig(r.size, r.mtime, r.len) : null
   }
 
   private granitePassagesFn(): ((texts: string[]) => Promise<Float32Array[]>) | null {
@@ -477,14 +483,16 @@ export class SearchEngine {
         const i = usable(file)
         return i !== undefined && this.contentAuthorized(i, check)
       }
-      const parts: { index: VectorIndex; z: Float64Array; tier: Tier }[] = []
+      const parts: { index: VectorIndex; z: Float64Array; tier: Tier; outdated?: Set<number> }[] = []
       if (scored.fast) parts.push({ ...scored.fast, z: meaning(scored.fast.scores, scored.fast.index.modality, scored.fast.index.setsScale), tier: "fast" })
       if (scored.full) {
         const { index, scores, vector } = scored.full
+        // Files edited since Granite read them, that Potion has read again: Potion's passages count.
+        const outdated = scored.fast ? outdatedFiles(index, scored.fast.index, (file) => this.semanticSig(file)) : new Set<number>()
         let extra: VectorIndex | null = null
         if (scored.fast && index.size >= this.rerankMinPassages) {
           try {
-            extra = await this.rerankWithGranite(parts[0]!, index, authorized)
+            extra = await this.rerankWithGranite(parts[0]!, index, outdated, authorized)
           } catch (err) {
             errors.push((err as Error).message)
           }
@@ -495,7 +503,7 @@ export class SearchEngine {
         const modality = extra ? new Uint8Array(all.length) : index.modality
         const setsScale = extra ? Uint8Array.from({ length: all.length }, (_, i) => (i < scores.length ? index.setsScale[i]! : 0)) : index.setsScale
         const z = meaning(all, modality, setsScale)
-        parts.push({ index, z: z.subarray(0, scores.length), tier: "full" })
+        parts.push({ index, z: z.subarray(0, scores.length), tier: "full", outdated })
         if (extra) parts.push({ index: extra, z: z.subarray(scores.length), tier: "full" })
       }
       if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
