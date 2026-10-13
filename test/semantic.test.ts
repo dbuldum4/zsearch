@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { normalize, PotionEmbedder, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
-import { bestByFile, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
+import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
@@ -75,12 +75,12 @@ describe("DigUp's ranking", () => {
   test("candidates stand out or hold half the words; lookups weigh words", () => {
     const best = new Map([[1, { z: 3, row: 0 }], [2, { z: 1.5, row: 1 }], [3, { z: 0.5, row: 2 }]])
     const coverage = new Map([[2, 1], [3, 0.4]])
-    const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text", ranking: DIGUP_RANKING })
     expect(r.map((x) => x.file)).toEqual([2, 1])
-    // Every word puts a file ahead of the files found by meaning.
-    expect(r[0]!.score).toBeCloseTo(1.5 + 2 + 100)
-    const l = rank({ best, coverage, lookup: true, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
-    expect(l[0]!.score).toBeCloseTo(0.75 + 4 + 1 + 100)
+    // The comparison pipeline retains the previous additive scoring.
+    expect(r[0]!.score).toBeCloseTo(1.5 + 2)
+    const l = rank({ best, coverage, lookup: true, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text", ranking: DIGUP_RANKING })
+    expect(l[0]!.score).toBeCloseTo(0.75 + 4 + 1)
     expect(queryTerms("the photo of my Café receipts")).toEqual(["cafe", "receipts"])
     expect(isLookup(queryTerms("TRX50 K7Q2LM"))).toBe(true)
     expect(isLookup(queryTerms("trip 2024"))).toBe(false)
@@ -88,25 +88,41 @@ describe("DigUp's ranking", () => {
     expect(strongCount([10, 8, 5, 4.9, 1])).toBe(3)
   })
 
-  test("anchored meaning only orders word matches that tie, and adds its own after them", () => {
-    // 1 and 2 hold every word, 3 half of them; 4 and 5 none, but Potion finds them close.
-    const best = new Map([
-      [1, { z: 0.2, row: 0, anchored: true }],
-      [2, { z: 1.5, row: 1, anchored: true }],
-      [3, { z: 6, row: 2, anchored: true }],
-      [4, { z: 9, row: 3, anchored: true }],
-      [5, { z: 3, row: 4, anchored: true }],
-      [6, { z: 1.9, row: 5, anchored: true }],
-    ])
+  test("semantic answers can beat incidental word matches, while saved filenames get a finite boost", () => {
+    const best = new Map([[1, { z: 0.2, row: 0, anchored: true }], [2, { z: 1.5, row: 1, anchored: true }], [3, { z: 6, row: 2, anchored: true }], [4, { z: 9, row: 3, anchored: true }]])
     const coverage = new Map([[1, 1], [2, 1], [3, 0.5]])
-    const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
-    expect(r.map((x) => x.file)).toEqual([2, 1, 3, 4, 5])
-    // Granite's meaning, once it has read every file, still counts against words, after the files with every word.
-    const full = rank({ best: new Map([[4, { z: 9, row: 3, anchored: false }]]), coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
-    expect(full.map((x) => x.file)).toEqual([1, 2, 4, 3])
-    // A file named for the query comes before one that mentions it.
-    const named = rank({ best: new Map(), coverage: new Map([[7, 1], [8, 1]]), named: new Map([[8, 1]]), lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
-    expect(named.map((x) => x.file)).toEqual([8, 7])
+    const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(r.map(x => x.file)).toEqual([4, 3, 2, 1])
+    const named = rank({ best: new Map([[7, { z: 3, row: 0, anchored: true }], [8, { z: 2, row: 1, anchored: true }]]), coverage: new Map([[7, 1], [8, 1]]), named: new Map([[8, 1]]), lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(named.map(x => x.file)).toEqual([8, 7])
+    // Codes remain exact word lookups rather than natural-language questions.
+    const lookup = rank({ best: new Map([[1, { z: 5, row: 0 }]]), coverage: new Map([[2, 1]]), lookup: true, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(lookup[0]!.file).toBe(2)
+    expect(queryTerms("how much did the plumber charge")).toEqual(["much", "plumber", "charge"])
+  })
+
+  test("Granite readiness includes current sequence, every file signature and passage completion", () => {
+    const full = new VectorIndex(), fast = new VectorIndex()
+    full.completeSeq = fast.completeSeq = "12"
+    full.sigs.set(1, "current"); fast.sigs.set(1, "current")
+    expect(full.isCompleteFor("12", fast)).toBe(true)
+    expect(full.isCompleteFor("13", fast)).toBe(false)
+    full.complete = false
+    expect(full.isCompleteFor("12", fast)).toBe(false)
+    full.complete = true; fast.complete = false
+    expect(full.isCompleteFor("12", fast)).toBe(false)
+    fast.complete = true; full.sigs.set(1, "old")
+    expect(full.isCompleteFor("12", fast)).toBe(false)
+    full.sigs.set(1, "current"); fast.sigs.set(2, "new file")
+    expect(full.isCompleteFor("12", fast)).toBe(false)
+  })
+
+  test("a concept recognized by just one model stays eligible in the complete ensemble", () => {
+    const index = VectorIndex.of([{ file: 1, start: 0, end: 1, vector: new Float32Array([1, 0]) }])
+    const best = bestByFile([{ index, z: new Float64Array([4]), tier: "full" }, { index, z: new Float64Array([-1]), tier: "fast" }], () => true)
+    expect(best.get(1)!.z).toBeCloseTo(1.5)
+    expect(best.get(1)!.gateZ).toBe(4)
+    expect(rank({ best, coverage: new Map(), lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" }).map(r => r.file)).toEqual([1])
   })
 
   test("the best of a long file's many passages stands out by less", () => {
@@ -299,6 +315,20 @@ describe("semantic index and search", () => {
     expect((await engine().search("kennel_sofa", "find")).hits.map((h) => h.display)).toContain("proofs/Kennel.lean")
   })
 
+  test("saved-name lookups show the document heading and directories stay out of semantic results", async () => {
+    corpus.write("notes/handbook.txt", "Employee Handbook\n\nCompany working hours and holiday rules.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    const e = engine()
+    const r = await e.search("handbook", "semantic")
+    expect(r.hits[0]!.display).toBe("notes/handbook.txt")
+    expect(r.hits[0]!.lines[0]!.text).toBe("Employee Handbook")
+    expect((await e.search("notes", "semantic")).hits.every(h => !h.isDir)).toBe(true)
+    e.closeSemantic()
+    // Finish both snapshots so the next test can use complete Granite.
+    expect((await semantic({ tier: "fast", embedder: fakePotion })).status).toBe("done")
+    expect((await semantic()).status).toBe("done")
+  })
+
   test("filters apply to meaning matches", async () => {
     const docs = await engine().search("automobile type:image", "semantic")
     expect(docs.hits.some((h) => h.display.startsWith("notes/"))).toBe(false)
@@ -312,10 +342,10 @@ describe("semantic index and search", () => {
     expect(asked.every((t) => t === "canine")).toBe(true)
   })
 
-  test("Potion's vectors stand in for files Granite hasn't read, and Granite's replace them", async () => {
+  test("Potion supplies complete results until Granite is ready, then both contribute", async () => {
     const fast = await semantic({ tier: "fast", embedder: fakePotion })
     expect(fast.status).toBe("done")
-    // Granite has read every file: Potion's index is not used, and "sedan" is found as a vehicle.
+    // Complete Granite adds evidence Potion lacks: "sedan" is found as a vehicle.
     const e = engine()
     const both = await e.search("automobile", "semantic")
     expect(both.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
@@ -437,19 +467,18 @@ describe("semantic index and search", () => {
     expect(r.files).toBeGreaterThanOrEqual(110)
   })
 
-  test("while Granite is part way, Potion's best files Granite hasn't read are reranked with Granite", async () => {
-    // Granite hasn't read the garage notes; Potion's stand-in doesn't know a sedan is a vehicle.
+  test("partial Granite keeps Potion results and does not embed at search time", async () => {
     const s = store()
     const ids = (db.query("SELECT id FROM files WHERE name LIKE 'garage%'").values() as number[][]).map((r) => r[0]!)
     for (const id of ids) { s.query("DELETE FROM passages WHERE file = ?").run(id); s.query("DELETE FROM files WHERE file = ?").run(id) }
     s.close()
     const e = engine()
-    const without = await e.search("automobile", "semantic")
-    expect(without.hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
-    e.rerankMinPassages = 0
+    const original = e.embedQuery!
+    let fullCalls = 0
+    e.embedQuery = async (text, tier) => { if (tier === "full") fullCalls++; return original(text, tier) }
     const r = await e.search("automobile", "semantic")
-    expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
-    expect(r.hits[0]!.lines[0]!.text).toContain("sedan")
+    expect(r.hits.some(h => h.display.startsWith("notes/garage"))).toBe(false)
+    expect(fullCalls).toBe(0)
     e.closeSemantic()
     expect((await semantic()).status).toBe("done")
   })

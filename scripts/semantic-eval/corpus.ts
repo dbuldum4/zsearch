@@ -295,7 +295,7 @@ export const QUESTIONS: Question[] = [
   // By meaning.
   { q: "fixing the leaking faucet", type: "meaning", relevant: { "Documents/home/plumber-visit.txt": 2 } },
   { q: "car maintenance", type: "meaning", relevant: { "Documents/car/service-record.txt": 2 } },
-  { q: "vegetarian dinner ideas", type: "meaning", relevant: { "Documents/recipes/lentil-curry.txt": 2, "Documents/recipes/lasagna.md": 1 } },
+  { q: "vegetarian dinner ideas", type: "meaning", relevant: { "Documents/recipes/lentil-curry.txt": 2 } },
   { q: "cholesterol levels", type: "meaning", relevant: { "Documents/health/blood-test-results.txt": 2 } },
   { q: "job application", type: "meaning", relevant: { "Documents/work/cover-letter.txt": 2, "Documents/work/resume.md": 2 } },
   { q: "holiday in asia", type: "meaning", relevant: { "Documents/travel/japan-itinerary.md": 2 } },

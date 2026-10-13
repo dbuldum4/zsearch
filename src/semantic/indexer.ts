@@ -301,6 +301,8 @@ export class SemanticIndexer {
       setMeta(store, "generation", generation)
     }
 
+    setMeta(store, "complete_seq", "")
+    setMeta(store, "indexing_seq", getMainMeta(this.main, "change_seq") ?? "0")
     const candidates = this.candidates()
     const known = new Map<number, { sig: string; upto: number; total: number }>()
     for (const r of store.query("SELECT file, sig, upto, total FROM files").all() as { file: number; sig: string; upto: number; total: number }[]) known.set(r.file, r)
@@ -347,6 +349,7 @@ export class SemanticIndexer {
     if (complete) {
       // Vectors no passage uses any more: of deleted files and edited passages.
       store.exec("DELETE FROM vectors WHERE hash NOT IN (SELECT hash FROM passages)")
+      setMeta(store, "complete_seq", getMeta(store, "indexing_seq") ?? "0")
       setMeta(store, "last_run_at", String(Date.now()))
       setMeta(store, "last_error", "")
     }

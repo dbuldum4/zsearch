@@ -1,0 +1,5860 @@
+{
+  "baselineCommit": "f50574866cd41a229ec5604464c0700bcf093341",
+  "mainCommit": "1213953d6f0e9694aa962cd1550a4ea0cdd4a512",
+  "queries": 80,
+  "models": "real pinned Potion and Granite Q8_0 (CLS pooling)",
+  "aggregate": {
+    "words": {
+      "before": 0.6704100956691736,
+      "after": 0.7212766386932562
+    },
+    "potion": {
+      "before": 0.8269951960002919,
+      "after": 0.956354637625434
+    },
+    "full": {
+      "before": 0.925131578801358,
+      "after": 0.976726448506354
+    }
+  },
+  "sets": {
+    "tuning": {
+      "before": {
+        "summary": {
+          "words/words": {
+            "n": 16,
+            "ndcg": 0.9748323294260441,
+            "mrr": 1,
+            "recall": 0.9375
+          },
+          "words/mixed": {
+            "n": 10,
+            "ndcg": 0.85,
+            "mrr": 0.8333333333333334,
+            "recall": 0.9
+          },
+          "words/meaning": {
+            "n": 14,
+            "ndcg": 0.28710632133665015,
+            "mrr": 0.28401360544217685,
+            "recall": 0.35714285714285715
+          },
+          "words/all": {
+            "n": 40,
+            "ndcg": 0.7029201442382453,
+            "mrr": 0.7077380952380953,
+            "recall": 0.725
+          },
+          "potion/words": {
+            "n": 16,
+            "ndcg": 0.9918241367535701,
+            "mrr": 1,
+            "recall": 1
+          },
+          "potion/mixed": {
+            "n": 10,
+            "ndcg": 0.85,
+            "mrr": 0.8333333333333334,
+            "recall": 0.9
+          },
+          "potion/meaning": {
+            "n": 14,
+            "ndcg": 0.6648068017767006,
+            "mrr": 0.5858843537414966,
+            "recall": 0.8928571428571429
+          },
+          "potion/all": {
+            "n": 40,
+            "ndcg": 0.8419120353232732,
+            "mrr": 0.8133928571428573,
+            "recall": 0.9375
+          },
+          "full/words": {
+            "n": 16,
+            "ndcg": 0.9806513414527809,
+            "mrr": 1,
+            "recall": 0.96875
+          },
+          "full/mixed": {
+            "n": 10,
+            "ndcg": 0.95,
+            "mrr": 0.9333333333333333,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 14,
+            "ndcg": 0.77510984785848,
+            "mrr": 0.7202380952380951,
+            "recall": 0.9285714285714286
+          },
+          "full/all": {
+            "n": 40,
+            "ndcg": 0.9010489833315806,
+            "mrr": 0.8854166666666666,
+            "recall": 0.9625
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Downloads/packages/json5_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "roof repair quote",
+            "ndcg": 0.8262346571285599,
+            "top": [
+              "Documents/home/roof-quote.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "churn dashboard",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Downloads/packages/caniuse-lite_LICENSE"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/study/statistics-notes.md",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/bun-types_README.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "resume",
+            "ndcg": 0.8262346571285599,
+            "top": [
+              "Documents/work/resume.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how much was the plumber",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/debug_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "notice period to leave the flat",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/lease-agreement.txt",
+              "Documents/car/parking-fine.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/budget-notes.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "fixing the leaking faucet",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "car maintenance",
+            "ndcg": 0.5,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/car",
+              "Documents/car/service-record.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "cholesterol levels",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Documents/health/blood-test-results.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "job application",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/unpdf_README.md",
+              "Downloads/packages/html-entities_README.md",
+              "Downloads/packages/minimatch_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "holiday in asia",
+            "ndcg": 0,
+            "top": [
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "exercise routine",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/typescript_LICENSE.txt",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Downloads/packages/caniuse-lite_LICENSE"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "monthly spending",
+            "ndcg": 0.27541155237618664,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "growing vegetables",
+            "ndcg": 0,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/csstype_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/brace-expansion_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "mountain hike",
+            "ndcg": 0.6131471927654584,
+            "top": [
+              "Documents/personal/journal-2024-08.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "traffic ticket",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/thesis-draft.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/baseline-browser-mapping_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/minimatch_README.md",
+              "Downloads/packages/glob_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "internet keeps disconnecting",
+            "ndcg": 0,
+            "top": [
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/baseline-browser-mapping_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Downloads/packages/json5_README.md",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "roof repair quote",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/@babel_helper-replace-supers_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/car/service-record.txt",
+              "Documents/health/running-plan.md",
+              "Documents/recipes/lasagna.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/personal/journal-2024-08.md",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/car-loan.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/health/blood-test-results.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "churn dashboard",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/README.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/minipass_README.md",
+              "Documents/work/performance-review.md",
+              "Downloads/packages/parse5_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Downloads/packages/caniuse-lite_LICENSE",
+              "Documents/recipes/lentil-curry.txt",
+              "Downloads/packages/function-bind_README.md",
+              "Documents/health/dentist.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_minipass_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/study/statistics-notes.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md",
+              "Downloads/packages/typescript_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "resume",
+            "ndcg": 0.9243382314975351,
+            "top": [
+              "Documents/work/resume.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/minipass_README.md",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how much was the plumber",
+            "ndcg": 0,
+            "top": [
+              "Downloads/packages/minipass_README.md",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/brace-expansion_README.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/babel-plugin-jsx-dom-expressions_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/packages/yallist_README.md",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "notice period to leave the flat",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/lease-agreement.txt",
+              "Documents/car/parking-fine.txt",
+              "Downloads/packages/minimatch_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/money/budget-notes.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/cover-letter.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/yallist_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/health/dentist.txt",
+              "Downloads/packages/@babel_helper-member-expression-to-functions_README.md",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/brace-expansion_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "fixing the leaking faucet",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "car maintenance",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/car/service-record.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/car"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/health/vet-max.txt",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cholesterol levels",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/html-entities_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "job application",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/unpdf_README.md",
+              "Downloads/packages/debug_README.md",
+              "Downloads/packages/typescript_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "holiday in asia",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/travel/japan-itinerary.md",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/school-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "exercise routine",
+            "ndcg": 0.3333333333333333,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/caniuse-lite_LICENSE",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-WUFFS",
+              "Downloads/packages/typescript_LICENSE.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "monthly spending",
+            "ndcg": 0.52129602861432,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/budget-notes.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "growing vegetables",
+            "ndcg": 0.3333333333333333,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/solid-js_README.md",
+              "Downloads/packages/brace-expansion_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Documents/recipes/pancakes.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/travel/japan-itinerary.md",
+              "Documents/recipes/lentil-curry.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "mountain hike",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/journal-2024-08.md",
+              "Documents/travel/packing-list.md",
+              "Documents/home/garden-plan.md",
+              "Downloads/packages/path-scurry_README.md",
+              "Documents/travel/japan-itinerary.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "traffic ticket",
+            "ndcg": 0.3562071871080222,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/packages/baseline-browser-mapping_README.md",
+              "Documents/study/thesis-draft.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/glob_README.md",
+              "Downloads/packages/minimatch_README.md",
+              "Documents/work/resume.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "internet keeps disconnecting",
+            "ndcg": 0.5012658353418872,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/packages/baseline-browser-mapping_README.md",
+              "Documents/manuals/router-manual.txt",
+              "Documents/home/wifi-setup.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/recipes/pancakes.txt",
+              "Downloads/packages/json5_README.md",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "roof repair quote",
+            "ndcg": 0.9639404333166532,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/@jridgewell_remapping_LICENSE",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/pancakes.txt",
+              "Downloads/packages/seroval_README.md",
+              "Downloads/packages/@babel_generator_README.md",
+              "Downloads/packages/@babel_helper-replace-supers_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/travel/packing-list.md",
+              "Documents/personal/journal-2024-08.md",
+              "Documents/car/service-record.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/budget-notes.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/money/invoice-translation-0042.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/performance-review.md",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "churn dashboard",
+            "ndcg": 0.9327783893101107,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/work/cover-letter.txt",
+              "Documents/study/thesis-draft.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Downloads/packages/s-js_README.md",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/marked_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/recipes/sourdough.md",
+              "Documents/health/dentist.txt",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/lentil-curry.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Projects/webapp/LICENSE",
+              "Downloads/packages/ignore_LICENSE-MIT",
+              "Downloads/packages/debug_LICENSE",
+              "Downloads/packages/glob_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook",
+            "ndcg": 0.9674679834891694,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/typescript_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/typescript_README.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md",
+              "Downloads/packages/diff_README.md",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "resume",
+            "ndcg": 0.8262346571285599,
+            "top": [
+              "Documents/work/resume.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/minipass_README.md",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how much was the plumber",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/roof-quote.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/packages/exifr_LICENSE",
+              "Downloads/packages/@babel_compat-data_LICENSE",
+              "Downloads/packages/unpdf_LICENSE",
+              "Downloads/packages/minipass_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/travel/japan-itinerary.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/health/running-plan.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "notice period to leave the flat",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Documents/money/budget-notes.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/money/budget-notes.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/onboarding-notes.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/home/plumber-visit.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt",
+              "Documents/health/dentist.txt",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE",
+              "Documents/health/blood-test-results.txt",
+              "Downloads/packages/babel-plugin-module-resolver_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "fixing the leaking faucet",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Downloads/packages/es-errors_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "car maintenance",
+            "ndcg": 0.4306765580733931,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/car/service-record.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/personal/gift-ideas.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/home/garden-plan.md",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cholesterol levels",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/study/statistics-notes.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/health/dentist.txt",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "job application",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/unpdf_README.md",
+              "Downloads/packages/@babel_core_LICENSE",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "holiday in asia",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/travel/packing-list.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "exercise routine",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/health/running-plan.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/@babel_helper-member-expression-to-functions_LICENSE",
+              "Downloads/packages/typescript_LICENSE.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "monthly spending",
+            "ndcg": 0.6590018048024133,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/work/cover-letter.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "growing vegetables",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/running-plan.md",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "mountain hike",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/packing-list.md",
+              "Documents/personal/journal-2024-08.md",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/@babel_traverse_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "traffic ticket",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/car/parking-fine.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Downloads/packages/ignore_LICENSE-MIT"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/health/blood-test-results.txt",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/resume.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "internet keeps disconnecting",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/wifi-setup.txt",
+              "Documents/manuals/router-manual.txt",
+              "Downloads/packages/browserslist_LICENSE",
+              "Downloads/packages/baseline-browser-mapping_README.md",
+              "Downloads/packages/@types_node_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_plugin-transform-typescript_README.md",
+              "Downloads/packages/typescript_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          }
+        ]
+      },
+      "after": {
+        "summary": {
+          "words/words": {
+            "n": 16,
+            "ndcg": 0.9748323294260441,
+            "mrr": 1,
+            "recall": 0.9375
+          },
+          "words/mixed": {
+            "n": 10,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "words/meaning": {
+            "n": 14,
+            "ndcg": 0.32282060705093585,
+            "mrr": 0.33163265306122447,
+            "recall": 0.35714285714285715
+          },
+          "words/all": {
+            "n": 40,
+            "ndcg": 0.7529201442382453,
+            "mrr": 0.7660714285714285,
+            "recall": 0.75
+          },
+          "potion/words": {
+            "n": 16,
+            "ndcg": 0.9965529972849742,
+            "mrr": 1,
+            "recall": 1
+          },
+          "potion/mixed": {
+            "n": 10,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "potion/meaning": {
+            "n": 14,
+            "ndcg": 0.9434298128323978,
+            "mrr": 0.9642857142857143,
+            "recall": 0.9642857142857143
+          },
+          "potion/all": {
+            "n": 40,
+            "ndcg": 0.9788216334053288,
+            "mrr": 0.9875,
+            "recall": 0.9875
+          },
+          "full/words": {
+            "n": 16,
+            "ndcg": 0.9945197462530473,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/mixed": {
+            "n": 10,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 14,
+            "ndcg": 0.9460054961669225,
+            "mrr": 0.9642857142857143,
+            "recall": 0.9642857142857143
+          },
+          "full/all": {
+            "n": 40,
+            "ndcg": 0.9789098221596418,
+            "mrr": 0.9875,
+            "recall": 0.9875
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Downloads/packages/json5_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "roof repair quote",
+            "ndcg": 0.8262346571285599,
+            "top": [
+              "Documents/home/roof-quote.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "churn dashboard",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Downloads/packages/caniuse-lite_LICENSE"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/study/statistics-notes.md",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/bun-types_README.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "resume",
+            "ndcg": 0.8262346571285599,
+            "top": [
+              "Documents/work/resume.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_minipass_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how much was the plumber",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/personal/journal-2024-08.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "notice period to leave the flat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/budget-notes.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "fixing the leaking faucet",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "car maintenance",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/money/car-loan.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "cholesterol levels",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Documents/health/blood-test-results.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "job application",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/unpdf_README.md",
+              "Downloads/packages/html-entities_README.md",
+              "Downloads/packages/minimatch_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "holiday in asia",
+            "ndcg": 0,
+            "top": [
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "exercise routine",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/typescript_LICENSE.txt",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Downloads/packages/caniuse-lite_LICENSE"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "monthly spending",
+            "ndcg": 0.27541155237618664,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "growing vegetables",
+            "ndcg": 0,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/csstype_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/brace-expansion_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "mountain hike",
+            "ndcg": 0.6131471927654584,
+            "top": [
+              "Documents/personal/journal-2024-08.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "traffic ticket",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/thesis-draft.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/baseline-browser-mapping_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/minimatch_README.md",
+              "Downloads/packages/glob_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "internet keeps disconnecting",
+            "ndcg": 0,
+            "top": [
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/baseline-browser-mapping_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "roof repair quote",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/lease-agreement.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/home/plumber-visit.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/running-plan.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/travel/packing-list.md",
+              "Documents/personal/journal-2024-08.md",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/car-loan.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/packages/@opentui_solid_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/health/blood-test-results.txt",
+              "Documents/travel/passport-renewal.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "churn dashboard",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Projects/webapp/README.md",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/s-js_README.md",
+              "Documents/car/parking-fine.txt",
+              "Documents/work/performance-review.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/health/dentist.txt",
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Projects/webapp/LICENSE",
+              "Downloads/packages/debug_LICENSE",
+              "Downloads/packages/resolve_LICENSE",
+              "Downloads/packages/@babel_traverse_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook",
+            "ndcg": 0.9674679834891694,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/typescript_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/typescript_README.md",
+              "Documents/study/statistics-notes.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "resume",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/onboarding-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how much was the plumber",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/money/invoice-translation-0042.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/packages/lru-cache_README.md",
+              "Downloads/packages/minipass_LICENSE",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/travel/japan-itinerary.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "notice period to leave the flat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/car/parking-fine.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Documents/money/budget-notes.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/car/parking-fine.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/car/service-record.txt",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/cover-letter.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt",
+              "Documents/health/dentist.txt",
+              "Documents/health/blood-test-results.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/health/running-plan.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "fixing the leaking faucet",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "car maintenance",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/personal/gift-ideas.txt",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/vet-max.txt",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cholesterol levels",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/study/statistics-notes.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/money/budget-notes.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "job application",
+            "ndcg": 0.6131471927654584,
+            "top": [
+              "Documents/work/cover-letter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/onboarding-notes.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "holiday in asia",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/personal/school-letter.txt",
+              "Documents/work/onboarding-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "exercise routine",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/journal-2024-08.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "monthly spending",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/budget-notes.txt",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/work/cover-letter.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "growing vegetables",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/personal/gift-ideas.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "mountain hike",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/journal-2024-08.md",
+              "Documents/travel/packing-list.md",
+              "Documents/home/garden-plan.md",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/path-scurry_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "traffic ticket",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/parking-fine.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/travel/lisbon-flights.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/travel/passport-renewal.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Documents/work/resume.md",
+              "Documents/study/thesis-draft.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/performance-review.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "internet keeps disconnecting",
+            "ndcg": 1,
+            "top": [
+              "Documents/manuals/router-manual.txt",
+              "Documents/home/wifi-setup.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/baseline-browser-mapping_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/typescript_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "plumber kitchen sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "roof repair quote",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/diff_README.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Downloads/packages/find-babel-config_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "sourdough starter",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/car/service-record.txt",
+              "Documents/health/running-plan.md",
+              "Documents/recipes/lasagna.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "japan itinerary kyoto",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/japan-itinerary.md",
+              "Documents/personal/journal-2024-08.md",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/js-tokens_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "lease deposit",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/car-loan.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/packages/hasown_LICENSE"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "dentist appointment",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/health/blood-test-results.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "churn dashboard",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/README.md",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "timing belt",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Documents/work/performance-review.md",
+              "Downloads/packages/parse5_README.md",
+              "Documents/health/running-plan.md",
+              "Downloads/packages/s-js_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "vitamin d supplement",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/recipes/lentil-curry.txt",
+              "Downloads/packages/function-bind_README.md",
+              "Documents/health/dentist.txt",
+              "Documents/home/garden-plan.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "permission slip museum",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/school-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_minipass_LICENSE.md",
+              "Downloads/packages/path-scurry_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook type:markdown",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/study/statistics-notes.md",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/babel-plugin-module-resolver_README.md",
+              "Downloads/packages/typescript_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "resume",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/onboarding-notes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how much was the plumber",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/health/dentist.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "when does my passport expire",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/lru-cache_README.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/cover-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "what time is my flight to london",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/cover-letter.txt",
+              "Downloads/packages/yallist_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "notice period to leave the flat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-WUFFS",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "when is the tax deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/money/budget-notes.txt",
+              "Downloads/packages/baseline-browser-mapping_README.md",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "interest rate on the car loan",
+            "ndcg": 1,
+            "top": [
+              "Documents/money/car-loan.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/budget-notes.txt",
+              "Documents/car/parking-fine.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "salary increase from my review",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/performance-review.md",
+              "Documents/work/cover-letter.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/yallist_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "dog vaccinations",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/vet-max.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Documents/health/dentist.txt",
+              "Downloads/packages/@babel_helper-member-expression-to-functions_README.md",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how long to bake the bread",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/health/running-plan.md",
+              "Documents/recipes/lentil-curry.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "water leak in the attic",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "fixing the leaking faucet",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Downloads/packages/diff_README.md",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "car maintenance",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/service-record.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "vegetarian dinner ideas",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/health/vet-max.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cholesterol levels",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/blood-test-results.txt",
+              "Documents/study/statistics-notes.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "job application",
+            "ndcg": 0.6131471927654584,
+            "top": [
+              "Documents/work/cover-letter.txt",
+              "Downloads/packages/debug_README.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "holiday in asia",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/travel/japan-itinerary.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/personal/school-letter.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "exercise routine",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Documents/recipes/sourdough.md",
+              "Documents/personal/journal-2024-08.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "monthly spending",
+            "ndcg": 0.9639404333166532,
+            "top": [
+              "Documents/money/budget-notes.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/health/vet-max.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "growing vegetables",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/recipes/lasagna.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "toast at a wedding",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/recipes/pancakes.txt",
+              "Documents/travel/japan-itinerary.md",
+              "Documents/recipes/lentil-curry.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "mountain hike",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/journal-2024-08.md",
+              "Documents/travel/packing-list.md",
+              "Downloads/packages/path-scurry_README.md",
+              "Documents/home/garden-plan.md",
+              "Documents/travel/japan-itinerary.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "traffic ticket",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/parking-fine.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/travel/lisbon-flights.txt",
+              "Downloads/packages/path-scurry_node_modules_minipass_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "statistical significance",
+            "ndcg": 1,
+            "top": [
+              "Documents/study/statistics-notes.md",
+              "Documents/work/resume.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/json5_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "internet keeps disconnecting",
+            "ndcg": 1,
+            "top": [
+              "Documents/manuals/router-manual.txt",
+              "Documents/home/wifi-setup.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "SHS handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/study/statistics-notes.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "ACT user handbook",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md"
+            ]
+          }
+        ]
+      }
+    },
+    "validation": {
+      "before": {
+        "summary": {
+          "words/mixed": {
+            "n": 14,
+            "ndcg": 0.6027626785768164,
+            "mrr": 0.5446428571428571,
+            "recall": 0.7857142857142857
+          },
+          "words/meaning": {
+            "n": 6,
+            "ndcg": 0.18848829226190955,
+            "mrr": 0.13888888888888887,
+            "recall": 0.3333333333333333
+          },
+          "words/all": {
+            "n": 20,
+            "ndcg": 0.4784803626823444,
+            "mrr": 0.4229166666666666,
+            "recall": 0.65
+          },
+          "potion/mixed": {
+            "n": 14,
+            "ndcg": 0.7627215131496116,
+            "mrr": 0.6894841269841269,
+            "recall": 1
+          },
+          "potion/meaning": {
+            "n": 6,
+            "ndcg": 0.5947844823778002,
+            "mrr": 0.46666666666666673,
+            "recall": 1
+          },
+          "potion/all": {
+            "n": 20,
+            "ndcg": 0.7123404039180683,
+            "mrr": 0.6226388888888889,
+            "recall": 1
+          },
+          "full/mixed": {
+            "n": 14,
+            "ndcg": 0.9115613933673511,
+            "mrr": 0.880952380952381,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 6,
+            "ndcg": 0.9384882922619097,
+            "mrr": 0.9166666666666666,
+            "recall": 1
+          },
+          "full/all": {
+            "n": 20,
+            "ndcg": 0.9196394630357186,
+            "mrr": 0.8916666666666668,
+            "recall": 1
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "tenant moving out notice",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/packages/caniuse-lite_LICENSE",
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "paid annual leave entitlement",
+            "ndcg": 0.5,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "home office allowance",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/moving-checklist.md",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "CV data analyst",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "repair invoice for sink",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lasagna.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "household electricity charges",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "write my resignation notice",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/ignore_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how much did boiler repair cost",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/ignore_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "coverage for broken window seals",
+            "ndcg": 0.4306765580733931,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/exifr_CHANGELOG.md",
+              "Downloads/packages/exifr_README.md",
+              "Documents/home/window-warranty.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/s-js_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "rules for claiming business meals",
+            "ndcg": 0.4306765580733931,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Downloads/packages/path-scurry_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "cost of fixing my bike",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how long can I borrow library books",
+            "ndcg": 0.3154648767857287,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/exifr_README.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "tenant moving out notice",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/packages/caniuse-lite_LICENSE",
+              "Documents/home/lease-agreement.txt",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-WUFFS",
+              "Downloads/packages/typescript_LICENSE.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "paid annual leave entitlement",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "home office allowance",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/moving-checklist.md",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/expense-policy.txt",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "CV data analyst",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/node-releases_README.md",
+              "Projects/webapp/README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "repair invoice for sink",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lasagna.md",
+              "Downloads/packages/@types_node_README.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/personal/gift-ideas.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/health/blood-test-results.txt",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/recipes/pancakes.txt",
+              "Documents/travel/japan-itinerary.md",
+              "Downloads/packages/@babel_parser_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "household electricity charges",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "write my resignation notice",
+            "ndcg": 0.2890648263178878,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/ignore_README.md",
+              "Documents/home/lease-agreement.txt",
+              "Downloads/packages/typescript_LICENSE.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how much did boiler repair cost",
+            "ndcg": 0.3010299956639812,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/babel-plugin-jsx-dom-expressions_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "coverage for broken window seals",
+            "ndcg": 0.4306765580733931,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/exifr_CHANGELOG.md",
+              "Downloads/packages/exifr_README.md",
+              "Documents/home/window-warranty.txt",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/invoice-translation-0042.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 0.38685280723454163,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/diff_README.md",
+              "Documents/health/dentist.txt",
+              "Documents/health/dental-cleaning-receipt.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "rules for claiming business meals",
+            "ndcg": 0.5,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/marked_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cost of fixing my bike",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/car/bicycle-service.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how long can I borrow library books",
+            "ndcg": 0.3154648767857287,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/web-tree-sitter_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/exifr_README.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/health/vet-max.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "tenant moving out notice",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/moving-checklist.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "paid annual leave entitlement",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "home office allowance",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/moving-checklist.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "CV data analyst",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/work/cover-letter.txt",
+              "Documents/work/resume.md",
+              "Documents/work/meeting-2024-10-07.md",
+              "Documents/work/performance-review.md",
+              "Downloads/packages/@babel_compat-data_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "repair invoice for sink",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/home/pet-sitter.txt",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Documents/car/service-record.txt",
+              "Documents/travel/packing-list.md",
+              "Documents/health/blood-test-results.txt",
+              "Documents/health/vet-max.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/packages/bun-types_docs_README.md",
+              "Documents/money/budget-notes.txt",
+              "Documents/recipes/pancakes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "household electricity charges",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/boiler-service-invoice.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "write my resignation notice",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/home/moving-checklist.md",
+              "Downloads/packages/ignore_LICENSE-MIT"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how much did boiler repair cost",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "coverage for broken window seals",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/plumber-visit.txt",
+              "Downloads/packages/fs.realpath_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/home/window-warranty.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "rules for claiming business meals",
+            "ndcg": 0.5,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cost of fixing my bike",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/car/service-record.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/money/invoice-translation-0042.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how long can I borrow library books",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/find-babel-config_LICENSE.md",
+              "Downloads/packages/@babel_helpers_LICENSE",
+              "Projects/webapp/LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/exifr_README.md",
+              "Documents/health/vet-max.txt",
+              "Documents/money/budget-notes.txt"
+            ]
+          }
+        ]
+      },
+      "after": {
+        "summary": {
+          "words/mixed": {
+            "n": 14,
+            "ndcg": 0.6923240046583078,
+            "mrr": 0.6607142857142857,
+            "recall": 0.7857142857142857
+          },
+          "words/meaning": {
+            "n": 6,
+            "ndcg": 0.21030991785715247,
+            "mrr": 0.16666666666666666,
+            "recall": 0.3333333333333333
+          },
+          "words/all": {
+            "n": 20,
+            "ndcg": 0.5477197786179613,
+            "mrr": 0.5125,
+            "recall": 0.65
+          },
+          "potion/mixed": {
+            "n": 14,
+            "ndcg": 0.9642857142857143,
+            "mrr": 0.9523809523809524,
+            "recall": 1
+          },
+          "potion/meaning": {
+            "n": 6,
+            "ndcg": 0.8859108127976215,
+            "mrr": 0.8541666666666666,
+            "recall": 1
+          },
+          "potion/all": {
+            "n": 20,
+            "ndcg": 0.9407732438392864,
+            "mrr": 0.9229166666666666,
+            "recall": 1
+          },
+          "full/mixed": {
+            "n": 14,
+            "ndcg": 0.9736378395408184,
+            "mrr": 0.9642857142857143,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 6,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/all": {
+            "n": 20,
+            "ndcg": 0.9815464876785729,
+            "mrr": 0.975,
+            "recall": 1
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "tenant moving out notice",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/fs.realpath_LICENSE"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "paid annual leave entitlement",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "home office allowance",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/moving-checklist.md",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "CV data analyst",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "repair invoice for sink",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lasagna.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "household electricity charges",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "write my resignation notice",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/ignore_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how much did boiler repair cost",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/minimatch_README.md",
+              "Downloads/packages/path-scurry_README.md",
+              "Downloads/packages/glob_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "coverage for broken window seals",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/yallist_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/s-js_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "rules for claiming business meals",
+            "ndcg": 0.4306765580733931,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Downloads/packages/path-scurry_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "cost of fixing my bike",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "how long can I borrow library books",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/exifr_README.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "tenant moving out notice",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-WUFFS",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "paid annual leave entitlement",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/money/car-loan.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Downloads/packages/electron-to-chromium_LICENSE"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "home office allowance",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/lease-agreement.txt",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "CV data analyst",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/node-releases_README.md",
+              "Projects/webapp/README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "repair invoice for sink",
+            "ndcg": 0.5,
+            "top": [
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lasagna.md",
+              "Downloads/packages/@types_node_README.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Downloads/packages/web-tree-sitter_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Documents/health/blood-test-results.txt",
+              "Documents/car/service-record.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/recipes/pancakes.txt",
+              "Documents/travel/japan-itinerary.md",
+              "Downloads/packages/babel-plugin-jsx-dom-expressions_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "household electricity charges",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "write my resignation notice",
+            "ndcg": 0.3154648767857287,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/typescript_LICENSE.txt",
+              "Downloads/packages/baseline-browser-mapping_LICENSE.txt",
+              "Documents/home/lease-agreement.txt",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-WUFFS"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how much did boiler repair cost",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "coverage for broken window seals",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/roof-quote.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/invoice-translation-0042.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "rules for claiming business meals",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/onboarding-notes.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cost of fixing my bike",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Projects/webapp/CHANGELOG.md",
+              "Documents/home/boiler-service-invoice.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/brace-expansion_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "how long can I borrow library books",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/personal/books-to-read.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/caniuse-lite_LICENSE",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Documents/health/vet-max.txt",
+              "Documents/manuals/router-manual.txt",
+              "Downloads/packages/@babel_helper-member-expression-to-functions_README.md",
+              "Downloads/packages/@babel_compat-data_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "tenant moving out notice",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/ignore_LICENSE-MIT",
+              "Downloads/packages/reselect_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "paid annual leave entitlement",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "home office allowance",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/work/expense-policy.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/lease-agreement.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "CV data analyst",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/resume.md",
+              "Documents/work/cover-letter.txt",
+              "Documents/work/meeting-2024-10-07.md",
+              "Projects/webapp/README.md",
+              "Projects/webapp/CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "repair invoice for sink",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cultivating tomatoes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/garden-plan.md",
+              "Documents/recipes/lasagna.md",
+              "Documents/recipes/lentil-curry.txt",
+              "Documents/personal/gift-ideas.txt",
+              "Downloads/packages/path-parse_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "training for a 10k race",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/running-plan.md",
+              "Documents/car/service-record.txt",
+              "Documents/health/blood-test-results.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/recipes/sourdough.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "wedding toast speech",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/wedding-speech.md",
+              "Documents/recipes/pancakes.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/bun-types_docs_README.md",
+              "Documents/travel/japan-itinerary.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "household electricity charges",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/work/expense-policy.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/manuals/dishwasher-manual.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "school policies handbook type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "ACT test preparation type:pdf",
+            "ndcg": 1,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "write my resignation notice",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/lease-agreement.txt",
+              "Downloads/packages/typescript_LICENSE.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how much did boiler repair cost",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "coverage for broken window seals",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/car/service-record.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "hotel in Germany confirmation",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/money/invoice-translation-0042.txt",
+              "Documents/work/expense-policy.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "bill for having my teeth cleaned",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "rules for claiming business meals",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/onboarding-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cost of fixing my bike",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/service-record.txt",
+              "Documents/car/parking-fine.txt",
+              "Projects/webapp/CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "how long can I borrow library books",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/personal/books-to-read.md",
+              "Downloads/packages/@babel_helpers_LICENSE",
+              "Downloads/packages/@babel_parser_LICENSE",
+              "Projects/webapp/LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "instructions for feeding the cat",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Documents/health/vet-max.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          }
+        ]
+      }
+    },
+    "audit": {
+      "before": {
+        "summary": {
+          "words/words": {
+            "n": 7,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "words/mixed": {
+            "n": 12,
+            "ndcg": 0.6929554063988107,
+            "mrr": 0.6770833333333334,
+            "recall": 0.75
+          },
+          "words/meaning": {
+            "n": 1,
+            "ndcg": 0.6309297535714574,
+            "mrr": 0.5,
+            "recall": 1
+          },
+          "words/all": {
+            "n": 20,
+            "ndcg": 0.7973197315178593,
+            "mrr": 0.78125,
+            "recall": 0.85
+          },
+          "potion/words": {
+            "n": 7,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "potion/mixed": {
+            "n": 12,
+            "ndcg": 0.8837830362633,
+            "mrr": 0.84375,
+            "recall": 1
+          },
+          "potion/meaning": {
+            "n": 1,
+            "ndcg": 0.6309297535714574,
+            "mrr": 0.5,
+            "recall": 1
+          },
+          "potion/all": {
+            "n": 20,
+            "ndcg": 0.9118163094365528,
+            "mrr": 0.88125,
+            "recall": 1
+          },
+          "full/words": {
+            "n": 7,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/mixed": {
+            "n": 12,
+            "ndcg": 0.9954039963799656,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 1,
+            "ndcg": 0.6309297535714574,
+            "mrr": 0.5,
+            "recall": 1
+          },
+          "full/all": {
+            "n": 20,
+            "ndcg": 0.9787888855065521,
+            "mrr": 0.975,
+            "recall": 1
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "library renewal reservations",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "doctor note after sickness",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/emoji-regex_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "company equipment return",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "reservation for room with breakfast",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/reselect_README.md",
+              "Downloads/packages/exifr_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "property roof contractor estimate",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "meal reimbursement limit",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "information on looking after Miso",
+            "ndcg": 0.3154648767857287,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/csstype_README.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "book borrowing duration",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/packages/es-errors_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/packages/is-core-module_CHANGELOG.md",
+              "Downloads/packages/function-bind_CHANGELOG.md",
+              "Downloads/packages/hasown_CHANGELOG.md",
+              "Downloads/packages/@jridgewell_sourcemap-codec_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/travel/passport-renewal.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/csstype_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/lru-cache_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/find-babel-config_LICENSE.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "library renewal reservations",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/packages/fs.realpath_LICENSE"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/service-record.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/boiler-service-invoice.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "doctor note after sickness",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/diff_README.md",
+              "Downloads/packages/debug_README.md",
+              "Downloads/packages/emoji-regex_README.md",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "company equipment return",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/packages/lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/personal/books-to-read.md",
+              "Documents/personal/library-card.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "reservation for room with breakfast",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/recipes/pancakes.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/packages/reselect_README.md",
+              "Downloads/packages/exifr_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "property roof contractor estimate",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/lease-agreement.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/router-manual.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/running-plan.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "meal reimbursement limit",
+            "ndcg": 0.6590018048024133,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/work/expense-policy.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/service-record.txt",
+              "Documents/health/dentist.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "information on looking after Miso",
+            "ndcg": 0.3154648767857287,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/s-js_README.md",
+              "Downloads/packages/js-tokens_README.md",
+              "Downloads/packages/csstype_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/health/dentist.txt",
+              "Documents/car/service-record.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "book borrowing duration",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/personal/books-to-read.md",
+              "Documents/work/expense-policy.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/entities_LICENSE",
+              "Downloads/packages/parse5_node_modules_entities_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/packages/@babel_code-frame_LICENSE",
+              "Downloads/packages/@babel_helper-compilation-targets_LICENSE",
+              "Documents/work/meeting-2024-10-07.md",
+              "Downloads/packages/@babel_types_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/packages/lru-cache_LICENSE",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_LICENSE",
+              "Documents/home/boiler-service-invoice.txt",
+              "Downloads/packages/@opentui_core-darwin-arm64_LICENSE-LCMS2"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/study/thesis-draft.md",
+              "Documents/work/expense-policy.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/meeting-2024-10-07.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Downloads/packages/@babel_code-frame_LICENSE",
+              "Downloads/packages/@babel_helper-skip-transparent-expression-wrappers_LICENSE",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/path-scurry_LICENSE.md",
+              "Downloads/packages/seroval_LICENSE",
+              "Downloads/packages/csstype_LICENSE",
+              "Downloads/packages/path-parse_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "library renewal reservations",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/packages/reselect_LICENSE",
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/packages/resolve_LICENSE",
+              "Downloads/packages/@jridgewell_resolve-uri_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/service-record.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Downloads/packages/@babel_helper-replace-supers_LICENSE",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "doctor note after sickness",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/health/blood-test-results.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/health/dental-cleaning-receipt.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "company equipment return",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/work/onboarding-notes.txt",
+              "Documents/car/bicycle-service.txt",
+              "Downloads/packages/reselect_LICENSE",
+              "Downloads/packages/hasown_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt",
+              "Documents/travel/packing-list.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "reservation for room with breakfast",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/pet-sitter.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/onboarding-notes.txt",
+              "Downloads/packages/typescript_LICENSE.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "property roof contractor estimate",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/window-warranty.txt",
+              "Documents/work/performance-review.md",
+              "Documents/home/insurance-claim.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/pancakes.txt",
+              "Downloads/packages/@babel_helper-skip-transparent-expression-wrappers_LICENSE",
+              "Documents/home/window-warranty.txt",
+              "Downloads/packages/@babel_helper-validator-identifier_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "meal reimbursement limit",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/expense-policy.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/home/electricity-bill-2024-11.txt",
+              "Documents/car/bicycle-service.txt",
+              "Downloads/packages/@babel_plugin-syntax-jsx_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "information on looking after Miso",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/jsesc_README.md",
+              "Downloads/packages/minipass_LICENSE",
+              "Downloads/packages/minimatch_LICENSE",
+              "Downloads/packages/minipass_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/window-warranty.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "book borrowing duration",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt",
+              "Documents/study/thesis-draft.md",
+              "Documents/money/budget-notes.txt",
+              "Downloads/packages/@babel_helper-module-imports_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/packages/fs.realpath_LICENSE",
+              "Documents/home/roof-quote.md"
+            ]
+          }
+        ]
+      },
+      "after": {
+        "summary": {
+          "words/words": {
+            "n": 7,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "words/mixed": {
+            "n": 12,
+            "ndcg": 0.75,
+            "mrr": 0.75,
+            "recall": 0.75
+          },
+          "words/meaning": {
+            "n": 1,
+            "ndcg": 0.6309297535714574,
+            "mrr": 0.5,
+            "recall": 1
+          },
+          "words/all": {
+            "n": 20,
+            "ndcg": 0.8315464876785729,
+            "mrr": 0.825,
+            "recall": 0.85
+          },
+          "potion/words": {
+            "n": 7,
+            "ndcg": 0.9472756790816368,
+            "mrr": 0.9285714285714286,
+            "recall": 1
+          },
+          "potion/mixed": {
+            "n": 12,
+            "ndcg": 0.9090925869553647,
+            "mrr": 0.8869047619047619,
+            "recall": 1
+          },
+          "potion/meaning": {
+            "n": 1,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "potion/all": {
+            "n": 20,
+            "ndcg": 0.9270020398517917,
+            "mrr": 0.9071428571428571,
+            "recall": 1
+          },
+          "full/words": {
+            "n": 7,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/mixed": {
+            "n": 12,
+            "ndcg": 0.9458994367125996,
+            "mrr": 0.9333333333333332,
+            "recall": 1
+          },
+          "full/meaning": {
+            "n": 1,
+            "ndcg": 1,
+            "mrr": 1,
+            "recall": 1
+          },
+          "full/all": {
+            "n": 20,
+            "ndcg": 0.9675396620275597,
+            "mrr": 0.96,
+            "recall": 1
+          }
+        },
+        "detail": [
+          {
+            "stage": "words",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "library renewal reservations",
+            "ndcg": 0,
+            "top": []
+          },
+          {
+            "stage": "words",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "doctor note after sickness",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md",
+              "Downloads/packages/emoji-regex_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/packages/diff_README.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "company equipment return",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "reservation for room with breakfast",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "property roof contractor estimate",
+            "ndcg": 0,
+            "top": [
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "meal reimbursement limit",
+            "ndcg": 0,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "information on looking after Miso",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/csstype_README.md",
+              "Downloads/packages/@babel_parser_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "book borrowing duration",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/library-card.txt"
+            ]
+          },
+          {
+            "stage": "words",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/packages/es-errors_CHANGELOG.md",
+              "Downloads/packages/@jridgewell_sourcemap-codec_README.md",
+              "Downloads/packages/hasown_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/packages/is-core-module_CHANGELOG.md",
+              "Downloads/packages/function-bind_CHANGELOG.md",
+              "Downloads/packages/hasown_CHANGELOG.md",
+              "Downloads/packages/@jridgewell_sourcemap-codec_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/travel/passport-renewal.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/csstype_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/lru-cache_README.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_README.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/find-babel-config_LICENSE.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "library renewal reservations",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/packages/fs.realpath_LICENSE",
+              "Downloads/packages/caniuse-lite_LICENSE"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/service-record.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/packages/hasown_CHANGELOG.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "doctor note after sickness",
+            "ndcg": 0.3333333333333333,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/health/dentist.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/health/vet-max.txt",
+              "Documents/health/blood-test-results.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "company equipment return",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/employee-handbook.md",
+              "Downloads/packages/lru-cache_README.md",
+              "Downloads/packages/minimatch_README.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/personal/books-to-read.md",
+              "Documents/personal/library-card.txt",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "reservation for room with breakfast",
+            "ndcg": 0.6309297535714574,
+            "top": [
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/recipes/pancakes.txt",
+              "Documents/travel/lisbon-flights.txt",
+              "Documents/personal/wedding-speech.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/budget-notes.txt",
+              "Documents/home/moving-checklist.md",
+              "Documents/work/onboarding-notes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "property roof contractor estimate",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/lease-agreement.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/home/plumber-visit.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/manuals/router-manual.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/running-plan.md",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "meal reimbursement limit",
+            "ndcg": 0.944847956559586,
+            "top": [
+              "Documents/work/expense-policy.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/service-record.txt",
+              "Documents/health/dentist.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/parking-fine.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "information on looking after Miso",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/ACT-UserHandbook.pdf",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/convert-source-map_README.md",
+              "Downloads/packages/picocolors_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/car/service-record.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "book borrowing duration",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/personal/books-to-read.md",
+              "Documents/work/expense-policy.txt",
+              "Downloads/packages/lru-cache_README.md"
+            ]
+          },
+          {
+            "stage": "potion",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Downloads/packages/entities_LICENSE",
+              "Downloads/packages/parse5_node_modules_entities_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "BL2847",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/work/meeting-2024-10-07.md",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_LICENSE",
+              "Downloads/packages/@babel_code-frame_LICENSE",
+              "Downloads/packages/@babel_helper-compilation-targets_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "L48293",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Downloads/packages/path-scurry_node_modules_lru-cache_LICENSE",
+              "Downloads/packages/function-bind_CHANGELOG.md",
+              "Downloads/packages/@jridgewell_sourcemap-codec_README.md",
+              "Downloads/packages/lru-cache_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "what is the hotel cancellation deadline",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/meeting-2024-10-07.md",
+              "Documents/home/lease-agreement.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "double glazing condensation between panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/home/roof-quote.md",
+              "Documents/home/insurance-claim.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/plumber-visit.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "cat spare key",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/lru-cache_README.md",
+              "Downloads/packages/ignore_LICENSE-MIT",
+              "Downloads/packages/seroval_LICENSE",
+              "Downloads/packages/path-parse_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "library renewal reservations",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/travel/passport-renewal.txt",
+              "Downloads/packages/reselect_LICENSE",
+              "Downloads/packages/resolve_LICENSE",
+              "Downloads/packages/fs.realpath_LICENSE"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "bicycle brake pad replacement",
+            "ndcg": 1,
+            "top": [
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/service-record.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "doctor note after sickness",
+            "ndcg": 0.38685280723454163,
+            "top": [
+              "Documents/health/dentist.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/moving-checklist.md",
+              "Documents/health/blood-test-results.txt",
+              "Documents/work/employee-handbook.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "company equipment return",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/work/onboarding-notes.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/home/moving-checklist.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "training allowance courses books",
+            "ndcg": 1,
+            "top": [
+              "Documents/work/employee-handbook.md",
+              "Documents/personal/library-card.txt",
+              "Documents/personal/books-to-read.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/ACT-UserHandbook.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "reservation for room with breakfast",
+            "ndcg": 1,
+            "top": [
+              "Documents/travel/berlin-hotel.txt",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Documents/home/moving-checklist.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/home/pet-sitter.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "rent due first working day",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/lease-agreement.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/work/onboarding-notes.txt",
+              "Documents/money/tax-notes-2024.md",
+              "Documents/money/budget-notes.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "property roof contractor estimate",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/roof-quote.md",
+              "Documents/home/lease-agreement.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/window-warranty.txt",
+              "Documents/money/car-loan.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "starter bread overnight proof",
+            "ndcg": 1,
+            "top": [
+              "Documents/recipes/sourdough.md",
+              "Documents/recipes/pancakes.txt",
+              "Documents/recipes/lasagna.md",
+              "Documents/health/running-plan.md",
+              "Documents/car/bicycle-service.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "meal reimbursement limit",
+            "ndcg": 0.9639404333166532,
+            "top": [
+              "Documents/work/expense-policy.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/work/employee-handbook.md",
+              "Documents/money/tax-notes-2024.md",
+              "Downloads/SHS Handbook 26-27.pdf"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "gas ignition electrode labour charge",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/car/parking-fine.txt",
+              "Documents/car/bicycle-service.txt",
+              "Documents/car/service-record.txt",
+              "Documents/home/electricity-bill-2024-11.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "information on looking after Miso",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/pet-sitter.txt",
+              "Downloads/packages/minipass_README.md",
+              "Downloads/packages/convert-source-map_README.md",
+              "Downloads/SHS Handbook 26-27.pdf",
+              "Downloads/packages/debug_README.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "proof I paid for dental hygiene",
+            "ndcg": 1,
+            "top": [
+              "Documents/health/dental-cleaning-receipt.txt",
+              "Documents/health/dentist.txt",
+              "Documents/home/plumber-visit.txt",
+              "Documents/home/boiler-service-invoice.txt",
+              "Documents/work/expense-policy.txt"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "book borrowing duration",
+            "ndcg": 1,
+            "top": [
+              "Documents/personal/library-card.txt",
+              "Documents/money/car-loan.txt",
+              "Documents/money/budget-notes.txt",
+              "Documents/personal/gift-ideas.txt",
+              "Documents/money/tax-notes-2024.md"
+            ]
+          },
+          {
+            "stage": "full",
+            "q": "damage guarantee for glass panes",
+            "ndcg": 1,
+            "top": [
+              "Documents/home/window-warranty.txt",
+              "Documents/manuals/dishwasher-manual.txt",
+              "Documents/home/insurance-claim.txt",
+              "Documents/home/roof-quote.md",
+              "Downloads/packages/fs.realpath_LICENSE"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "mainReference": {
+    "words/words": {
+      "n": 16,
+      "ndcg": 0.9279084704023401,
+      "mrr": 0.9270833333333334,
+      "recall": 0.9375
+    },
+    "words/mixed": {
+      "n": 10,
+      "ndcg": 0.85,
+      "mrr": 0.8333333333333334,
+      "recall": 0.9
+    },
+    "words/meaning": {
+      "n": 14,
+      "ndcg": 0.28710632133665015,
+      "mrr": 0.28401360544217685,
+      "recall": 0.35714285714285715
+    },
+    "words/all": {
+      "n": 40,
+      "ndcg": 0.6841506006287636,
+      "mrr": 0.6785714285714286,
+      "recall": 0.725
+    },
+    "potion/words": {
+      "n": 16,
+      "ndcg": 0.9550953961499611,
+      "mrr": 0.9375,
+      "recall": 1
+    },
+    "potion/mixed": {
+      "n": 10,
+      "ndcg": 1,
+      "mrr": 1,
+      "recall": 1
+    },
+    "potion/meaning": {
+      "n": 14,
+      "ndcg": 0.8469092638593588,
+      "mrr": 0.8095238095238095,
+      "recall": 0.9642857142857143
+    },
+    "potion/all": {
+      "n": 40,
+      "ndcg": 0.9284564008107601,
+      "mrr": 0.9083333333333332,
+      "recall": 0.9875
+    },
+    "full/words": {
+      "n": 16,
+      "ndcg": 0.9826845924847076,
+      "mrr": 1,
+      "recall": 0.96875
+    },
+    "full/mixed": {
+      "n": 10,
+      "ndcg": 0.95,
+      "mrr": 0.9333333333333333,
+      "recall": 1
+    },
+    "full/meaning": {
+      "n": 14,
+      "ndcg": 0.7945151873778358,
+      "mrr": 0.75,
+      "recall": 0.9285714285714286
+    },
+    "full/all": {
+      "n": 40,
+      "ndcg": 0.9086541525761256,
+      "mrr": 0.8958333333333333,
+      "recall": 0.9625
+    }
+  }
+}

@@ -1,0 +1,58 @@
+import type { Question } from './corpus.ts'
+/** Kept out of ranking-parameter selection. */
+export const HOLDOUT_FILES: Record<string,string> = {
+ 'Documents/home/boiler-service-invoice.txt': "Gas boiler service invoice\nEngineer replaced the ignition electrode and checked the flue. Labour 90 euros, parts 30 euros. Total paid 120 euros on 4 February. Annual inspection due next February.",
+ 'Documents/home/window-warranty.txt': "Double glazing guarantee\nThe insulated window units have a ten year warranty against failed seals and condensation between the panes. Accidental breakage and damaged handles are excluded. Contact GlassWorks with the installation receipt.",
+ 'Documents/travel/berlin-hotel.txt': "Berlin hotel reservation\nHotel Linden, Berlin. Check in 8 October, check out 11 October. Double room with breakfast. Booking number BL2847. Free cancellation until 6 October. Total accommodation charge 330 euros.",
+ 'Documents/health/dental-cleaning-receipt.txt': "Dental hygiene receipt\nScale and polish performed by Dr Santos on 3 June. The cleaning cost 90 euros. Paid by debit card. This is a receipt, not an appointment confirmation.",
+ 'Documents/work/expense-policy.txt': "Business expenses policy\nSubmit travel receipts to the finance portal within thirty days. Meals are reimbursed up to 40 euros per day. Purchases over 200 euros require manager approval. This policy covers business travel, not personal household budgets.",
+ 'Documents/car/bicycle-service.txt': "Bicycle workshop service\nThe mechanic replaced the rear brake pads, adjusted the gears and lubricated the chain. The cycle repair bill was 65 euros, paid on 14 April. Tyres were in good condition.",
+ 'Documents/personal/library-card.txt': "Public library membership\nCard number L48293. Borrow up to twelve books for three weeks. Renew online unless another reader has reserved the book. Lost cards cost 3 euros to replace.",
+ 'Documents/home/pet-sitter.txt': "Cat sitting instructions\nFeed Miso wet food at 7am and 6pm. Fresh water every day. Keep the balcony door closed. If the cat refuses food, call the vet listed on the fridge. Return the spare key after the weekend.",
+}
+export const HOLDOUT_QUESTIONS: Question[] = [
+ {q:'tenant moving out notice',type:'mixed',relevant:{'Documents/home/lease-agreement.txt':2}},
+ {q:'paid annual leave entitlement',type:'meaning',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'home office allowance',type:'meaning',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'CV data analyst',type:'mixed',relevant:{'Documents/work/resume.md':2}},
+ {q:'repair invoice for sink',type:'mixed',relevant:{'Documents/home/plumber-visit.txt':2}},
+ {q:'cultivating tomatoes',type:'mixed',relevant:{'Documents/home/garden-plan.md':2}},
+ {q:'training for a 10k race',type:'mixed',relevant:{'Documents/health/running-plan.md':2}},
+ {q:'wedding toast speech',type:'mixed',relevant:{'Documents/personal/wedding-speech.md':2}},
+ {q:'household electricity charges',type:'mixed',relevant:{'Documents/home/electricity-bill-2024-11.txt':2}},
+ {q:'school policies handbook type:pdf',type:'mixed',relevant:{'Downloads/SHS Handbook 26-27.pdf':2}},
+ {q:'ACT test preparation type:pdf',type:'mixed',relevant:{'Downloads/ACT-UserHandbook.pdf':2}},
+ {q:'write my resignation notice',type:'meaning',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'how much did boiler repair cost',type:'mixed',relevant:{'Documents/home/boiler-service-invoice.txt':2}},
+ {q:'coverage for broken window seals',type:'mixed',relevant:{'Documents/home/window-warranty.txt':2}},
+ {q:'hotel in Germany confirmation',type:'meaning',relevant:{'Documents/travel/berlin-hotel.txt':2}},
+ {q:'bill for having my teeth cleaned',type:'meaning',relevant:{'Documents/health/dental-cleaning-receipt.txt':2}},
+ {q:'rules for claiming business meals',type:'mixed',relevant:{'Documents/work/expense-policy.txt':2}},
+ {q:'cost of fixing my bike',type:'meaning',relevant:{'Documents/car/bicycle-service.txt':2}},
+ {q:'how long can I borrow library books',type:'mixed',relevant:{'Documents/personal/library-card.txt':2}},
+ {q:'instructions for feeding the cat',type:'mixed',relevant:{'Documents/home/pet-sitter.txt':2}},
+]
+
+/** Final fresh queries, added after the first validation round; not used to choose weights. */
+export const AUDIT_QUESTIONS: Question[] = [
+ {q:'BL2847',type:'words',relevant:{'Documents/travel/berlin-hotel.txt':2}},
+ {q:'L48293',type:'words',relevant:{'Documents/personal/library-card.txt':2}},
+ {q:'what is the hotel cancellation deadline',type:'mixed',relevant:{'Documents/travel/berlin-hotel.txt':2}},
+ {q:'double glazing condensation between panes',type:'words',relevant:{'Documents/home/window-warranty.txt':2}},
+ {q:'cat spare key',type:'words',relevant:{'Documents/home/pet-sitter.txt':2}},
+ {q:'library renewal reservations',type:'mixed',relevant:{'Documents/personal/library-card.txt':2}},
+ {q:'bicycle brake pad replacement',type:'mixed',relevant:{'Documents/car/bicycle-service.txt':2}},
+ {q:'doctor note after sickness',type:'mixed',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'company equipment return',type:'mixed',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'training allowance courses books',type:'mixed',relevant:{'Documents/work/employee-handbook.md':2}},
+ {q:'reservation for room with breakfast',type:'words',relevant:{'Documents/travel/berlin-hotel.txt':2}},
+ {q:'rent due first working day',type:'words',relevant:{'Documents/home/lease-agreement.txt':2}},
+ {q:'property roof contractor estimate',type:'mixed',relevant:{'Documents/home/roof-quote.md':2}},
+ {q:'starter bread overnight proof',type:'mixed',relevant:{'Documents/recipes/sourdough.md':2}},
+ {q:'meal reimbursement limit',type:'mixed',relevant:{'Documents/work/expense-policy.txt':2,'Documents/work/employee-handbook.md':1}},
+ {q:'gas ignition electrode labour charge',type:'words',relevant:{'Documents/home/boiler-service-invoice.txt':2}},
+ {q:'information on looking after Miso',type:'mixed',relevant:{'Documents/home/pet-sitter.txt':2}},
+ {q:'proof I paid for dental hygiene',type:'mixed',relevant:{'Documents/health/dental-cleaning-receipt.txt':2}},
+ {q:'book borrowing duration',type:'meaning',relevant:{'Documents/personal/library-card.txt':2}},
+ {q:'damage guarantee for glass panes',type:'mixed',relevant:{'Documents/home/window-warranty.txt':2}},
+]

@@ -1,133 +1,118 @@
 #!/usr/bin/env bun
-/**
- * How well semantic search answers questions about a small home folder (`semantic-eval/corpus.ts`),
- * against find (keyword search) on the same index.
- *
- *   bun run scripts/semantic-eval.ts                           # Potion, as installed
- *   ZSEARCH_MODELS=~/models/potion bun run scripts/semantic-eval.ts
- *   bun run scripts/semantic-eval.ts --word-vectors=vecs.txt   # a stand-in for Potion
- *   bun run scripts/semantic-eval.ts --json=out.json --verbose
- *   bun run scripts/semantic-eval.ts --granite=0.5 [--no-rerank]
- *
- * Only Potion's pass runs (Granite's is what this measures until it has read the files). With
- * `--granite=SHARE`, Granite's index holds that share of the files too, as while its pass is part
- * way, and the rest are reranked at search time (unless `--no-rerank`); its vectors are the same
- * model's, so this measures how the two indexes are put together, not Granite. Without
- * Potion, `--word-vectors` takes a text file of "word v1 v2 …" lines: a static model that, like
- * Potion, averages its words' vectors.
- *
- * The folder also holds the READMEs, changelogs and licences of the packages in node_modules (in
- * Downloads/packages), as a home folder holds many files that answer none of the questions.
- *
- * Each question is searched in the semantic tab twice: with words only (as before Potion has read
- * anything: "keyword"), and with Potion ("semantic"). Scores per question type and overall:
- * nDCG@10 (graded), MRR, recall@10, and how many of the top five are noise (a file the corpus
- * doesn't list, a licence, a changelog, a long manual or handbook, a Lean proof).
+/** Small retrieval-quality evaluation with real models and package-document distractors.
+ * bun scripts/semantic-eval.ts --stage=all --json=results.json [--pdf-dir=DIR] [--holdout | --audit]
+ * --word-vectors=FILE explicitly substitutes static vectors; reports label this as a stand-in.
+ * --stage=words needs no model. --stage=all runs words, Potion and complete Granite.
  */
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { availableParallelism, tmpdir } from "node:os"
+import { basename, dirname, join, relative, resolve } from "node:path"
 import { Glob } from "bun"
 import { defaultConfig } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
-import type { TextEmbedder } from "../src/semantic/helper.ts"
+import { Embedder, embedToolPath, type TextEmbedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer } from "../src/semantic/indexer.ts"
-import { openSemanticDb, semanticDbPath } from "../src/semantic/store.ts"
-import { installedModel, POTION } from "../src/semantic/model.ts"
+import { GRANITE, installedModel, POTION } from "../src/semantic/model.ts"
 import { PotionEmbedder, PotionModel } from "../src/semantic/potion.ts"
 import { WordVectors } from "./semantic-eval/word-vectors.ts"
 import { FILES, QUESTIONS, type Question } from "./semantic-eval/corpus.ts"
+import { AUDIT_QUESTIONS, HOLDOUT_FILES, HOLDOUT_QUESTIONS } from "./semantic-eval/holdout.ts"
 
-const args = new Map(process.argv.slice(2).map((a) => { const [k, v] = a.replace(/^--/, "").split("="); return [k!, v ?? "true"] as const }))
-const K = 10
-
-function embedder(): { model: TextEmbedder; name: string } {
-  const vectors = args.get("word-vectors")
-  if (vectors) return { model: new WordVectors(vectors), name: `word vectors (${vectors})` }
-  const files = installedModel(POTION)
-  if (!files) throw new Error("Potion is not installed: run `zsearch semantic install`, set ZSEARCH_MODELS, or pass --word-vectors")
-  return { model: new PotionEmbedder(PotionModel.load(files[0]!, files[1]!)), name: POTION.name }
+const args = new Map(process.argv.slice(2).map(a => { const i = a.indexOf("="); return i < 0 ? [a.replace(/^--/, ""), "true"] : [a.slice(2, i), a.slice(i + 1)] }))
+const stage = args.get("stage") ?? (args.has("granite") ? "full" : "all")
+if (!["all", "words", "potion", "full"].includes(stage)) throw new Error("--stage must be all, words, potion or full")
+if (args.has("granite") && !["true", "1"].includes(args.get("granite")!)) throw new Error("Partial Granite is no longer a search stage; use --stage=potion or --stage=full")
+const pdfNames = ["ACT-UserHandbook.pdf", "SHS Handbook 26-27.pdf"]
+const localPath = (value: string) => resolve(value.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"))
+const pdfDir = args.get("pdf-dir") ? localPath(args.get("pdf-dir")!) : null
+const pdfs = pdfDir ? pdfNames.filter(name => existsSync(join(pdfDir, name))) : []
+const source = { ...FILES, ...((args.has("holdout") || args.has("audit")) ? HOLDOUT_FILES : {}) }
+const questions: Question[] = structuredClone(args.has("audit") ? AUDIT_QUESTIONS : args.has("holdout") ? HOLDOUT_QUESTIONS : QUESTIONS)
+if (!args.has("holdout") && !args.has("audit") && pdfs.length) {
+  Object.assign(questions.find(q => q.q === "handbook")!.relevant, Object.fromEntries(pdfs.map(name => [`Downloads/${name}`, 2])))
+  questions.push({ q: "handbook type:pdf", type: "words", relevant: Object.fromEntries(pdfs.map(name => [`Downloads/${name}`, 2])) })
+  if (pdfs.includes(pdfNames[1]!)) questions.push({ q: "SHS handbook", type: "words", relevant: { "Downloads/SHS Handbook 26-27.pdf": 2 } })
+  if (pdfs.includes(pdfNames[0]!)) questions.push({ q: "ACT user handbook", type: "words", relevant: { "Downloads/ACT-UserHandbook.pdf": 2 } })
 }
-
-const isNoise = (path: string) => !(path in FILES) || /(^|\/)(LICENSE|CHANGELOG\.md)$|handbook|manual|\.lean$/.test(path)
+const queries = questions.filter(q => Object.keys(q.relevant).every(path => path in source || pdfs.some(name => path === `Downloads/${name}`)))
+const vectors = args.get("word-vectors") ? localPath(args.get("word-vectors")!) : undefined
+// Resolve model paths before redirecting zsearch's data to the temporary corpus.
+const potionFiles = installedModel(POTION), graniteFiles = installedModel(GRANITE)
+const tool = args.get("tool") ? localPath(args.get("tool")!) : embedToolPath()
+const potionModel = !vectors && potionFiles && stage !== "words" ? PotionModel.load(potionFiles[0]!, potionFiles[1]!) : null
+const makePotion = (): TextEmbedder => vectors ? new WordVectors(vectors) : potionModel ? new PotionEmbedder(potionModel) : (() => { throw new Error("Potion is not installed; install it or set ZSEARCH_MODELS") })()
+const makeGranite = (): TextEmbedder => vectors ? new WordVectors(vectors) : tool && graniteFiles ? new Embedder({ tool, model: graniteFiles[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }) : (() => { throw new Error("Granite or its helper is missing; install them or set --tool and ZSEARCH_MODELS") })()
 
 function scores(q: Question, ranked: string[]) {
-  const dcg = ranked.slice(0, K).reduce((s, p, i) => s + ((2 ** (q.relevant[p] ?? 0) - 1) / Math.log2(i + 2)), 0)
-  const ideal = Object.values(q.relevant).sort((a, b) => b - a).slice(0, K).reduce((s, g, i) => s + (2 ** g - 1) / Math.log2(i + 2), 0)
-  const first = ranked.findIndex((p) => q.relevant[p])
-  const found = Object.keys(q.relevant).filter((p) => ranked.slice(0, K).includes(p)).length
-  return { ndcg: dcg / ideal, mrr: first < 0 ? 0 : 1 / (first + 1), recall: found / Object.keys(q.relevant).length, noise: ranked.slice(0, 5).filter(isNoise).length }
+  const gain = (g: number) => 2 ** g - 1
+  const dcg = ranked.slice(0, 10).reduce((sum, path, i) => sum + gain(q.relevant[path] ?? 0) / Math.log2(i + 2), 0)
+  const ideal = Object.values(q.relevant).sort((a, b) => b - a).slice(0, 10).reduce((sum, g, i) => sum + gain(g) / Math.log2(i + 2), 0)
+  const first = ranked.slice(0, 10).findIndex(path => !!q.relevant[path])
+  return { ndcg: dcg / ideal, mrr: first < 0 ? 0 : 1 / (first + 1), recall: Object.keys(q.relevant).filter(path => ranked.slice(0, 10).includes(path)).length / Object.keys(q.relevant).length }
 }
-
-const home = mkdtempSync(join(tmpdir(), "zsearch-eval-"))
-const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
+const home = mkdtempSync(join(tmpdir(), "zsearch-quality-"))
+const previousData = process.env.ZSEARCH_HOME
+const details: { stage: string; q: string; type: string; ndcg: number; mrr: number; recall: number; top: string[]; hits: unknown[] }[] = []
+const summary: Record<string, { n: number; ndcg: number; mrr: number; recall: number }> = {}
+const embedders: TextEmbedder[] = []
+let db: ReturnType<typeof openDb> | undefined
 try {
-  process.env.HOME = home
-  process.env.ZSEARCH_HOME = join(home, ".zsearch-data")
-  for (const [rel, text] of Object.entries(FILES)) {
-    mkdirSync(dirname(join(home, rel)), { recursive: true })
-    writeFileSync(join(home, rel), text)
-  }
-  const modules = join(import.meta.dir, "..", "node_modules")
+  process.env.ZSEARCH_HOME = join(home, ".data")
+  for (const [path, text] of Object.entries(source)) { mkdirSync(dirname(join(home, path)), { recursive: true }); writeFileSync(join(home, path), text) }
+  for (const name of pdfs) { mkdirSync(join(home, "Downloads"), { recursive: true }); cpSync(join(pdfDir!, name), join(home, "Downloads", name)) }
   let packages = 0
-  for (const file of new Glob("**/{README,CHANGELOG,LICENSE,HISTORY}*").scanSync({ cwd: modules, onlyFiles: true })) {
-    const to = join(home, "Downloads", "packages", file.replaceAll("/", "_"))
-    cpSync(join(modules, file), to)
-    packages++
+  const modules = join(import.meta.dir, "..", "node_modules")
+  for (const file of [...new Glob("**/{README,CHANGELOG,LICENSE,HISTORY}*").scanSync({ cwd: modules, onlyFiles: true })].sort()) {
+    const to = join(home, "Downloads", "packages", file.replaceAll("/", "_")); mkdirSync(dirname(to), { recursive: true }); cpSync(join(modules, file), to); packages++
   }
-  const config = { ...defaultConfig(), roots: ["~"], semantic: { enabled: true, declined: false, code: false } }
-  const db = openDb(join(home, ".zsearch-data", "index.db"))
+  const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads"), join(home, "Projects")], semantic: { enabled: true, declined: false, code: false } }
+  db = openDb(join(home, ".data", "index.db"))
   await new Indexer(db, config, { inProcess: true }).run()
-  const { model, name } = embedder()
-  const run = await new SemanticIndexer(db, config, null, { tier: "fast", embedder: () => model, vectorVersion: 1 }).run()
-  if (run.status !== "done") throw new Error(`the Potion pass ended with ${run.status}: ${run.error ?? ""}`)
-  const granite = Number(args.get("granite") ?? 0)
-  if (granite > 0) {
-    const full = await new SemanticIndexer(db, config, null, { tier: "full", embedder: () => model, vectorVersion: 1 }).run()
-    if (full.status !== "done") throw new Error(`the Granite pass ended with ${full.status}: ${full.error ?? ""}`)
-    // Granite part way: it has read every file whose place in a fixed order falls in its share.
-    const store = openSemanticDb(semanticDbPath(db.filename, "full"))!
-    const files = (store.query("SELECT file FROM files ORDER BY file").values() as number[][]).map((r) => r[0]!)
-    const drop = files.filter((_, i) => (i * 0.618034) % 1 >= granite)
-    store.transaction(() => { for (const f of drop) { store.query("DELETE FROM passages WHERE file = ?").run(f); store.query("DELETE FROM files WHERE file = ?").run(f) } })()
-    store.close()
+  console.log(`${Object.keys(source).length + pdfs.length} files + ${packages} package documents; ${queries.length} ${args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning"} queries; ${vectors ? `stand-in (${basename(vectors)})` : "real models"}`)
+  const run = async (label: string, fast: TextEmbedder | null, full: TextEmbedder | null) => {
+    const engine = new SearchEngine(db!, config)
+    engine.embedQuery = fast ? async (text, tier) => {
+      const model = tier === "full" ? full : fast
+      if (!model) throw new Error("Granite is not active in this stage")
+      return (await model.embedTexts([text])).vectors
+    } : null
+    try {
+      for (const q of queries) {
+        const res = await engine.search(q.q, "semantic", { limit: 50 })
+        if (res.error) throw new Error(res.error)
+        const ranked = res.hits.map(hit => relative(home, hit.path))
+        const s = scores(q, ranked)
+        details.push({ stage: label, q: q.q, type: q.type, ...s, top: ranked.slice(0, 10), hits: res.hits.slice(0, 5).map(h => ({ display: relative(home, h.path), lines: h.lines, score: h.score, sources: h.sources })) })
+        if (args.has("verbose")) console.log(`${label.padEnd(7)} ${q.q.padEnd(38)} ${s.ndcg.toFixed(3)} ${ranked.slice(0, 3).join(", ")}`)
+      }
+      for (const type of ["words", "mixed", "meaning", "all"]) {
+        const rows = details.filter(d => d.stage === label && (type === "all" || d.type === type))
+        if (!rows.length) continue
+        const n = rows.length, avg = (key: "ndcg" | "mrr" | "recall") => rows.reduce((sum, row) => sum + row[key], 0) / n
+        const row = { n, ndcg: avg("ndcg"), mrr: avg("mrr"), recall: avg("recall") }; summary[`${label}/${type}`] = row
+        console.log(`${label.padEnd(7)} ${type.padEnd(7)} n=${n} nDCG@10=${row.ndcg.toFixed(3)} MRR@10=${row.mrr.toFixed(3)} R@10=${row.recall.toFixed(3)}`)
+      }
+    } finally { engine.closeSemantic() }
   }
-  const engine = new SearchEngine(db, config)
-  engine.embedQuery = async (text) => (await model.embedTexts([text])).vectors
-  engine.embedPassages = async (texts) => { const { vectors, dim } = await model.embedTexts(texts); return texts.map((_, i) => vectors.slice(i * dim, (i + 1) * dim)) }
-  engine.rerankMinPassages = args.has("no-rerank") ? Infinity : 0
-  const words = new SearchEngine(db, config)
-  words.embedQuery = null
-
-  const modes = ["keyword", "semantic"] as const
-  const rows: Record<string, Record<string, ReturnType<typeof scores>[]>> = {}
-  const detail: unknown[] = []
-  for (const q of QUESTIONS) {
-    for (const mode of modes) {
-      const res = await (mode === "keyword" ? words : engine).search(q.q, "semantic", { limit: 50 })
-      const ranked = res.hits.map((h) => h.display)
-      const s = scores(q, ranked)
-      for (const type of [q.type, "all"]) ((rows[mode] ??= {})[type] ??= []).push(s)
-      detail.push({ q: q.q, mode, ...s, top: ranked.slice(0, 5) })
-      if (args.has("verbose")) console.log(`${mode.padEnd(8)} ${q.q.padEnd(34)} ndcg ${s.ndcg.toFixed(2)}  ${ranked.slice(0, 5).join(", ")}`)
+  if (stage === "all" || stage === "words") await run("words", null, null)
+  if (stage !== "words") {
+    const indexed = await new SemanticIndexer(db, config, null, { tier: "fast", embedder: makePotion, vectorVersion: 1 }).run()
+    if (indexed.status !== "done") throw new Error(`Potion indexing: ${indexed.status} ${indexed.error ?? ""}`)
+    const fast = makePotion(); embedders.push(fast)
+    if (stage === "all" || stage === "potion") await run("potion", fast, null)
+    if (stage === "all" || stage === "full") {
+      const indexed = await new SemanticIndexer(db, config, tool, { tier: "full", embedder: makeGranite, vectorVersion: 1 }).run()
+      if (indexed.status !== "done") throw new Error(`Granite indexing: ${indexed.status} ${indexed.error ?? ""}`)
+      const full = makeGranite(); embedders.push(full)
+      await run("full", fast, full)
     }
   }
-  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1)
-  console.log(`\n${name}, ${Object.keys(FILES).length} files and ${packages} package documents, ${QUESTIONS.length} questions${granite ? `, Granite part way (${granite})${args.has("no-rerank") ? " without reranking" : ""}` : ""}\n`)
-  console.log("mode      type      n   nDCG@10  MRR    R@10   noise in top 5")
-  const summary: Record<string, unknown> = {}
-  for (const mode of modes) for (const type of ["words", "mixed", "meaning", "all"]) {
-    const xs = rows[mode]![type]!
-    const line = { n: xs.length, ndcg: avg(xs.map((x) => x.ndcg)), mrr: avg(xs.map((x) => x.mrr)), recall: avg(xs.map((x) => x.recall)), noise: avg(xs.map((x) => x.noise)) }
-    summary[`${mode}/${type}`] = line
-    console.log(`${mode.padEnd(9)} ${type.padEnd(8)} ${String(line.n).padStart(3)}   ${line.ndcg.toFixed(3)}   ${line.mrr.toFixed(3)}  ${line.recall.toFixed(3)}  ${line.noise.toFixed(2)}`)
-  }
-  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ model: name, summary, detail }, null, 2))
-  engine.closeSemantic()
-  db.close()
+  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ source: vectors ? "stand-in" : "real models", files: Object.keys(source).length + pdfs.length, packages, set: args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning", summary, detail: details }, null, 2))
 } finally {
-  for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k]; else process.env[k] = v
+  for (const model of embedders) model.close()
+  db?.close()
+  if (previousData === undefined) delete process.env.ZSEARCH_HOME; else process.env.ZSEARCH_HOME = previousData
   rmSync(home, { recursive: true, force: true })
 }
