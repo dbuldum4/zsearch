@@ -87,22 +87,25 @@ describe("DigUp's ranking", () => {
     expect(strongCount([10, 8, 5, 4.9, 1])).toBe(3)
   })
 
-  test("Potion's meaning only orders word matches that tie, and adds its own after them", () => {
+  test("anchored meaning only orders word matches that tie, and adds its own after them", () => {
     // 1 and 2 hold every word, 3 half of them; 4 and 5 none, but Potion finds them close.
     const best = new Map([
-      [1, { z: 0.2, row: 0, tier: "fast" as const }],
-      [2, { z: 1.5, row: 1, tier: "fast" as const }],
-      [3, { z: 6, row: 2, tier: "fast" as const }],
-      [4, { z: 9, row: 3, tier: "fast" as const }],
-      [5, { z: 3, row: 4, tier: "fast" as const }],
-      [6, { z: 1.9, row: 5, tier: "fast" as const }],
+      [1, { z: 0.2, row: 0, anchored: true }],
+      [2, { z: 1.5, row: 1, anchored: true }],
+      [3, { z: 6, row: 2, anchored: true }],
+      [4, { z: 9, row: 3, anchored: true }],
+      [5, { z: 3, row: 4, anchored: true }],
+      [6, { z: 1.9, row: 5, anchored: true }],
     ])
     const coverage = new Map([[1, 1], [2, 1], [3, 0.5]])
     const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
     expect(r.map((x) => x.file)).toEqual([2, 1, 3, 4, 5])
     // Granite's meaning still counts against words.
-    const full = rank({ best: new Map([[4, { z: 9, row: 3, tier: "full" as const }]]), coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    const full = rank({ best: new Map([[4, { z: 9, row: 3, anchored: false }]]), coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
     expect(full[0]!.file).toBe(4)
+    // A file named for the query comes before one that mentions it.
+    const named = rank({ best: new Map(), coverage: new Map([[7, 1], [8, 1]]), named: new Map([[8, 1]]), lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(named.map((x) => x.file)).toEqual([8, 7])
   })
 
   test("Lean files are left to find and fuzzy", () => {

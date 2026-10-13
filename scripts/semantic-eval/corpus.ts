@@ -156,7 +156,7 @@ export const FILES: Record<string, string> = {
     "# Best man speech for João and Sofia",
     "I met João on the first day of university, when he got lost looking for the library and found the bar instead. Sofia, thank you for making him the happiest I have ever seen him. Please raise your glasses to the bride and groom.",
   ),
-  "Documents/personal/gift-ideas.txt": p("Gift ideas", "Mum: a cookbook and a plant for the balcony. Dad: the new biography of the cyclist he likes. Inês: concert tickets. Kids: a board game for rainy days."),
+  "Documents/personal/gift-ideas.txt": p("Gift ideas", "Mum: a cookbook and a plant for the balcony. Dad: the new biography of the cyclist he likes, or the birdwatching handbook he mentioned. Inês: concert tickets. Kids: a board game for rainy days."),
   "Documents/personal/books-to-read.md": p(
     "# Books to read",
     "- a history of the Roman empire\n- the novel about the lighthouse keeper that Rita lent me\n- something on habit building\n- the science fiction trilogy everyone recommends",
@@ -179,6 +179,7 @@ export const FILES: Record<string, string> = {
   "Documents/study/statistics-notes.md": p(
     "# Hypothesis testing",
     "The p-value is the probability of seeing data at least as extreme as observed if the null hypothesis were true. A confidence interval gives a range of plausible values for a parameter. With many comparisons, adjust the significance level (Bonferroni) to keep false positives down.",
+    "Further reading: the Handbook of Statistics, volume 9, and the course slides from week 4.",
   ),
 
   /* ------------------------------------------------------- long noise -- */
@@ -277,6 +278,8 @@ export const QUESTIONS: Question[] = [
   { q: "timing belt", type: "words", relevant: { "Documents/car/service-record.txt": 2 } },
   { q: "vitamin d supplement", type: "words", relevant: { "Documents/health/blood-test-results.txt": 2 } },
   { q: "permission slip museum", type: "words", relevant: { "Documents/personal/school-letter.txt": 2 } },
+  { q: "handbook", type: "words", relevant: { "Documents/work/employee-handbook.md": 2 } },
+  { q: "resume", type: "words", relevant: { "Documents/work/resume.md": 2, "Documents/work/cover-letter.txt": 1 } },
   // Some of the words are there.
   { q: "how much was the plumber", type: "mixed", relevant: { "Documents/home/plumber-visit.txt": 2 } },
   { q: "when does my passport expire", type: "mixed", relevant: { "Documents/travel/passport-renewal.txt": 2 } },

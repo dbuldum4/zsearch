@@ -15,10 +15,11 @@
  * (`SearchEngine.runSemantic`) does the parts that need the main index: words, filters, snippets.
  *
  * Potion's meaning is not good enough to weigh against words: a static model's best passage of a
- * long or unrelated file often stands out as far as the file the words point at. So until Granite
- * has read a file, its words rank it as they would without any model, and Potion only orders the
- * files the words can't tell apart, and adds the files it finds by meaning alone after every word
- * match.
+ * long or unrelated file often stands out as far as the file the words point at. And while Granite
+ * is part way, the files it has read would be scored on meaning and words, and the rest on words
+ * alone. So until Granite has read every file Potion has, words rank the files as they would
+ * without any model, meaning only orders the files the words can't tell apart, and the files found
+ * by meaning alone come after every word match.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -33,6 +34,8 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 export const Z_GATE = 2.0
 /** How much Potion's meaning counts, against words: enough to order files the words tie. */
 const POTION_WEIGHT = 1e-3
+/** What the query's words in a file's name or folders add to its words (all of them: a quarter of one). */
+export const NAME_WEIGHT = 0.25
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -137,10 +140,12 @@ export interface Ranked {
 
 /**
  * Score the candidates: files whose best passage stands out (`best`), and files holding at least
- * half of the query's words (`coverage`, 0..1). A best passage of Potion's (`tier` "fast") orders
- * the word matches that tie, and puts the files with none of the words after them all.
+ * half of the query's words (`coverage`, 0..1). An `anchored` best passage (Potion's, or any while
+ * Granite is part way) only orders the word matches that tie, and puts the files with none of the
+ * words after them all. `named`: the share of the words in a file's name or folders, which puts a
+ * file named for the query ahead of one that mentions it.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number; tier?: "fast" | "full" }>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number; anchored?: boolean }>; named?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
   const zGate = opts.zGate ?? Z_GATE
   const [meaningWeight, wordsWeight] = opts.lookup ? [0.5, opts.wordWeight * 2] : [1, opts.wordWeight]
   const candidates = new Set<number>()
@@ -152,12 +157,13 @@ export function rank(opts: { best: Map<number, { z: number; row: number; tier?: 
     const words = opts.coverage.get(file) ?? 0
     const z = b?.z ?? 0
     let score: number
-    if (b?.tier === "fast") {
-      // As without a model, Potion only ordering the files the words tie (bounded, so that it can't
-      // reach the next word match), and its meaning matches after every word match.
-      score = (words >= 0.5 ? wordsWeight * words ** 1.5 : 0) + POTION_WEIGHT * Math.tanh(z / 4)
+    const name = NAME_WEIGHT * (opts.named?.get(file) ?? 0)
+    if (b?.anchored) {
+      // As without a model, meaning only ordering the files the words tie (bounded, so that it
+      // can't reach the next word match), and its own matches after every word match.
+      score = (words >= 0.5 ? wordsWeight * words ** 1.5 + name : 0) + POTION_WEIGHT * Math.tanh(z / 4)
       if (words < 0.5) { out.push({ file, score, row: b.row, z }); continue }
-    } else score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5
+    } else score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + (words >= 0.5 ? name : 0)
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
@@ -347,15 +353,16 @@ export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (fi
  * Each file's best passage for this query, by how far it stands out (`meaning`): from `full` (Granite's
  * index) for the files it has, from `fast` (Potion's) for the others. A part's `outdated` files
  * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
+ * A part's passages are `anchored` (Potion's are, by default) when words are to rank the files.
  */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex; tier: "fast" | "full" }> {
-  const best = new Map<number, { z: number; row: number; index: VectorIndex; tier: "fast" | "full" }>()
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number>; anchored?: boolean }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }> {
+  const best = new Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }>()
   const ok = new Map<number, boolean>()
   const upgraded = new Set<number>()
   // An image's own vector is stored under its file's negative id.
   const isOutdated = (outdated: Set<number> | undefined, file: number) => !!outdated?.has(Math.abs(file))
   for (const p of parts) if (p.tier === "full") for (const f of p.index.file) if (!isOutdated(p.outdated, f)) upgraded.add(f)
-  for (const { index, z, tier, outdated } of parts) {
+  for (const { index, z, tier, outdated, anchored } of parts) {
     for (let row = 0; row < z.length; row++) {
       const file = index.file[row]!
       if (tier === "fast" && upgraded.has(file)) continue
@@ -364,7 +371,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (b && b.z >= z[row]!) continue
       let allowed = ok.get(file)
       if (allowed === undefined) ok.set(file, (allowed = usable(file)))
-      if (allowed) best.set(file, { z: z[row]!, row, index, tier })
+      if (allowed) best.set(file, { z: z[row]!, row, index, anchored: anchored ?? tier === "fast" })
     }
   }
   return best

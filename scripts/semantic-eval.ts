@@ -7,8 +7,12 @@
  *   ZSEARCH_MODELS=~/models/potion bun run scripts/semantic-eval.ts
  *   bun run scripts/semantic-eval.ts --word-vectors=vecs.txt   # a stand-in for Potion
  *   bun run scripts/semantic-eval.ts --json=out.json --verbose
+ *   bun run scripts/semantic-eval.ts --granite=0.5 [--no-rerank]
  *
- * Only Potion's pass runs (Granite's is what this measures until it has read the files). Without
+ * Only Potion's pass runs (Granite's is what this measures until it has read the files). With
+ * `--granite=SHARE`, Granite's index holds that share of the files too, as while its pass is part
+ * way, and the rest are reranked at search time (unless `--no-rerank`); its vectors are the same
+ * model's, so this measures how the two indexes are put together, not Granite. Without
  * Potion, `--word-vectors` takes a text file of "word v1 v2 …" lines: a static model that, like
  * Potion, averages its words' vectors.
  *
@@ -30,6 +34,7 @@ import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import type { TextEmbedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer } from "../src/semantic/indexer.ts"
+import { openSemanticDb, semanticDbPath } from "../src/semantic/store.ts"
 import { installedModel, POTION } from "../src/semantic/model.ts"
 import { normalize, PotionEmbedder, PotionModel, preTokenize } from "../src/semantic/potion.ts"
 import { FILES, QUESTIONS, type Question } from "./semantic-eval/corpus.ts"
@@ -121,8 +126,21 @@ try {
   const { model, name } = embedder()
   const run = await new SemanticIndexer(db, config, null, { tier: "fast", embedder: () => model, vectorVersion: 1 }).run()
   if (run.status !== "done") throw new Error(`the Potion pass ended with ${run.status}: ${run.error ?? ""}`)
+  const granite = Number(args.get("granite") ?? 0)
+  if (granite > 0) {
+    const full = await new SemanticIndexer(db, config, null, { tier: "full", embedder: () => model, vectorVersion: 1 }).run()
+    if (full.status !== "done") throw new Error(`the Granite pass ended with ${full.status}: ${full.error ?? ""}`)
+    // Granite part way: it has read every file whose place in a fixed order falls in its share.
+    const store = openSemanticDb(semanticDbPath(db.filename, "full"))!
+    const files = (store.query("SELECT file FROM files ORDER BY file").values() as number[][]).map((r) => r[0]!)
+    const drop = files.filter((_, i) => (i * 0.618034) % 1 >= granite)
+    store.transaction(() => { for (const f of drop) { store.query("DELETE FROM passages WHERE file = ?").run(f); store.query("DELETE FROM files WHERE file = ?").run(f) } })()
+    store.close()
+  }
   const engine = new SearchEngine(db, config)
   engine.embedQuery = async (text) => (await model.embedTexts([text])).vectors
+  engine.embedPassages = async (texts) => { const { vectors, dim } = await model.embedTexts(texts); return texts.map((_, i) => vectors.slice(i * dim, (i + 1) * dim)) }
+  engine.rerankMinPassages = args.has("no-rerank") ? Infinity : 0
   const words = new SearchEngine(db, config)
   words.embedQuery = null
 
@@ -140,7 +158,7 @@ try {
     }
   }
   const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1)
-  console.log(`\n${name}, ${Object.keys(FILES).length} files and ${packages} package documents, ${QUESTIONS.length} questions\n`)
+  console.log(`\n${name}, ${Object.keys(FILES).length} files and ${packages} package documents, ${QUESTIONS.length} questions${granite ? `, Granite part way (${granite})${args.has("no-rerank") ? " without reranking" : ""}` : ""}\n`)
   console.log("mode      type      n   nDCG@10  MRR    R@10   noise in top 5")
   const summary: Record<string, unknown> = {}
   for (const mode of modes) for (const type of ["words", "mixed", "meaning", "all"]) {

@@ -454,7 +454,7 @@ export class SearchEngine {
     // each file's best, from Granite's index once Granite has read the file, Potion's until then.
     // While Granite is part way, the files Potion ranks highest that Granite hasn't read yet
     // have their best passage embedded with Granite now (see `rerankWithGranite`).
-    let best = new Map<number, { z: number; row: number; index: VectorIndex; tier: Tier }>()
+    let best = new Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }>()
     const indexes: Partial<Record<Tier, VectorIndex>> = {}
     if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
     else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
@@ -483,7 +483,7 @@ export class SearchEngine {
         const i = usable(file)
         return i !== undefined && this.contentAuthorized(i, check)
       }
-      const parts: { index: VectorIndex; z: Float64Array; tier: Tier; outdated?: Set<number> }[] = []
+      const parts: { index: VectorIndex; z: Float64Array; tier: Tier; outdated?: Set<number>; anchored?: boolean }[] = []
       if (scored.fast) parts.push({ ...scored.fast, z: meaning(scored.fast.scores, scored.fast.index.modality, scored.fast.index.setsScale), tier: "fast" })
       if (scored.full) {
         const { index, scores, vector } = scored.full
@@ -503,8 +503,12 @@ export class SearchEngine {
         const modality = extra ? new Uint8Array(all.length) : index.modality
         const setsScale = extra ? Uint8Array.from({ length: all.length }, (_, i) => (i < scores.length ? index.setsScale[i]! : 0)) : index.setsScale
         const z = meaning(all, modality, setsScale)
-        parts.push({ index, z: z.subarray(0, scores.length), tier: "full", outdated })
-        if (extra) parts.push({ index: extra, z: z.subarray(scores.length), tier: "full" })
+        // Until Granite has read every file Potion has, words rank them all (see `rank`): a file
+        // Granite has read would otherwise weigh its meaning against the words of the rest.
+        const fast = scored.fast?.index
+        const ready = !fast || [...fast.sigs.keys()].every((file) => index.sigs.has(file) && !outdated.has(file))
+        parts.push({ index, z: z.subarray(0, scores.length), tier: "full", outdated, anchored: !ready })
+        if (extra) parts.push({ index: extra, z: z.subarray(scores.length), tier: "full", anchored: !ready })
       }
       if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
       else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Semantic search failed (${errors[0]}). Showing word matches`)
@@ -515,6 +519,7 @@ export class SearchEngine {
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
     const terms = queryTerms(text)
     const coverage = new Map<number, number>()
+    const named = new Map<number, number>()
     const nameMatch = new Set<number>()
     const bodyMatch = new Set<number>()
     const matching = (column: string, term: string, prefix: boolean): number[] => {
@@ -548,7 +553,7 @@ export class SearchEngine {
       const stem = stemOf(term)
       const prefix = stem !== term || (q.typing && t === terms.length - 1)
       const has = new Set<number>()
-      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id) }
+      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
       if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) {
         if (has.has(id)) continue
         const i = usable(id)
@@ -558,13 +563,14 @@ export class SearchEngine {
     })
     // Words after `-` or `!` rule a file out.
     for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
-      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id) }
+      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id); named.delete(id) }
       for (const id of matching("body", n, false)) { best.delete(id); coverage.delete(id) }
     }
 
     const ranked = rank({
       best,
       coverage,
+      named,
       lookup: isLookup(terms),
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),
@@ -589,8 +595,8 @@ export class SearchEngine {
       if (n >= 60) return h
       // Show the passage that matched by meaning; or, matched by words, the lines with them.
       const index = r.row !== null ? best.get(r.file)!.index : undefined
-      // Potion's passage only when the words aren't in the text: its best one may not be about them.
-      const strong = best.get(r.file)?.tier === "fast" ? false : r.z! >= 2
+      // An anchored passage only when the words aren't in the text: it may not be about them.
+      const strong = best.get(r.file)?.anchored ? false : r.z! >= 2
       const useMeaning = r.row !== null && index && (strong || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
       if (useMeaning) {
         const t = this.storedText(r.file)
