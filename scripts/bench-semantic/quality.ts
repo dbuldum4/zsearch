@@ -57,7 +57,7 @@ rmSync(work, { recursive: true, force: true })
 
 const all = [...docs, ...distractors]
 log(`embedding ${evals.length} queries and ${all.length} passages (${docs.length} answers, ${distractors.length} distractors)`)
-const embedder = new Embedder({ tool: TOOL, model: MODEL })
+const embedder = new Embedder({ tool: TOOL, model: MODEL, pooling: "cls" })
 const t = performance.now()
 const P = await embedder.embedTexts(all)
 const Q = await embedder.embedTexts(evals.map((e) => queryPrompt(e.query)))

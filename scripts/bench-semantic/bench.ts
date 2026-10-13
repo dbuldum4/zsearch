@@ -72,7 +72,7 @@ if (!existsSync(home)) {
   }
   log(`corpus: ${c.files} files + ${copies} copies, ${(c.bytes / 1e6).toFixed(1)} MB in ${home}`)
 }
-const config: Config = { ...defaultConfig(), roots: ["~/Documents", "~/Downloads"], semantic: { enabled: true, images: false, code: false } }
+const config: Config = { ...defaultConfig(), roots: ["~/Documents", "~/Downloads"], semantic: { enabled: true, declined: false, code: false } }
 
 async function mainIndex(rebuild = false) {
   const db = openDb(dbPath)
@@ -118,7 +118,7 @@ function baselineFiles(changedSince = 0): { id: number; name: string; mtime: num
 
 async function baseline(files: { id: number; name: string }[]) {
   const db = openDb(dbPath)
-  const embedder = new Embedder({ tool: TOOL!, model: MODEL!, threads: THREADS, extra: ["--no-sort", "--max-seqs", "16", "--batch-tokens", "2048"] })
+  const embedder = new Embedder({ tool: TOOL!, model: MODEL!, pooling: "cls", threads: THREADS, extra: ["--no-sort", "--max-seqs", "16", "--batch-tokens", "2048"] })
   await embedder.info()
   const t = performance.now()
   let passages = 0
@@ -156,7 +156,7 @@ async function ours(extra: string[] = []): Promise<SemanticSummary & { ms: numbe
   const r = await new SemanticIndexer(db, config, TOOL, {
     vectorVersion: 1,
     low: false,
-    embedder: (o) => new Embedder({ ...o, threads: THREADS, tool: TOOL!, model: MODEL!, extra }),
+    embedder: (o) => new Embedder({ ...o, threads: THREADS, tool: TOOL!, model: MODEL!, pooling: "cls", extra }),
   }).run()
   const ms = performance.now() - t
   db.close()

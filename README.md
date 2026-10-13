@@ -88,18 +88,23 @@ Find narrows the candidates through the index first (the literal parts of a rege
 
 ### Search by meaning
 
-Search by meaning runs Google DeepMind's [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) on your computer with [llama.cpp](https://github.com/ggml-org/llama.cpp), and ranks results the way [DigUp](https://github.com/ARahim3/DigUp) does. It is off until you turn it on, and find and fuzzy never need it:
+Search by meaning runs two models on your computer, and ranks results together with your words the way [DigUp](https://github.com/ARahim3/DigUp) does:
+
+- [potion-retrieval-32M](https://huggingface.co/minishlab/potion-retrieval-32M) (Minish Lab, MIT), a [Model2Vec](https://github.com/MinishLab/model2vec) static model: a passage's vector is the average of its word pieces' vectors, so it reads every file within moments of an index update.
+- IBM's [granite-embedding-small-english-r2](https://huggingface.co/ibm-granite/granite-embedding-small-english-r2) (Apache 2.0), a 47M-parameter encoder run with [llama.cpp](https://github.com/ggml-org/llama.cpp), which reads the files again in the background. A file is searched with Granite's vectors once Granite has read it, and with Potion's until then.
+
+The Mac app downloads both when it starts (131 MB and 52 MB), unless you turned search by meaning off; find and fuzzy never need them. In the terminal:
 
 ```sh
-zsearch semantic install      # downloads the model (310 MB; 865 MB with the image encoder on macOS), checks its SHA-256
+zsearch semantic install      # downloads both models, checks their checksums
 zsearch index                 # reads your files for meaning (any index update does, from now on)
 zsearch search -m semantic 'notes from the meeting about the office move'
-zsearch semantic status       # what has been read; `zsearch semantic remove` deletes the model and its index
+zsearch semantic status       # what has been read; `zsearch semantic remove` deletes the models and their indexes
 ```
 
-In the Mac app it is **Settings › Meaning › Download and Turn On**, and the **Meaning** tab next to Find and Fuzzy. The terminal app's third tab is **semantic** (<kbd>Tab</kbd> or <kbd>Alt-3</kbd>).
+In the Mac app it is **Settings › Meaning**, and the **Meaning** tab next to Find and Fuzzy. The terminal app's third tab is **semantic** (<kbd>Tab</kbd> or <kbd>Alt-3</kbd>).
 
-Every passage of every file is scored against the query, and the scores are put on one scale per query: how far a passage stands out from the rest. A file is a result if its best passage stands out clearly, or if it holds at least half of the query's words; it scores its meaning plus a bonus for the words it holds, plus one for the kind of file the query asks for ("photo of…", "…pdf"). A query of codes and numbers (`INV-2024-118`) weighs words double. The preview opens at the passage that matched.
+Every passage of every file is scored against the query, and the scores are put on one scale per query and model: how far a passage stands out from the rest of that model's passages. A file is a result if its best passage stands out clearly, or if it holds at least half of the query's words; it scores its meaning plus a bonus for the words it holds, plus one for the kind of file the query asks for ("…pdf", "slides…"). A query of codes and numbers (`INV-2024-118`) weighs words double. The preview opens at the passage that matched.
 
 Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
 
@@ -109,7 +114,7 @@ Reading files for meaning is the slow part, so zsearch does much less of it than
 - Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
 - Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
 
-With EmbeddingGemma 2 on a GitHub-hosted macOS runner, 188 text files with 10 copies among them:
+With EmbeddingGemma 2, the model earlier versions ran, on a GitHub-hosted macOS runner, 188 text files with 10 copies among them:
 
 | | DigUp's way | zsearch |
 | --- | --- | --- |
@@ -120,7 +125,7 @@ With EmbeddingGemma 2 on a GitHub-hosted macOS runner, 188 text files with 10 co
 The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together leaves each vector within 0.999 cosine of embedding it alone (0.9994 at worst), and on a CPU it is no faster. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
 
 
-It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), as 16-bit floats like DigUp's: 8-bit numbers would take half the space, but with the real model they changed 2.7% of the top ten results.
+It follows the index settings: it runs as part of an index update (so only while zsearch runs, and not at all with **Only when I ask** until you ask), Granite's pass waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in files of their own next to the index (`index.semantic-fast.db` for Potion, `index.semantic.db` for Granite), as 16-bit floats like DigUp's: 8-bit numbers would take half the space, but with the real model they changed 2.7% of the top ten results.
 
 ## Query syntax
 
@@ -257,7 +262,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `indexLoad` | `70` | How much of the computer indexing may use, in percent: of its CPUs and CPU time. Below `100`, indexing also reads and writes the disk at a low priority, so other apps go first |
 | `editor` | `""` | Existing editor executable and fixed arguments (defaults to `$VISUAL` / `$EDITOR`); command interpreters are rejected |
 | `semantic.enabled` | `false` | Read files for meaning when indexing (`zsearch semantic install` turns it on) |
-| `semantic.images` | `true` | ...and photos and screenshots by what they show (macOS, with the image encoder) |
+| `semantic.declined` | `false` | Set by turning search by meaning off: the Mac app then stops downloading its models when it starts |
 | `semantic.code` | `false` | ...and source code and data files |
 | `defaultMode` | `find` | Initial search mode (`find`, `fuzzy` or `semantic`) |
 | `preview` | `true` | Show the preview pane |
@@ -368,7 +373,7 @@ src/
   cli.ts      command line
   serve.ts    the engine over JSON lines, for the Mac app
   mcp/        the engine as an MCP server: protocol (rpc.ts) and tools (server.ts)
-native/embed/  zsearch-embed: EmbeddingGemma 2 on llama.cpp, for search by meaning
+native/embed/  zsearch-embed: the Granite embedding model on llama.cpp, for search by meaning
 macos/        SwiftUI app that runs `zsearch serve` (see macos/README.md)
 ```
 
@@ -402,7 +407,7 @@ The end-to-end tests drive the real app in a pseudo-terminal through [pyte](http
 
 ## Acknowledgements
 
-zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi). Search by meaning adapts [DigUp](https://github.com/ARahim3/DigUp)'s ranking and model runtime (MIT), runs on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and uses Google DeepMind's [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2), downloaded on request; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+zsearch is inspired by [fzf](https://github.com/junegunn/fzf) (matching algorithm and operators), [fff](https://github.com/dmtrKovalenko/fff) (frecency and typo-resistant file search) and [fsearch](https://github.com/noahdunnagan/fsearch) (query filters such as `in:`, `type:`, `size:` and `mtime:`). It is built on [OpenTUI](https://github.com/anomalyco/opentui), [SQLite FTS5](https://sqlite.org/fts5.html) and [unpdf](https://github.com/unjs/unpdf) / pdf.js. The legacy Office test files come from [Apache POI](https://github.com/apache/poi). Search by meaning adapts [DigUp](https://github.com/ARahim3/DigUp)'s ranking and model runtime (MIT), runs on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and uses Minish Lab's potion-retrieval-32M and IBM's granite-embedding-small-english-r2, downloaded when the app starts; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

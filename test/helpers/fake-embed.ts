@@ -15,8 +15,11 @@ const CONCEPTS: Record<string, string> = {
   sunset: "sunset", beach: "sunset",
 }
 
+/** `--weak`: a lesser model (Potion's stand-in), which doesn't know that a sedan is a vehicle. */
+const WEAK = process.argv.includes("--weak")
+
 function dimOf(word: string): number {
-  const w = CONCEPTS[word] ?? word
+  const w = WEAK && word === "sedan" ? word : CONCEPTS[word] ?? word
   let h = 2166136261
   for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w.charCodeAt(i), 16777619)
   return (h >>> 0) % DIM

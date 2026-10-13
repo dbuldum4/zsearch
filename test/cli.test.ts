@@ -37,7 +37,7 @@ describe("argument parsing", () => {
   test("progress lines", () => {
     const base = { scanned: 10, added: 0, updated: 0, removed: 0, contentTotal: 4, contentDone: 1, contentBytes: 2048, contentErrors: 0, current: "", startedAt: 0, elapsedMs: 1500 }
     expect(progressLine({ ...base, phase: "content" })).toContain("Word index: reading contents 25%")
-    expect(progressLine({ ...base, phase: "meaning", meaning: { total: 4, done: 1, embedded: 3, reused: 2 } })).toContain("Meaning index (Gemma) 25%")
+    expect(progressLine({ ...base, phase: "meaning", meaning: { total: 4, done: 1, embedded: 3, reused: 2 } })).toContain("Meaning index (Granite) 25%")
     expect(progressLine({ ...base, phase: "scan" })).toContain("Scanning… 10 items")
   })
 })

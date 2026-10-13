@@ -18,7 +18,7 @@ import { SearchClient } from "./search/client.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/manage.ts"
-import { downloadModel } from "./semantic/model.ts"
+import { downloadModels } from "./semantic/model.ts"
 
 type ServeIn =
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
@@ -33,7 +33,7 @@ type ServeIn =
   | { id?: number; type: "opened"; path: string }
   | { id?: number; type: "estimate"; roots: string[] }
   | { id?: number; type: "semanticStatus" }
-  | { id?: number; type: "semanticInstall"; images?: boolean }
+  | { id?: number; type: "semanticInstall" }
   | { id?: number; type: "semanticCancelInstall" }
   | { id?: number; type: "semanticRemove" }
 
@@ -203,13 +203,13 @@ export async function serve(version: string): Promise<number> {
       case "semanticStatus":
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       case "semanticInstall": {
-        // Search by meaning: the only time zsearch goes online, and only when asked.
-        if (downloading.run) return send({ id, type: "error", error: "the model is already downloading" })
+        // Search by meaning's models: the only time zsearch goes online. The app asks when it
+        // starts, unless search by meaning was turned off.
+        if (downloading.run) return send({ id, type: "error", error: "the models are already downloading" })
         downloading.run = new AbortController()
         try {
-          const media = msg.images !== false && process.platform === "darwin"
-          await downloadModel({ media, signal: downloading.run.signal, onProgress: (d) => send({ type: "semanticDownload", ...d }) })
-          config = validateConfigPatch(loadConfig(), { semantic: { enabled: true, images: media }, defaultMode: "semantic" })
+          await downloadModels({ signal: downloading.run.signal, onProgress: (d) => send({ type: "semanticDownload", ...d }) })
+          config = validateConfigPatch(loadConfig(), { semantic: { enabled: true, declined: false }, defaultMode: "semantic" })
           saveConfig(config)
           client.setConfig(config)
         } catch (err) {
@@ -228,7 +228,7 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "ok" })
       case "semanticRemove": {
         if (index || lockHolder(p.lock) !== null) return send({ id, type: "error", error: "indexing is running: stop it first" })
-        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false }, defaultMode: "find" })
+        config = validateConfigPatch(loadConfig(), { semantic: { enabled: false, declined: true }, defaultMode: "find" })
         saveConfig(config)
         client.setConfig(config)
         removeSemantic(p.db)

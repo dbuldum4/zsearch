@@ -5,7 +5,7 @@ import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 import { PowerGate } from "./power.ts"
 import { embedToolPath } from "../semantic/helper.ts"
-import { SemanticIndexer, semanticAvailable } from "../semantic/indexer.ts"
+import { runSemanticPasses, semanticAvailable } from "../semantic/indexer.ts"
 
 declare const self: Worker
 
@@ -76,15 +76,14 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     } else if (result.phase === "done" && !blocked) {
       const started = Date.now()
       const base = result.elapsedMs
-      const semantic = new SemanticIndexer(db, msg.config, tool, {
+      const summary = await runSemanticPasses(db, msg.config, tool, {
         signal: controller.signal,
         power,
         goNow: () => goNow,
         low: msg.background || undefined,
         onCommit,
-        onProgress: (p) => send({ type: "progress", progress: { ...result, phase: "meaning", current: p.current, waiting: p.waiting, elapsedMs: base + Date.now() - started, meaning: { total: p.total, done: p.done, embedded: p.embedded, reused: p.reused } } }),
+        onProgress: (p) => send({ type: "progress", progress: { ...result, phase: "meaning", current: p.current, waiting: p.waiting, elapsedMs: base + Date.now() - started, meaning: { tier: p.tier, total: p.total, done: p.done, embedded: p.embedded, reused: p.reused } } }),
       })
-      const summary = await semantic.run()
       result.elapsedMs = base + Date.now() - started
       result.meaning = { total: summary.files, done: summary.files, embedded: summary.embedded, reused: summary.reused, error: summary.error }
       if (summary.status === "cancelled") result.phase = "cancelled"

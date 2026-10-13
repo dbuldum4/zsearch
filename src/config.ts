@@ -17,12 +17,12 @@ export interface ContentConfig {
   ocr: boolean
 }
 
-/** Search by meaning (the semantic tab), with a model downloaded on request. See src/semantic. */
+/** Search by meaning (the semantic tab), with two models the app downloads when it starts. See src/semantic. */
 export interface SemanticConfig {
   /** Embed files' text when indexing, so the semantic tab can find them. Needs the model. */
   enabled: boolean
-  /** Also embed what images show (Mac app, with the image encoder downloaded). */
-  images: boolean
+  /** Turned off by someone (`semantic remove`, or the app's settings): the app no longer downloads the models when it starts. */
+  declined: boolean
   /** Also embed source code and data files (off, as in DigUp: keyword search suits them better). */
   code: boolean
 }
@@ -99,7 +99,7 @@ export function defaultConfig(): Config {
     pauseOnBattery: false,
     skipDatasetOcr: true,
     editor: "",
-    semantic: { enabled: false, images: true, code: false },
+    semantic: { enabled: false, declined: false, code: false },
     // Turning search by meaning on (semantic install, in the CLI or the app) makes it
     // the default mode; until then this stays "find".
     defaultMode: "find",

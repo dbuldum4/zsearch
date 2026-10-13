@@ -17,9 +17,11 @@ import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { TopK } from "../util/top-k.ts"
 import { retryClock, type RetryClock } from "../util/clock.ts"
-import { embedToolPath } from "../semantic/helper.ts"
-import { installedModel } from "../semantic/model.ts"
-import { CODE_WORD_WEIGHT, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, WORD_WEIGHT } from "../semantic/search.ts"
+import { availableParallelism } from "node:os"
+import { Embedder, embedToolPath } from "../semantic/helper.ts"
+import { GRANITE, installedModel, POTION, type Tier } from "../semantic/model.ts"
+import { PotionEmbedder, PotionModel } from "../semantic/potion.ts"
+import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, type VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { mainGeneration } from "../semantic/indexer.ts"
 
@@ -339,28 +341,38 @@ export class SearchEngine {
 
   /* ---------------------------------------------------------- semantic -- */
 
-  /** The semantic index, loaded on the first search by meaning. */
-  private vectors: SemanticVectors | null = null
-  private queryEmbedder: QueryEmbedder | null = null
-  /** Turns a query into its vector (tests pass their own). Null: the helper or the model is missing. */
-  embedQuery: ((text: string) => Promise<Float32Array>) | null | undefined
+  /** The semantic indexes (Potion's and Granite's), loaded on the first search by meaning. */
+  private vectors: Partial<Record<Tier, SemanticVectors>> = {}
+  private queryEmbedders: Partial<Record<Tier, QueryEmbedder>> = {}
+  /** Turns a query into one model's vector (tests pass their own). Null: no model is there. */
+  embedQuery: ((text: string, tier: Tier) => Promise<Float32Array>) | null | undefined
 
-  private queryVectorFn(): ((text: string) => Promise<Float32Array>) | null {
-    if (this.embedQuery !== undefined) return this.embedQuery
-    const tool = embedToolPath()
-    const model = installedModel().text
-    if (!tool || !model) return null
-    if (this.queryEmbedder === null) this.queryEmbedder = new QueryEmbedder(tool, model)
-    const embedder = this.queryEmbedder
+  /** The query's vector for a model, or null when that model (or Granite's helper) is missing. */
+  private queryVectorFn(tier: Tier): ((text: string) => Promise<Float32Array>) | null {
+    if (this.embedQuery !== undefined) return this.embedQuery && ((text) => this.embedQuery!(text, tier))
+    let embedder = this.queryEmbedders[tier]
+    if (!embedder) {
+      if (tier === "fast") {
+        const files = installedModel(POTION)
+        if (!files) return null
+        embedder = new QueryEmbedder(() => new PotionEmbedder(PotionModel.load(files[0]!, files[1]!)))
+      } else {
+        const tool = embedToolPath()
+        const files = installedModel(GRANITE)
+        if (!tool || !files) return null
+        embedder = new QueryEmbedder(() => new Embedder({ tool, model: files[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 512, maxSeqs: 1 }))
+      }
+      this.queryEmbedders[tier] = embedder
+    }
     return (text) => embedder.embed(text)
   }
 
-  /** Stop the query helper and let go of the vectors (the worker is shutting down, or idle). */
+  /** Stop the query models and let go of the vectors (the worker is shutting down, or idle). */
   closeSemantic() {
-    this.queryEmbedder?.close()
-    this.queryEmbedder = null
-    this.vectors?.close()
-    this.vectors = null
+    for (const e of Object.values(this.queryEmbedders)) e.close()
+    this.queryEmbedders = {}
+    for (const v of Object.values(this.vectors)) v.close()
+    this.vectors = {}
   }
 
   /**
@@ -383,39 +395,40 @@ export class SearchEngine {
       return i !== undefined && cat.passes(i, q.filters) ? i : undefined
     }
 
-    // Meaning: every passage on this query's scale, each file's best.
-    const best = new Map<number, { z: number; row: number }>()
-    let index = null
+    // Meaning: every passage of each model's index on that model's scale for this query, and
+    // each file's best, from Granite's index once Granite has read the file, Potion's until then.
+    let best = new Map<number, { z: number; row: number; tier: Tier }>()
+    const indexes: Partial<Record<Tier, VectorIndex>> = {}
     if (!this.config.semantic.enabled) notices.push("Search by meaning is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
     else if (!this.config.content.enabled) notices.push("Search by meaning needs file contents, which are off")
     else {
-      this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:"))
-      index = this.vectors.get(mainGeneration(this.db))
-      const embed = this.queryVectorFn()
-      if (!embed) notices.push("Search by meaning needs its model: run `zsearch semantic install`. Showing word matches")
-      else if (!index?.size) notices.push("No files have been read for meaning yet: they are with the next index update")
-      else if (text.trim()) {
+      const generation = mainGeneration(this.db)
+      const parts: { index: VectorIndex; z: Float64Array; tier: Tier }[] = []
+      const errors: string[] = []
+      let models = 0
+      for (const tier of ["full", "fast"] as const) {
+        const embed = this.queryVectorFn(tier)
+        if (!embed) continue
+        models++
+        const vectors = (this.vectors[tier] ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:", tier)))
+        const index = vectors.get(generation)
+        if (!index?.size || !text.trim()) continue
         try {
           const vector = await embed(text)
           if (opts.cancelled?.()) { res.partial = true; res.strategy = "meaning"; return }
-          const scores = index.score(vector)
-          const z = meaning(scores, index.modality, index.setsScale)
-          const authorized = new Map<number, boolean>()
-          for (let row = 0; row < z.length; row++) {
-            const file = index.file[row]!
-            const b = best.get(file)
-            if (b && b.z >= z[row]!) continue
-            let ok = authorized.get(file)
-            if (ok === undefined) {
-              const i = usable(file)
-              authorized.set(file, (ok = i !== undefined && this.contentAuthorized(i, check)))
-            }
-            if (ok) best.set(file, { z: z[row]!, row })
-          }
+          indexes[tier] = index
+          parts.push({ index, z: meaning(index.score(vector), index.modality, index.setsScale), tier })
         } catch (err) {
-          notices.push(`Search by meaning failed (${(err as Error).message}). Showing word matches`)
+          errors.push((err as Error).message)
         }
       }
+      if (!models) notices.push("Search by meaning needs its models: run `zsearch semantic install`. Showing word matches")
+      else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Search by meaning failed (${errors[0]}). Showing word matches`)
+      else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for meaning yet: they are with the next index update")
+      best = bestByFile(parts, (file) => {
+        const i = usable(file)
+        return i !== undefined && this.contentAuthorized(i, check)
+      })
     }
 
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
@@ -494,11 +507,12 @@ export class SearchEngine {
       const h = this.hit(r.file, r.score, sources.length ? sources : ["content"])
       if (n >= 60) return h
       // Show the passage that matched by meaning; or, matched by words, the lines with them.
+      const index = r.row !== null ? indexes[best.get(r.file)!.tier] : undefined
       const useMeaning = r.row !== null && index && (r.z! >= 2 || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
       if (useMeaning) {
         const t = this.storedText(r.file)
         if (t !== null) {
-          h.lines = passageLines(t, index!.start[r.row!]!, index!.end[r.row!]!, pattern)
+          h.lines = passageLines(t, index.start[r.row!]!, index.end[r.row!]!, pattern)
           h.matchCount = h.lines.length
         }
       } else if (pattern && bodyMatch.has(r.file)) {
