@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import type { Database } from "bun:sqlite"
+import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,7 +16,22 @@ import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.t
 import { normalize, PotionEmbedder, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
 import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
+import { cutFile } from "../src/semantic/cut.ts"
+import { SemanticWorkers } from "../src/semantic/workers.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
+
+/** A Potion model's files: this vocabulary and these rows, as 32-bit floats. */
+function writePotion(dir: string, vocab: Record<string, number>, rows: number[][]) {
+  writeFileSync(join(dir, "tokenizer.json"), JSON.stringify({ model: { type: "WordPiece", vocab, continuing_subword_prefix: "##" } }))
+  const table = Float32Array.from(rows.flat())
+  let header = JSON.stringify({ embeddings: { dtype: "F32", shape: [rows.length, rows[0]!.length], data_offsets: [0, table.byteLength] } })
+  header += " ".repeat((8 - (header.length % 8)) % 8)
+  const out = new Uint8Array(8 + header.length + table.byteLength)
+  new DataView(out.buffer).setBigUint64(0, BigInt(header.length), true)
+  out.set(new TextEncoder().encode(header), 8)
+  out.set(new Uint8Array(table.buffer), 8 + header.length)
+  writeFileSync(join(dir, "model.safetensors"), out)
+}
 
 describe("passages", () => {
   const para = (i: number) => `Paragraph ${i} talks about topic number ${i} at some length. `.repeat(6)
@@ -156,6 +171,37 @@ describe("DigUp's ranking", () => {
     expect(vectorValues(packed.subarray(2), 768)).toBeNull()
   })
 
+  test("a version 2 index keeps its vectors, passages and model in the new layout", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-store-"))
+    try {
+      const path = join(dir, "index.semantic.db")
+      const old = new Database(path, { create: true, strict: true })
+      old.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+      old.exec("CREATE TABLE vectors (hash BLOB PRIMARY KEY, vec BLOB NOT NULL) WITHOUT ROWID")
+      old.exec("CREATE TABLE passages (file INTEGER NOT NULL, n INTEGER NOT NULL, hash BLOB NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, PRIMARY KEY (file, n)) WITHOUT ROWID")
+      old.exec("CREATE INDEX passages_hash ON passages(hash)")
+      old.exec("CREATE TABLE files (file INTEGER PRIMARY KEY, sig TEXT NOT NULL, upto INTEGER NOT NULL, total INTEGER NOT NULL, note TEXT)")
+      old.exec("INSERT INTO meta VALUES ('schema_version', '2'), ('fingerprint', 'granite')")
+      const vec = packVector(new Float32Array(768).fill(0.5), 0, 768)
+      const insert = old.prepare("INSERT INTO vectors VALUES (?, ?)")
+      for (let i = 0; i < 50; i++) insert.run(new Uint8Array(16).fill(i), vec)
+      old.exec("INSERT INTO passages VALUES (1, 0, x'00000000000000000000000000000000', 0, 10)")
+      old.exec("INSERT INTO files VALUES (1, 'sig', 1, 1, NULL)")
+      old.close()
+
+      const db = openSemanticDb(path)!
+      expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "3" })
+      expect(db.query("SELECT value FROM meta WHERE key = 'fingerprint'").get()).toEqual({ value: "granite" })
+      const stats = semanticStats(db)
+      expect([stats.vectors, stats.passages, stats.files]).toEqual([50, 1, 1])
+      expect((db.query("SELECT vec FROM vectors WHERE hash = ?").get(new Uint8Array(16).fill(7)) as { vec: Uint8Array }).vec).toEqual(vec)
+      expect(db.query("SELECT sql FROM sqlite_schema WHERE name = 'vectors'").get()).toEqual({ sql: expect.not.stringContaining("WITHOUT ROWID") })
+      db.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test("queries pick semantic mode with s: and keep their words", () => {
     const q = parseQuery("s:red car*")
     expect(q.forcedMode).toBe("semantic")
@@ -180,6 +226,61 @@ describe("Potion", () => {
     expect(out[1]).toBeCloseTo(Math.SQRT1_2, 3)
     expect(model.embedInto("zebra", out)).toBe(0)
     expect([...out]).toEqual([0, 0])
+  })
+
+  test("cuts plain ASCII text as it cuts any other", () => {
+    const wp = new WordPiece({ "[UNK]": 0, un: 1, "##afford": 2, "##able": 3, house: 4, ",": 5, a: 6, "##b": 7, "1": 8, "!": 9, "~": 10, "-": 11 })
+    let seed = 5
+    const alphabet = "ab1 ,!~-\nHOUSE unaffordable house "
+    for (let k = 0; k < 2000; k++) {
+      let text = ""
+      for (let i = 0; i < k % 40; i++) { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; text += alphabet[seed % alphabet.length] }
+      // A tab is not plain ASCII: it takes the general path, which makes a space of it.
+      expect(wp.encode(text)).toEqual(wp.encode(`${text}\t`))
+      expect(wp.encode(text, 3)).toEqual(wp.encode(`${text}\t`, 3))
+    }
+  })
+
+  test("adds up its table with WebAssembly as with JavaScript, and on worker threads as on one", async () => {
+    const vocab: Record<string, number> = { "[UNK]": 0 }
+    const words = ["cat", "dog", "bird", "fish", "tree", "house", "car", "road"]
+    words.forEach((w, i) => (vocab[w] = i + 1))
+    const rows = Array.from({ length: words.length + 1 }, (_, r) => Array.from({ length: 32 }, (_, d) => Math.sin(r * 7 + d)))
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-potion-"))
+    try {
+      writePotion(dir, vocab, rows)
+      const js = PotionModel.of(vocab, rows)
+      const wasm = PotionModel.load(join(dir, "model.safetensors"), join(dir, "tokenizer.json"))
+      const texts = ["cat dog cat", "the bird and the fish", "house car road tree house", "nothing known", "Dog, CAT!"]
+      const a = new Float32Array(32)
+      const b = new Float32Array(32)
+      for (const t of texts) {
+        expect(wasm.embedInto(t, b)).toBe(js.embedInto(t, a))
+        for (let d = 0; d < 32; d++) expect(b[d]!).toBeCloseTo(a[d]!, 5)
+      }
+      const workers = new SemanticWorkers(2, { model: join(dir, "model.safetensors"), tokenizer: join(dir, "tokenizer.json") })
+      try {
+        const many = Array.from({ length: 50 }, (_, i) => texts[i % texts.length]!)
+        const r = await workers.embedTexts(many)
+        expect(r.dim).toBe(32)
+        many.forEach((t, i) => {
+          js.embedInto(t, a)
+          for (let d = 0; d < 32; d++) expect(r.vectors[i * 32 + d]!).toBeCloseTo(a[d]!, 5)
+        })
+        // The workers cut files as the indexer would.
+        const text = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} is about the cat and the dog. `.repeat(8)).join("\n\n")
+        const data = new Uint8Array([0, ...new TextEncoder().encode(text)])
+        const [cut] = await workers.cut([{ data, name: "pets (1).txt", from: 0, cap: 3 }])
+        expect(cut).toEqual(cutFile({ data, name: "pets (1).txt", from: 0, cap: 3 }))
+        expect(cut!.to).toBe(3)
+        expect(cut!.total).toBe(chunkText(text).length)
+        expect(cut!.passages[0]!.prompt.startsWith("pets\n\nParagraph 0")).toBe(true)
+      } finally {
+        workers.close()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("lets the event loop run while it embeds, and stops when killed", async () => {
