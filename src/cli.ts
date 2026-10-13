@@ -28,9 +28,9 @@ import { SearchEngine, type SearchHit } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "./util/text.ts"
 import { embedToolPath } from "./semantic/helper.ts"
-import { runSemanticPasses, semanticAvailable } from "./semantic/indexer.ts"
+import { runSemanticPass, semanticAvailable } from "./semantic/indexer.ts"
 import { removeSemantic, semanticStatus } from "./semantic/manage.ts"
-import { downloadModels, GRANITE, modelBytes, POTION } from "./semantic/model.ts"
+import { downloadModels, GRANITE, modelBytes } from "./semantic/model.ts"
 import { semanticDbPath } from "./semantic/store.ts"
 
 export const VERSION: string = pkg.version
@@ -46,7 +46,7 @@ Usage
   zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
   zsearch duplicates [--json]      find identical indexed files
   zsearch exclude <path>          exclude an indexed file or folder
-  zsearch semantic [status|install|remove]  semantic search (downloads two models)
+  zsearch semantic [status|install|remove]  semantic search (downloads Granite)
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
   zsearch serve                   JSON lines on stdin/stdout (for the macOS app)
@@ -76,7 +76,7 @@ Index options
       --hidden        include hidden files    (--no-hidden to exclude)
       --no-content    index names only
       --rebuild       start from an empty index
-      --semantic-only build only the semantic indexes (Potion, then Granite), from text already read;
+      --semantic-only build only the Granite semantic index, from text already read;
                       skips scanning and the word index
   -q, --quiet         no progress output
 
@@ -388,7 +388,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
         lastLine = Date.now()
       }
     }
-    if (!quiet) console.error(meaningOnly ? "Building the semantic indexes (Potion, then Granite) from text already read…" : `Indexing ${config.roots.join(", ")}…`)
+    if (!quiet) console.error(meaningOnly ? "Building the Granite semantic index from text already read…" : `Indexing ${config.roots.join(", ")}…`)
     const startedAt = Date.now()
     let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
     if (!meaningOnly) result = await new Indexer(db, config, { onProgress: report, signal: controller.signal }).run()
@@ -396,7 +396,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
     if (result.phase === "done" && !blocked) {
       const base = result.elapsedMs
       const started = Date.now()
-      const summary = await runSemanticPasses(db, config, tool, {
+      const summary = await runSemanticPass(db, config, tool, {
         signal: controller.signal,
         onProgress: (m) => report({ ...result, phase: "meaning", current: m.current, waiting: m.waiting, meaning: m }),
       })
@@ -583,15 +583,14 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
         return 0
       }
       console.log(`Semantic search  ${s.enabled ? "on" : "off"}${s.blocked && s.enabled ? ` (not running: ${s.blocked})` : ""}`)
-      console.log(`Models             ${tildify(s.modelDir)}: ${POTION.name} ${s.model.fast ? "ok" : "not downloaded"}, ${GRANITE.name} ${s.model.full ? "ok" : "not downloaded"}`)
-      console.log(`Helper             ${s.helper ? tildify(s.helper) : "not found (scripts/build-embed.sh builds it; the Mac app has it): only Potion runs"}`)
+      console.log(`Model              ${tildify(s.modelDir)}: ${GRANITE.name} ${s.model.ready ? "ok" : "not downloaded"}`)
+      console.log(`Helper             ${s.helper ? tildify(s.helper) : "not found (scripts/build-embed.sh builds it; the Mac app has it); Granite cannot run"}`)
       const line = (i: NonNullable<typeof s.index>) => `${formatCount(i.files)} files, ${formatCount(i.passages)} passages, ${formatCount(i.vectors)} vectors, ${formatBytes(i.bytes)}${i.lastRunAt ? `, updated ${formatAge(i.lastRunAt)}` : ""}${i.error ? `; last error: ${i.error}` : ""}`
-      if (s.fastIndex) console.log(`Potion index       ${line(s.fastIndex)}`)
       if (s.index) console.log(`Granite index      ${line(s.index)}`)
       return 0
     }
     case "install": {
-      console.error(`Downloading ${POTION.name} (${POTION.repository}, ${POTION.license}) and ${GRANITE.name} (${GRANITE.repository}, ${GRANITE.license}), ${formatBytes(modelBytes())}…`)
+      console.error(`Downloading ${GRANITE.name} (${GRANITE.repository}, ${GRANITE.license}), ${formatBytes(modelBytes())}…`)
       const tty = process.stderr.isTTY === true
       const controller = new AbortController()
       const onSignal = () => controller.abort()
@@ -607,7 +606,7 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
       }
       saveConfig({ ...config, defaultMode: "semantic", semantic: { ...config.semantic, enabled: true, declined: false } })
       console.error("Semantic search is on: the next index update reads your files for it (`zsearch index` starts one now).")
-      if (!embedToolPath()) console.error("The embedding helper is missing, so only Potion runs: build it with scripts/build-embed.sh for Granite, or use the Mac app.")
+      if (!embedToolPath()) console.error("Granite needs the embedding helper: build it with scripts/build-embed.sh for Granite, or use the Mac app.")
       return 0
     }
     case "remove":
@@ -649,7 +648,7 @@ function cmdDoctor(): number {
   console.log(`${ok(!!ocr)} OCR ${ocr ?? "not available — images and scanned PDF pages are indexed by name only (the Mac app has it)"}`)
   const sem = semanticStatus(loadConfig(), p.db)
   console.log(`${ok(!!sem.helper)} embedding helper ${sem.helper ?? "not found — semantic search needs zsearch-embed (in the Mac app; scripts/build-embed.sh builds it)"}`)
-  console.log(`${ok(sem.model.fast && sem.model.full)} semantic models ${sem.model.fast && sem.model.full ? tildify(sem.modelDir) : "not downloaded (zsearch semantic install)"}`)
+  console.log(`${ok(sem.model.ready)} semantic model ${sem.model.ready ? tildify(sem.modelDir) : "not downloaded (zsearch semantic install)"}`)
   console.log(`${ok(existsSync(p.db))} index ${tildify(p.db)}`)
   console.log(`${ok(configExists())} config ${tildify(p.configFile)}`)
   return 0

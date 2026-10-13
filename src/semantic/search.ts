@@ -1,9 +1,7 @@
 /**
- * Semantic retrieval over Potion and complete Granite indexes. Passage similarities are
- * normalized per query and model; each file takes its best passage. Long documents and shared
- * boilerplate are discounted. Saved names receive a finite boost, and literal code/ID queries
- * retain their exact-word preference. Complete Granite and Potion contribute complementary
- * evidence; partial Granite is excluded by the engine's readiness check.
+ * Semantic retrieval over a complete, current Granite index. Each file takes its best
+ * normalized passage score, discounted for length and shared boilerplate. Finite name
+ * and word evidence helps find saved files without hiding better semantic answers.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -16,16 +14,9 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 
 /** A file's best passage must stand out by this many deviations to count as a meaning match. */
 export const Z_GATE = 2.0
-/** How much Potion's meaning counts, against words: enough to order files the words tie. */
-const POTION_WEIGHT = 1e-3
 
 /** How results are put together; benchmarks (`scripts/semantic-bench.ts`) try others. */
 export interface Ranking {
-  /**
-   * Comparison pipelines can anchor Potion ("auto"), anchor every stage ("always"),
-   * or combine finite evidence ("never", the production default).
-   */
-  anchor: "auto" | "always" | "never"
   /** "score": by the scores above; "rrf": reciprocal rank fusion of the word and meaning orders. */
   fusion: "score" | "rrf"
   /** What the query's words in a file's name or folders add (all of them). */
@@ -43,11 +34,6 @@ export interface Ranking {
   strength: number
   /** Semantic-stage coverage weight; name evidence is controlled independently. */
   coverage?: number
-  fastCoverage?: number
-  /** Potion has a different score distribution and length penalty. */
-  fastLength?: number
-  /** Share of Potion's score retained when Granite is complete. */
-  fastBlend?: number
   namePower?: number
   /** Weights when there are no model vectors. */
   keywordName?: number
@@ -56,13 +42,12 @@ export interface Ranking {
 }
 
 export const RANKING: Ranking = {
-  anchor: "never", fusion: "score", name: 2, namePower: 2, length: 0.7, shared: 0.5,
-  everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 0.5, fastCoverage: 0,
-  fastLength: 0.15, fastBlend: 0.5,
+  fusion: "score", name: 2, namePower: 2, length: 0.7, shared: 0.5,
+  everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 0.5,
   keywordName: 1, keywordCoverage: 0, keywordEveryWord: 0.5,
 }
 /** DigUp's, as zsearch ranked before. */
-export const DIGUP_RANKING: Ranking = { anchor: "never", fusion: "score", name: 0, length: 0, shared: 0, everyWord: 0, words: 1, meaning: 1, strength: 0 }
+export const DIGUP_RANKING: Ranking = { fusion: "score", name: 0, length: 0, shared: 0, everyWord: 0, words: 1, meaning: 1, strength: 0 }
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -171,39 +156,29 @@ export interface Ranked {
  * half of the query's words (`coverage`, 0..1). Finite name evidence helps find saved files
  * without letting incidental body words overwhelm semantic answers. Keyword-only searches
  * use separate weights; code and number lookups retain their exact-word preference.
- * Alternative benchmark pipelines can still request strict keyword anchoring or rank fusion.
+ * Alternative benchmark pipelines can request rank fusion.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number; anchored?: boolean; gateZ?: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking }): Ranked[] {
   const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
-  const fast = hasMeaning && [...opts.best.values()].every(b => b.anchored)
-  const coverageWeight = opts.lookup ? 1 : hasMeaning ? (fast ? (R.fastCoverage ?? R.coverage ?? 1) : (R.coverage ?? 1)) : (R.keywordCoverage ?? 1)
+  const coverageWeight = opts.lookup ? 1 : hasMeaning ? (R.coverage ?? 1) : (R.keywordCoverage ?? 1)
   const nameWeight = hasMeaning ? R.name : (R.keywordName ?? R.name)
   const namePower = hasMeaning ? (R.namePower ?? 1) : 1
   const everyWord = hasMeaning ? R.everyWord : (R.keywordEveryWord ?? R.everyWord)
   const [meaningWeight, baseWordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
   const wordsWeight = baseWordsWeight * coverageWeight
   const candidates = new Set<number>()
-  for (const [file, b] of opts.best) if ((b.gateZ ?? b.z) >= zGate) candidates.add(file)
+  for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
   if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= 0.5) candidates.add(file)
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
     const words = opts.coverage.get(file) ?? 0
     const z = b?.z ?? 0
-    let score: number
     const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + R.strength * (opts.strength?.get(file) ?? 0)) * R.words
-    const anchored = R.anchor === "always" || (R.anchor === "auto" && !!b?.anchored)
-    if (anchored) {
-      // As without a model, meaning only ordering the files the words tie (bounded, so that it
-      // can't reach the next word match), and its own matches after every word match.
-      score = (words >= 0.5 ? wordsWeight * words ** 1.5 + name : 0) + POTION_WEIGHT * Math.tanh(z / 4)
-      if (words < 0.5) { out.push({ file, score, row: b?.row ?? null, z }); continue }
-    } else {
-      // Finite evidence: no word match automatically outranks a better semantic answer.
-      score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
-    }
+    // No word match automatically outranks a better semantic answer.
+    let score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
@@ -241,8 +216,6 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
-  /** What each file's passages were read from (its size, date and text length), by file id. */
-  sigs = new Map<number, string>()
   private values = new Float16Array(0)
   private distinct = 0
 
@@ -250,13 +223,9 @@ export class VectorIndex {
     return this.file.length
   }
 
-  /** Granite is usable only for a completed, current snapshot covering Potion's files. */
-  isCompleteFor(sequence: string, fast?: VectorIndex): boolean {
-    if (!this.complete || this.completeSeq !== sequence) return false
-    if (!fast) return true
-    if (!fast.complete || fast.completeSeq !== sequence) return false
-    for (const [file, sig] of fast.sigs) if (this.sigs.get(file) !== sig) return false
-    return true
+  /** Granite is usable only after every passage of the current snapshot is committed. */
+  isCompleteFor(sequence: string): boolean {
+    return this.complete && this.completeSeq === sequence
   }
 
   private counts: Map<number, number> | null = null
@@ -330,10 +299,9 @@ export class VectorIndex {
       v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
     })
     v.completeSeq = getMeta(db, "complete_seq")
-    v.complete = !!v.completeSeq
-    for (const [file, sig, upto, total] of db.query("SELECT file, sig, upto, total FROM files").values() as [number, string, number, number][]) {
-      v.sigs.set(file, sig)
-      if (upto < total) v.complete = false
+    v.complete = !!v.completeSeq && keep.length === rows.length
+    for (const [upto, total] of db.query("SELECT upto, total FROM files").values() as [number, number][]) {
+      if (upto !== total) v.complete = false
     }
     return v
   }
@@ -397,7 +365,7 @@ export class SemanticVectors {
       // marker is cleared before indexing and published only after the entire pass.
       if (completeSequence !== undefined && getMeta(this.db, "complete_seq") !== completeSequence) return null
       const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
-      if (this.index && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
+      if (this.index && (completeSequence === undefined || this.index.completeSeq === completeSequence) && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()
       this.db.transaction(() => {
         this.index = hasTables ? VectorIndex.load(this.db!) : new VectorIndex()
@@ -429,44 +397,20 @@ function fileIno(path: string): number | null {
 
 /* ---------------------------------------------------- query vectors -- */
 
-/**
- * Each model's best passage, discounted for document length and boilerplate, then combined
- * per file. `usable` enforces filters and content authorization before evidence is retained.
- * Optional comparison parts can exclude stale files with `outdated`.
- * `anchored` identifies Potion for optional comparison pipelines; production uses finite scores.
- */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number>; anchored?: boolean }[], usable: (file: number) => boolean, ranking: Ranking = RANKING): Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean; gateZ?: number }> {
-  type Best = { z: number; row: number; index: VectorIndex; anchored: boolean; gateZ?: number }
-  const tiers = { fast: new Map<number, Best>(), full: new Map<number, Best>() }
+/** Best authorized passage per file, discounted for length and shared boilerplate. */
+export function bestByFile(index: VectorIndex, z: Float64Array, usable: (file: number) => boolean, ranking: Ranking = RANKING): Map<number, { z: number; row: number; index: VectorIndex }> {
+  const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
   const ok = new Map<number, boolean>()
-  for (const { index, z, tier, outdated, anchored } of parts) {
-    const best = tiers[tier]
-    for (let row = 0; row < z.length; row++) {
-      const file = index.file[row]!
-      if (outdated?.has(Math.abs(file))) continue
-      const b = best.get(file)
-      if (b && b.z >= z[row]!) continue
-      let allowed = ok.get(file)
-      if (allowed === undefined) ok.set(file, (allowed = usable(file)))
-      if (allowed) best.set(file, { z: z[row]!, row, index, anchored: anchored ?? tier === "fast" })
-    }
-    // Discount once after finding this tier's best passage, including shared boilerplate.
+  for (let row = 0; row < z.length; row++) {
+    const file = index.file[row]!
+    const b = best.get(file)
+    if (b && b.z >= z[row]!) continue
+    let allowed = ok.get(file)
+    if (allowed === undefined) ok.set(file, (allowed = usable(file)))
+    if (allowed) best.set(file, { z: z[row]!, row, index })
   }
-  for (const tier of ["fast", "full"] as const) {
-    const length = tier === "fast" ? (ranking.fastLength ?? ranking.length) : ranking.length
-    for (const b of tiers[tier].values()) b.z -= length * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1)) + ranking.shared * Math.log(Math.max(b.index.sharing(b.row), 1))
-  }
-  const best = new Map(tiers.fast)
-  for (const [file, full] of tiers.full) {
-    const fast = tiers.fast.get(file)
-    const blend = Math.max(0, Math.min(1, ranking.fastBlend ?? 0))
-    if (fast && blend) {
-      // One model may recognize a concept the other does not. Preserve its recall gate,
-      // while both models still contribute to the final order.
-      full.gateZ = Math.max(full.z, fast.z)
-      full.z = (1 - blend) * full.z + blend * fast.z
-    }
-    best.set(file, full)
+  for (const [file, b] of best) {
+    b.z -= ranking.length * Math.log(Math.max(index.passages(file), 1)) + ranking.shared * Math.log(Math.max(index.sharing(b.row), 1))
   }
   return best
 }

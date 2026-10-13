@@ -1,8 +1,7 @@
 /**
- * The semantic indexes, one per model: SQLite files of their own next to the main index
- * (`index.semantic.db` for Granite and `index.semantic-fast.db` for Potion, by `index.db`), so the
- * main index's layout, size and compaction never depend on them, and turning semantic search off
- * is deleting two files.
+ * The Granite semantic index is a separate SQLite file (`index.semantic.db`, by
+ * `index.db`), so the main index's layout, size and compaction never depend on it.
+ * Turning semantic search off removes the semantic index and its model.
  *
  *   vectors   one row per distinct passage text (by a hash of exactly what the model read): the
  *             same passage in two files, or in a file renamed, rebuilt or copied, is one vector.
@@ -15,8 +14,8 @@
  * (scripts/bench-semantic/quality.ts).
  *
  * `vectors` is a rowid table with its hashes in an index of their own, not a WITHOUT ROWID table
- * keyed by hash: there, a row is kept whole in the key's B-tree, and a row of 1 KB or more (Potion's
- * 1,024 bytes, Granite's 1,536) is more than a 4 KB page keeps in place, so each one spilled onto
+ * keyed by hash: there, a row is kept whole in the key's B-tree, and a row of 1 KB or more (older float32
+ * vectors) is more than a 4 KB page keeps in place, so each one spilled onto
  * a page of its own. At 100k vectors that made the file 3.4x the size, and checking whether a
  * passage's vector is stored read those pages: 33x slower from a cold disk cache
  * (scripts/bench-semantic/store.ts).
@@ -24,7 +23,6 @@
 import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
-import type { Tier } from "./model.ts"
 
 // 2: vectors went from 8-bit integers with a scale to 16-bit floats.
 // 3: vectors became a rowid table; version 2's are copied over (`migrate`).
@@ -32,9 +30,9 @@ const SCHEMA_VERSION = 3
 
 const VECTORS_TABLE = "(hash BLOB NOT NULL UNIQUE, vec BLOB NOT NULL)"
 
-export function semanticDbPath(dbPath: string, tier: Tier = "full"): string {
+export function semanticDbPath(dbPath: string): string {
   if (dbPath === ":memory:") return ":memory:"
-  return join(dirname(dbPath), `${basename(dbPath).replace(/\.db$/, "")}.semantic${tier === "fast" ? "-fast" : ""}.db`)
+  return join(dirname(dbPath), `${basename(dbPath).replace(/\.db$/, "")}.semantic.db`)
 }
 
 export function openSemanticDb(path: string, opts: { readonly?: boolean } = {}): Database | null {
@@ -57,7 +55,7 @@ function migrate(db: Database) {
     // Only the vectors table changed: copy it, so no vector has to be made again (Granite's take hours).
     // The old table's vectors are scattered over the file, one page each: read through a memory map,
     // the system reads ahead around each one, and the copy and VACUUM take a third of the time
-    // (1.2 GB of Potion vectors: 21 s to 6.6 s from a cold disk cache).
+    // (1.2 GB of vectors: 21 s to 6.6 s from a cold disk cache).
     db.exec("PRAGMA mmap_size = 2147418112")
     try {
       db.transaction(() => {

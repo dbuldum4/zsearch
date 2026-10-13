@@ -1,11 +1,12 @@
 /**
- * A stand-in for Potion where it can't be downloaded: a static model of word vectors from a text
- * file of "word [row] v1 v2 …" lines, which, like Potion, averages its words' vectors (weighted,
+ * A lightweight stand-in for retrieval experiments: a static model of word vectors from a text
+ * file of "word [row] v1 v2 …" lines, which averages its words' vectors (weighted,
  * centred and normalized).
  */
 import { readFileSync } from "node:fs"
 import type { TextEmbedder } from "../../src/semantic/helper.ts"
-import { normalize, preTokenize } from "../../src/semantic/potion.ts"
+const normalize = (text: string) => text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "")
+const preTokenize = (text: string) => text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []
 
 /** Common words a static model's own weights make all but silent. */
 const STOP = new Set("a an the of in on at to for with and or my me i is was are were be it its this that these those from by as do does did how what when where which who why much many there their our your his her he she they we you".split(" "))

@@ -3,29 +3,27 @@ import { rmSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { embedToolPath } from "./helper.ts"
 import { semanticAvailable } from "./indexer.ts"
-import { GRANITE, installedModel, modelBytes, modelsRoot, POTION, removeModels } from "./model.ts"
+import { GRANITE, installedModel, modelBytes, modelsRoot, removeModels } from "./model.ts"
 import { openSemanticDb, semanticDbPath, type SemanticStats, semanticStats } from "./store.ts"
-import type { Tier } from "./model.ts"
 
 export interface SemanticStatus {
   enabled: boolean
-  /** Someone turned it off: the app doesn't download the models when it starts. */
+  /** Someone turned it off: the app doesn't download the model when it starts. */
   declined: boolean
   code: boolean
   /** The embedding helper (Granite's), if there is one. */
   helper: string | null
   modelDir: string
-  /** Which models are downloaded: Potion ("fast") and Granite ("full"). */
-  model: { fast: boolean; full: boolean; fastBytes: number; fullBytes: number }
+  /** Whether Granite is downloaded and its download size. */
+  model: { ready: boolean; bytes: number }
   /** Why indexing for meaning doesn't run, or null when it does. */
   blocked: string | null
-  /** Granite's index, and Potion's. */
+  /** Granite's index. */
   index: SemanticStats | null
-  fastIndex: SemanticStats | null
 }
 
-function stats(dbPath: string, tier: Tier): SemanticStats | null {
-  const path = semanticDbPath(dbPath, tier)
+function stats(dbPath: string): SemanticStats | null {
+  const path = semanticDbPath(dbPath)
   try {
     const db = openSemanticDb(path, { readonly: true })
     if (db) {
@@ -43,18 +41,17 @@ export function semanticStatus(config: Config, dbPath: string): SemanticStatus {
     code: config.semantic.code,
     helper: tool,
     modelDir: modelsRoot(),
-    model: { fast: installedModel(POTION) !== null, full: installedModel(GRANITE) !== null, fastBytes: modelBytes(POTION), fullBytes: modelBytes(GRANITE) },
+    model: { ready: installedModel(GRANITE) !== null, bytes: modelBytes(GRANITE) },
     blocked: semanticAvailable(config, tool),
-    index: stats(dbPath, "full"),
-    fastIndex: stats(dbPath, "fast"),
+    index: stats(dbPath),
   }
 }
 
-/** Delete the models and the semantic indexes (the setting is the caller's to turn off). */
+/** Delete the model and the semantic index (the setting is the caller's to turn off). */
 export function removeSemantic(dbPath: string): void {
   removeModels()
-  for (const tier of ["fast", "full"] as const) {
-    const path = semanticDbPath(dbPath, tier)
+  // Also remove the unused index left by earlier releases.
+  for (const path of [semanticDbPath(dbPath), semanticDbPath(dbPath).replace(/\.db$/, "-fast.db")]) {
     for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true })
   }
 }

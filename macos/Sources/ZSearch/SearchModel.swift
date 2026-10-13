@@ -191,8 +191,8 @@ final class SearchModel {
             Task {
                 await refreshStats()
                 await refreshSemantic()
-                // Semantic search's two models download when the app starts, unless it was turned off.
-                // The semantic-only app always downloads them: it has no other way to search.
+                // Semantic search's Granite model downloads when the app starts, unless it was turned off.
+                // The semantic-only app always downloads it: it has no other way to search.
                 if let s = semantic, !s.declined || Edition.semanticOnly, !s.model.ready { installSemantic() }
                 if ready.firstRun {
                     showSetup = true
@@ -415,7 +415,7 @@ final class SearchModel {
         if case let .semantic(s)? = try? await engine.request(.semanticStatus) { semantic = s }
     }
 
-    /// Download both models and turn semantic search on; the engine then reads the files for it.
+    /// Download Granite and turn semantic search on; the engine then reads the files for it.
     func installSemantic() {
         guard let engine, !downloadingModel else { return }
         downloadingModel = true
@@ -472,7 +472,7 @@ final class SearchModel {
         }
     }
 
-    /// Build only the semantic indexes (Potion, then Granite), from text earlier runs already read:
+    /// Build only the Granite semantic index, from text earlier runs already read:
     /// no scanning and no word-index pass, so testing meaning never re-reads files.
     func buildMeaningIndex() {
         guard let engine, !indexing else { return }

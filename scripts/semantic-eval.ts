@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-/** Small retrieval-quality evaluation with real models and package-document distractors.
- * bun scripts/semantic-eval.ts --stage=all --json=results.json [--pdf-dir=DIR] [--holdout | --audit]
+/** Small retrieval-quality evaluation with real Granite and package-document distractors.
+ * bun scripts/semantic-eval.ts --stage=all --json=results.json [--pdf-dir=DIR] [--holdout | --audit] [--packages=N]
  * --word-vectors=FILE explicitly substitutes static vectors; reports label this as a stand-in.
- * --stage=words needs no model. --stage=all runs words, Potion and complete Granite.
+ * --stage=words needs no model. --stage=all runs words and complete Granite.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
@@ -14,16 +14,17 @@ import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { Embedder, embedToolPath, type TextEmbedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer } from "../src/semantic/indexer.ts"
-import { GRANITE, installedModel, POTION } from "../src/semantic/model.ts"
-import { PotionEmbedder, PotionModel } from "../src/semantic/potion.ts"
+import { GRANITE, installedModel } from "../src/semantic/model.ts"
 import { WordVectors } from "./semantic-eval/word-vectors.ts"
 import { FILES, QUESTIONS, type Question } from "./semantic-eval/corpus.ts"
 import { AUDIT_QUESTIONS, HOLDOUT_FILES, HOLDOUT_QUESTIONS } from "./semantic-eval/holdout.ts"
 
 const args = new Map(process.argv.slice(2).map(a => { const i = a.indexOf("="); return i < 0 ? [a.replace(/^--/, ""), "true"] : [a.slice(2, i), a.slice(i + 1)] }))
 const stage = args.get("stage") ?? (args.has("granite") ? "full" : "all")
-if (!["all", "words", "potion", "full"].includes(stage)) throw new Error("--stage must be all, words, potion or full")
-if (args.has("granite") && !["true", "1"].includes(args.get("granite")!)) throw new Error("Partial Granite is no longer a search stage; use --stage=potion or --stage=full")
+if (!["all", "words", "full"].includes(stage)) throw new Error("--stage must be all, words or full")
+if (args.has("granite") && !["true", "1"].includes(args.get("granite")!)) throw new Error("Partial Granite is no longer a search stage; use --stage=words or --stage=full")
+const packageLimit = Number(args.get("packages") ?? Infinity)
+if (!(packageLimit >= 0) || (Number.isFinite(packageLimit) && !Number.isInteger(packageLimit))) throw new Error("--packages must be a nonnegative integer")
 const pdfNames = ["ACT-UserHandbook.pdf", "SHS Handbook 26-27.pdf"]
 const localPath = (value: string) => resolve(value.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"))
 const pdfDir = args.get("pdf-dir") ? localPath(args.get("pdf-dir")!) : null
@@ -39,10 +40,8 @@ if (!args.has("holdout") && !args.has("audit") && pdfs.length) {
 const queries = questions.filter(q => Object.keys(q.relevant).every(path => path in source || pdfs.some(name => path === `Downloads/${name}`)))
 const vectors = args.get("word-vectors") ? localPath(args.get("word-vectors")!) : undefined
 // Resolve model paths before redirecting zsearch's data to the temporary corpus.
-const potionFiles = installedModel(POTION), graniteFiles = installedModel(GRANITE)
+const graniteFiles = installedModel(GRANITE)
 const tool = args.get("tool") ? localPath(args.get("tool")!) : embedToolPath()
-const potionModel = !vectors && potionFiles && stage !== "words" ? PotionModel.load(potionFiles[0]!, potionFiles[1]!) : null
-const makePotion = (): TextEmbedder => vectors ? new WordVectors(vectors) : potionModel ? new PotionEmbedder(potionModel) : (() => { throw new Error("Potion is not installed; install it or set ZSEARCH_MODELS") })()
 const makeGranite = (): TextEmbedder => vectors ? new WordVectors(vectors) : tool && graniteFiles ? new Embedder({ tool, model: graniteFiles[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }) : (() => { throw new Error("Granite or its helper is missing; install them or set --tool and ZSEARCH_MODELS") })()
 
 function scores(q: Question, ranked: string[]) {
@@ -64,20 +63,16 @@ try {
   for (const name of pdfs) { mkdirSync(join(home, "Downloads"), { recursive: true }); cpSync(join(pdfDir!, name), join(home, "Downloads", name)) }
   let packages = 0
   const modules = join(import.meta.dir, "..", "node_modules")
-  for (const file of [...new Glob("**/{README,CHANGELOG,LICENSE,HISTORY}*").scanSync({ cwd: modules, onlyFiles: true })].sort()) {
+  for (const file of [...new Glob("**/{README,CHANGELOG,LICENSE,HISTORY}*").scanSync({ cwd: modules, onlyFiles: true })].sort().slice(0, packageLimit)) {
     const to = join(home, "Downloads", "packages", file.replaceAll("/", "_")); mkdirSync(dirname(to), { recursive: true }); cpSync(join(modules, file), to); packages++
   }
   const config = { ...defaultConfig(), roots: [join(home, "Documents"), join(home, "Downloads"), join(home, "Projects")], semantic: { enabled: true, declined: false, code: false } }
   db = openDb(join(home, ".data", "index.db"))
   await new Indexer(db, config, { inProcess: true }).run()
-  console.log(`${Object.keys(source).length + pdfs.length} files + ${packages} package documents; ${queries.length} ${args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning"} queries; ${vectors ? `stand-in (${basename(vectors)})` : "real models"}`)
-  const run = async (label: string, fast: TextEmbedder | null, full: TextEmbedder | null) => {
+  console.log(`${Object.keys(source).length + pdfs.length} files + ${packages} package documents; ${queries.length} ${args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning"} queries; ${vectors ? `stand-in (${basename(vectors)})` : "real Granite"}`)
+  const run = async (label: string, model: TextEmbedder | null) => {
     const engine = new SearchEngine(db!, config)
-    engine.embedQuery = fast ? async (text, tier) => {
-      const model = tier === "full" ? full : fast
-      if (!model) throw new Error("Granite is not active in this stage")
-      return (await model.embedTexts([text])).vectors
-    } : null
+    engine.embedQuery = model ? async (text) => (await model.embedTexts([text])).vectors : null
     try {
       for (const q of queries) {
         const res = await engine.search(q.q, "semantic", { limit: 50 })
@@ -96,20 +91,14 @@ try {
       }
     } finally { engine.closeSemantic() }
   }
-  if (stage === "all" || stage === "words") await run("words", null, null)
+  if (stage === "all" || stage === "words") await run("words", null)
   if (stage !== "words") {
-    const indexed = await new SemanticIndexer(db, config, null, { tier: "fast", embedder: makePotion, vectorVersion: 1 }).run()
-    if (indexed.status !== "done") throw new Error(`Potion indexing: ${indexed.status} ${indexed.error ?? ""}`)
-    const fast = makePotion(); embedders.push(fast)
-    if (stage === "all" || stage === "potion") await run("potion", fast, null)
-    if (stage === "all" || stage === "full") {
-      const indexed = await new SemanticIndexer(db, config, tool, { tier: "full", embedder: makeGranite, vectorVersion: 1 }).run()
-      if (indexed.status !== "done") throw new Error(`Granite indexing: ${indexed.status} ${indexed.error ?? ""}`)
-      const full = makeGranite(); embedders.push(full)
-      await run("full", fast, full)
-    }
+    const indexed = await new SemanticIndexer(db, config, tool, { embedder: makeGranite, vectorVersion: 2 }).run()
+    if (indexed.status !== "done") throw new Error(`Granite indexing: ${indexed.status} ${indexed.error ?? ""}`)
+    const model = makeGranite(); embedders.push(model)
+    await run("full", model)
   }
-  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ source: vectors ? "stand-in" : "real models", files: Object.keys(source).length + pdfs.length, packages, set: args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning", summary, detail: details }, null, 2))
+  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ source: vectors ? "stand-in" : "real Granite", files: Object.keys(source).length + pdfs.length, packages, set: args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning", summary, detail: details }, null, 2))
 } finally {
   for (const model of embedders) model.close()
   db?.close()

@@ -210,7 +210,7 @@ export async function serve(version: string): Promise<number> {
       case "semanticInstall": {
         // Semantic search's models: the only time zsearch goes online. The app asks when it
         // starts, unless semantic search was turned off.
-        if (downloading.run) return send({ id, type: "error", error: "the models are already downloading" })
+        if (downloading.run) return send({ id, type: "error", error: "the model is already downloading" })
         downloading.run = new AbortController()
         try {
           await downloadModels({ signal: downloading.run.signal, onProgress: (d) => send({ type: "semanticDownload", ...d }) })

@@ -1,18 +1,7 @@
 /**
- * The two models semantic search runs, each at one pinned revision with its files' sizes and
- * checksums:
- *
- * - potion-retrieval-32M by Minish Lab (MIT), a Model2Vec static model: a passage's vector is the
- *   average of its word pieces' vectors, with no network to run (`potion.ts`). It reads every file
- *   in moments, so semantic search works right after the first index.
- * - IBM's granite-embedding-small-english-r2 (Apache 2.0), a 47M-parameter ModernBERT encoder, in
- *   mradermacher's 8-bit GGUF conversion, run by the llama.cpp helper (`helper.ts`). It reads the
- *   files again in the background, and each file's Granite vectors replace its Potion ones once
- *   they are in.
- *
- * Nothing is bundled: the Mac app downloads both when it starts (unless semantic search was
- * turned off), and `zsearch semantic install` does in the terminal. That is the only network
- * request zsearch makes.
+ * IBM's pinned Granite embedding model, run locally by the llama.cpp helper.
+ * The Mac app downloads it at startup unless semantic search is off; the CLI uses
+ * `zsearch semantic install`. Downloads resume and are checked before installation.
  */
 import { createHash, type Hash } from "node:crypto"
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs"
@@ -29,8 +18,6 @@ export interface ModelFile {
 }
 
 export interface ModelSpec {
-  /** "fast": read first, for every file; "full": read after, and preferred where it is in. */
-  tier: Tier
   name: string
   repository: string
   revision: string
@@ -40,23 +27,7 @@ export interface ModelSpec {
   files: ModelFile[]
 }
 
-export type Tier = "fast" | "full"
-
-export const POTION: ModelSpec = {
-  tier: "fast",
-  name: "potion-retrieval-32M",
-  repository: "minishlab/potion-retrieval-32M",
-  revision: "6fc8051fab2a1e0ee76689cf08c853792ac285e7",
-  license: "MIT",
-  folder: "potion-retrieval-32M",
-  files: [
-    { name: "model.safetensors", bytes: 129_210_456, sha256: "07609e5bd33aad37900b3fd62f4ec96f6daec88ca4d46b9d8b928bfababf6ea0" },
-    { name: "tokenizer.json", bytes: 1_493_150, gitOid: "933e7dae4cd4f6a4c5c9c50c53655819ada3e2b3" },
-  ],
-}
-
 export const GRANITE: ModelSpec = {
-  tier: "full",
   name: "granite-embedding-small-english-r2",
   repository: "mradermacher/granite-embedding-small-english-r2-GGUF",
   revision: "2b2ad9b58f3e382821e007f4c924101d6bd4a5e2",
@@ -65,11 +36,7 @@ export const GRANITE: ModelSpec = {
   files: [{ name: "granite-embedding-small-english-r2.Q8_0.gguf", bytes: 52_445_632, sha256: "d4b41f5d7db712806722103a1c6aba2f0fe99f77740501d6f313c8240641f145" }],
 }
 
-export const MODELS: ModelSpec[] = [POTION, GRANITE]
-
-export function modelSpec(tier: Tier): ModelSpec {
-  return tier === "fast" ? POTION : GRANITE
-}
+export const MODELS: ModelSpec[] = [GRANITE]
 
 export function modelUrl(spec: ModelSpec, file: ModelFile): string {
   return `https://huggingface.co/${spec.repository}/resolve/${spec.revision}/${file.name}`
@@ -118,7 +85,7 @@ export interface DownloadOptions {
 }
 
 /**
- * Download what is missing of both models, Potion first (it is what search uses first), checking
+ * Download the Granite model, checking
  * each file's size and checksum before giving it its name. A `.part` file left by an interrupted
  * download is continued.
  */
@@ -197,7 +164,7 @@ async function downloadFile(spec: ModelSpec, file: ModelFile, final: string, opt
   renameSync(part, final)
 }
 
-/** Bytes to download for both models. */
+/** Bytes to download for the model. */
 export function modelBytes(spec?: ModelSpec): number {
   return (spec ? [spec] : MODELS).reduce((s, m) => s + m.files.reduce((t, f) => t + f.bytes, 0), 0)
 }
@@ -207,4 +174,5 @@ export function removeModels(): void {
   if (process.env.ZSEARCH_MODELS) return
   for (const spec of MODELS) rmSync(join(modelsRoot(), spec.folder), { recursive: true, force: true })
   rmSync(join(modelsRoot(), "embeddinggemma-2"), { recursive: true, force: true })
+  rmSync(join(modelsRoot(), "potion-retrieval-32M"), { recursive: true, force: true })
 }

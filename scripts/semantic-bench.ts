@@ -12,10 +12,10 @@
  * (https://github.com/beir-cellar/beir). Each document becomes a file in a home folder, named by
  * its title (as people name their files), holding its text.
  *
- * Stages: words only (no model), Potion, and complete Granite. Granite's stages run with the real Granite when it and
+ * Stages: words only (no model) and complete Granite. Granite's stages run with the real Granite when it and
  * zsearch-embed are installed (on a Mac with the app: ZSEARCH_EMBED=/Applications/zsearch.app/
  * Contents/Helpers/zsearch-embed); with `--word-vectors` and no Granite, the stand-in plays Granite
- * too (which measures how the indexes are combined, not Granite). `--no-granite` skips Granite.
+ * (which tests the pipeline, not Granite quality). `--no-granite` skips Granite.
  *
  * Scores: nDCG@10, MRR@10 and recall@100, over the queries with judged documents.
  */
@@ -26,10 +26,9 @@ import { defaultConfig } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
-import { embedToolPath, type TextEmbedder } from "../src/semantic/helper.ts"
+import { embedToolPath } from "../src/semantic/helper.ts"
 import { SemanticIndexer } from "../src/semantic/indexer.ts"
-import { GRANITE, installedModel, modelDir, POTION } from "../src/semantic/model.ts"
-import { PotionEmbedder, PotionModel } from "../src/semantic/potion.ts"
+import { GRANITE, installedModel, modelDir } from "../src/semantic/model.ts"
 import { DIGUP_RANKING, RANKING, type Ranking } from "../src/semantic/search.ts"
 import { WordVectors } from "./semantic-eval/word-vectors.ts"
 
@@ -46,9 +45,9 @@ const PIPELINES: Record<string, Ranking> = {
   "this PR + BM25 order": { ...RANKING, strength: 0.5 },
   "this PR, no name boost": { ...RANKING, name: 0 },
   "this PR, no length/shared discount": { ...RANKING, length: 0, shared: 0 },
-  "meaning and words added (DigUp + discounts, names)": { ...RANKING, anchor: "never", everyWord: 0, coverage: 1 },
-  "reciprocal rank fusion": { ...RANKING, anchor: "never", fusion: "rrf" },
-  "meaning only": { ...RANKING, anchor: "never", words: 0 },
+  "meaning and words added (DigUp + discounts, names)": { ...RANKING, everyWord: 0, coverage: 1 },
+  "reciprocal rank fusion": { ...RANKING, fusion: "rrf" },
+  "meaning only": { ...RANKING, words: 0 },
 }
 
 /* ------------------------------------------------------------ the data -- */
@@ -80,14 +79,12 @@ function fileName(doc: Record<string, string>): string {
 
 const vectorsPath = args.get("word-vectors")
 const standIn = vectorsPath ? new WordVectors(vectorsPath) : null
-const potionFiles = installedModel(POTION)
 const tool = embedToolPath()
 const graniteReal = !!(tool && installedModel(GRANITE)) && !args.has("no-granite")
-const potion: TextEmbedder | null = standIn ?? (potionFiles ? new PotionEmbedder(PotionModel.load(potionFiles[0]!, potionFiles[1]!)) : null)
-if (!potion) throw new Error("Potion is not installed: run `zsearch semantic install`, or pass --word-vectors")
-const granite: "real" | "stand-in" | null = graniteReal ? "real" : standIn ? "stand-in" : null
+if (!graniteReal && !standIn && !args.has("no-granite")) throw new Error("Granite or its helper is not installed: run `zsearch semantic install`, build the helper, or pass --word-vectors")
+const granite: "real" | "stand-in" | null = args.has("no-granite") ? null : graniteReal ? "real" : standIn ? "stand-in" : null
 /** Where the installed models are, before the run moves zsearch's data folder. */
-const modelDirs = [POTION, GRANITE].filter((m) => installedModel(m)).map((m) => [m.folder, modelDir(m)] as const)
+const modelDirs = [GRANITE].filter((m) => installedModel(m)).map((m) => [m.folder, modelDir(m)] as const)
 
 /* ------------------------------------------------------------ the runs -- */
 
@@ -139,15 +136,9 @@ try {
       console.log(`${stage.padEnd(26)} ${pipeline.padEnd(52)} nDCG@10 ${row.ndcg.toFixed(3)}  MRR@10 ${row.mrr.toFixed(3)}  R@100 ${row.recall.toFixed(3)}  ${row.ms.toFixed(0)} ms`)
     }
   }
-  const engineWith = (tiers: { fast: boolean; full: boolean }) => {
+  const engineWith = () => {
     const e = new SearchEngine(db, config)
-    if (granite !== "real" || !tiers.full) {
-      // Stand-ins (or Potion alone): one function for both tiers' query vectors.
-      e.embedQuery = async (text, tier) => {
-        if (tier === "full" && !tiers.full) throw new Error("no Granite in this stage")
-        return (await potion.embedTexts([text])).vectors
-      }
-    }
+    if (!graniteReal) e.embedQuery = async (text) => (await standIn!.embedTexts([text])).vectors
     return e
   }
 
@@ -156,25 +147,20 @@ try {
   words.embedQuery = null
   await run("words only", words, { "words only": RANKING, "words only + BM25 order": { ...RANKING, strength: 0.5 }, "words only, no name boost": { ...RANKING, name: 0 } })
 
-  // Potion.
-  t = performance.now()
-  const fast = await new SemanticIndexer(db, config, null, { tier: "fast", embedder: () => potion, vectorVersion: 1 }).run()
-  if (fast.status !== "done") throw new Error(`Potion's pass: ${fast.status} ${fast.error ?? ""}`)
-  console.error(`Potion (${standIn ? "stand-in" : POTION.name}) read them in ${((performance.now() - t) / 1000).toFixed(1)} s`)
-  await run(standIn ? "Potion (stand-in)" : "Potion", engineWith({ fast: true, full: false }), PIPELINES)
-
   if (granite) {
     t = performance.now()
-    const full = await new SemanticIndexer(db, config, graniteReal ? tool : null, graniteReal ? { tier: "full" } : { tier: "full", embedder: () => potion, vectorVersion: 1 }).run()
+    const full = await new SemanticIndexer(db, config, graniteReal ? tool : null, graniteReal ? {} : { embedder: () => standIn!, vectorVersion: 2 }).run()
     if (full.status !== "done") throw new Error(`Granite's pass: ${full.status} ${full.error ?? ""}`)
     console.error(`Granite (${granite}) read them in ${((performance.now() - t) / 1000).toFixed(1)} s`)
     const label = granite === "real" ? "Granite" : "Granite (stand-in)"
-    await run(label, engineWith({ fast: true, full: true }), PIPELINES)
+    const engine = engineWith()
+    try { await run(label, engine, PIPELINES) } finally { engine.closeSemantic() }
 
   }
-  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ dataset, docs: docs.length, queries: queries.length, potion: standIn ? "stand-in" : POTION.name, granite, results }, null, 2))
+  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ dataset, docs: docs.length, queries: queries.length, granite, results }, null, 2))
   db.close()
 } finally {
+  standIn?.close()
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k]; else process.env[k] = v
   if (!args.has("keep")) rmSync(home, { recursive: true, force: true })
 }
