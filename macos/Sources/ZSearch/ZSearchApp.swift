@@ -49,13 +49,15 @@ struct ZSearchApp: App {
                     .disabled(model.selectedHit == nil)
             }
             CommandMenu("Search") {
-                Button("Find in Names and Contents") { model.mode = .find; model.requestSearchFocus() }
-                    .keyboardShortcut("1")
-                Button("Fuzzy Names") { model.mode = .fuzzy; model.requestSearchFocus() }
-                    .keyboardShortcut("2")
-                Button("Semantic") { model.mode = .semantic; model.requestSearchFocus() }
-                    .keyboardShortcut("3")
-                Divider()
+                if !Edition.semanticOnly {
+                    Button("Find in Names and Contents") { model.mode = .find; model.requestSearchFocus() }
+                        .keyboardShortcut("1")
+                    Button("Fuzzy Names") { model.mode = .fuzzy; model.requestSearchFocus() }
+                        .keyboardShortcut("2")
+                    Button("Semantic") { model.mode = .semantic; model.requestSearchFocus() }
+                        .keyboardShortcut("3")
+                    Divider()
+                }
                 Button("Search Field") { model.requestSearchFocus() }
                     .keyboardShortcut("l")
                 Button("Next Result") { model.moveSelection(by: 1) }

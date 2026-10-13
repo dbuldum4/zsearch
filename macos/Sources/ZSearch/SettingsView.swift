@@ -19,6 +19,12 @@ struct SettingsView: View {
     }
 }
 
+/// Which app this is: the full app, or the semantic-only one (`ZSearchSemanticOnly` in its Info.plist),
+/// which has Semantic as its one search mode. Both run the same engine on the same index.
+enum Edition {
+    static let semanticOnly = Bundle.main.object(forInfoDictionaryKey: "ZSearchSemanticOnly") as? Bool ?? false
+}
+
 /// Preferences that belong to the app (not the engine), kept in UserDefaults.
 enum AppSettings {
     static let showMenuBarItem = "showMenuBarItem"
@@ -55,11 +61,13 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Picker("Search mode at start", selection: defaultMode) {
-                Text("Find (exact text, /regex/)").tag(Mode.find)
-                Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
-                if model.config?.semantic?.enabled == true {
-                    Text("Semantic (describe what you're looking for)").tag(Mode.semantic)
+            if !Edition.semanticOnly {
+                Picker("Search mode at start", selection: defaultMode) {
+                    Text("Find (exact text, /regex/)").tag(Mode.find)
+                    Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
+                    if model.config?.semantic?.enabled == true {
+                        Text("Semantic (describe what you're looking for)").tag(Mode.semantic)
+                    }
                 }
             }
             Picker("Preview PDFs as", selection: $pdfShowsText) {
@@ -165,8 +173,11 @@ private struct SemanticSettings: View {
                             Button("Build Semantic Index Only") { model.buildMeaningIndex() }
                                 .disabled(model.indexing || s.blocked != nil)
                             Spacer()
-                            Button("Turn Off and Delete Models…", role: .destructive) { confirmRemove = true }
-                                .disabled(model.indexing)
+                            // The semantic-only app downloads the models again at its next start.
+                            if !Edition.semanticOnly {
+                                Button("Turn Off and Delete Models…", role: .destructive) { confirmRemove = true }
+                                    .disabled(model.indexing)
+                            }
                         }
                         Text("Builds only the semantic indexes from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
                             .font(.caption)

@@ -86,15 +86,17 @@ struct SearchBar: View {
                     model.query = ""
                     return .handled
                 }
-            Picker("Mode", selection: $model.mode) {
-                Text("Find").tag(Mode.find)
-                Text("Fuzzy").tag(Mode.fuzzy)
-                Text("Semantic").tag(Mode.semantic)
+            if !Edition.semanticOnly {
+                Picker("Mode", selection: $model.mode) {
+                    Text("Find").tag(Mode.find)
+                    Text("Fuzzy").tag(Mode.fuzzy)
+                    Text("Semantic").tag(Mode.semantic)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Semantic: files about what you describe (turn it on in Settings › Semantic).")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Semantic: files about what you describe (turn it on in Settings › Semantic).")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

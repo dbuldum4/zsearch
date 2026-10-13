@@ -1,7 +1,8 @@
 #!/bin/bash
 # Install a GitHub-authenticated preview, without Apple credentials or quarantine.
 # Requires a current GitHub CLI (brew install gh); no GitHub login is needed.
-# Usage: install-preview.sh <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]
+# Usage: install-preview.sh <main|PR-number> [--semantic] [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]
+# --semantic installs zsearch Semantic.app, the app with Semantic as its only search mode, instead.
 set -euo pipefail
 umask 077
 
@@ -14,13 +15,15 @@ DEST=${ZSEARCH_APP_DIR:-$HOME/Applications}
 WHICH=${1:-}
 case "$WHICH" in
   main) CHANNEL=main; REF=refs/heads/main; EVENT=push ;;
-  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]" ;;
+  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--semantic] [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]" ;;
   *) CHANNEL="pr-$WHICH"; REF="refs/pull/$WHICH/merge"; EVENT=pull_request ;;
 esac
 shift
 BUILD=; ALLOW_DOWNGRADE=0; OPEN=0
+APP=zsearch.app; APP_ID=io.github.dbuldum4.zsearch; PROCESS=ZSearch; VARIANT=
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --semantic) APP="zsearch Semantic.app"; APP_ID=io.github.dbuldum4.zsearch.semantic; PROCESS=ZSearchSemantic; VARIANT=-semantic; shift ;;
     --open) OPEN=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --build) [ "$#" -ge 2 ] || die "--build needs RUN_ID-ATTEMPT"; BUILD=$2; shift 2 ;;
@@ -44,10 +47,10 @@ cleanup() {
   local status=$1 keep=0
   trap - EXIT HUP INT TERM
   if [ -n "$STAGE" ] && [ "$COMMITTED" = 0 ] && [ -d "$STAGE/previous.app" ]; then
-    if [ -e "$DEST/zsearch.app" ] || [ -L "$DEST/zsearch.app" ]; then
-      mv "$DEST/zsearch.app" "$STAGE/failed.app" || keep=1
+    if [ -e "$DEST/$APP" ] || [ -L "$DEST/$APP" ]; then
+      mv "$DEST/$APP" "$STAGE/failed.app" || keep=1
     fi
-    if [ "$keep" = 0 ]; then mv "$STAGE/previous.app" "$DEST/zsearch.app" || keep=1; fi
+    if [ "$keep" = 0 ]; then mv "$STAGE/previous.app" "$DEST/$APP" || keep=1; fi
     if [ "$keep" = 1 ]; then
       echo "error: previous app retained at $STAGE/previous.app; restore it manually" >&2
     fi
@@ -158,12 +161,12 @@ mkdir -p "$DEST"
 DEST=$(cd "$DEST" && pwd -P)
 if mkdir "$DEST/.zsearch-install-lock" 2>/dev/null; then LOCK="$DEST/.zsearch-install-lock";
 else die "another installation may be running; if not, remove $DEST/.zsearch-install-lock"; fi
-[ ! -L "$DEST/zsearch.app" ] || die "refusing to replace a symlinked app"
+[ ! -L "$DEST/$APP" ] || die "refusing to replace a symlinked app"
 STATE_DIR="$DEST/.zsearch-preview-state"
 [ ! -L "$STATE_DIR" ] || die "refusing symlinked installation state"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
-STATE="$STATE_DIR/$CHANNEL"
+STATE="$STATE_DIR/$CHANNEL$VARIANT"
 OLD_NUMBER=0; OLD_ATTEMPT=0; OLD_DIGEST=
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   [ -f "$STATE" ] && [ ! -L "$STATE" ] || die "invalid installation state"
@@ -182,34 +185,34 @@ fi
 mkdir -p "$MOUNT"
 hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT" "$TMP/zsearch.dmg"
 MOUNTED=1
-[ -d "$MOUNT/zsearch.app" ] && [ ! -L "$MOUNT/zsearch.app" ] || die "missing app bundle"
-codesign --verify --deep --strict "$MOUNT/zsearch.app"
+[ -d "$MOUNT/$APP" ] && [ ! -L "$MOUNT/$APP" ] || die "missing app bundle${VARIANT:+ (this build has no $APP)}"
+codesign --verify --deep --strict "$MOUNT/$APP"
 STAGE=$(mktemp -d "$DEST/.zsearch-stage.XXXXXX")
-ditto --noqtn "$MOUNT/zsearch.app" "$STAGE/zsearch.app"
-codesign --verify --deep --strict "$STAGE/zsearch.app"
-[ "$(plutil -extract ZSearchCommit raw -o - "$STAGE/zsearch.app/Contents/Info.plist")" = "$COMMIT" ] || die "app commit does not match authenticated manifest"
-[ "$(plutil -extract CFBundleIdentifier raw -o - "$STAGE/zsearch.app/Contents/Info.plist")" = io.github.dbuldum4.zsearch ] || die "wrong app identity"
+ditto --noqtn "$MOUNT/$APP" "$STAGE/$APP"
+codesign --verify --deep --strict "$STAGE/$APP"
+[ "$(plutil -extract ZSearchCommit raw -o - "$STAGE/$APP/Contents/Info.plist")" = "$COMMIT" ] || die "app commit does not match authenticated manifest"
+[ "$(plutil -extract CFBundleIdentifier raw -o - "$STAGE/$APP/Contents/Info.plist")" = "$APP_ID" ] || die "wrong app identity"
 # The user explicitly chooses no quarantine for these authenticated previews.
 # Preserve other extended attributes; verify removal even if an attribute was absent.
-xattr -dr com.apple.quarantine "$STAGE/zsearch.app" 2>/dev/null || true
-ATTRS=$(xattr -r "$STAGE/zsearch.app") || die "could not inspect app attributes"
+xattr -dr com.apple.quarantine "$STAGE/$APP" 2>/dev/null || true
+ATTRS=$(xattr -r "$STAGE/$APP") || die "could not inspect app attributes"
 case "$ATTRS" in *com.apple.quarantine*) die "could not remove quarantine" ;; esac
 
-if pgrep -xq ZSearch; then
-  if ! osascript -e 'tell application id "io.github.dbuldum4.zsearch" to quit' >/dev/null; then
-    die "could not ask zsearch to quit; quit it and run the installer again"
+if pgrep -xq "$PROCESS"; then
+  if ! osascript -e "tell application id \"$APP_ID\" to quit" >/dev/null; then
+    die "could not ask ${APP%.app} to quit; quit it and run the installer again"
   fi
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -xq ZSearch || break
+    pgrep -xq "$PROCESS" || break
     sleep 0.5
   done
-  if pgrep -xq ZSearch; then die "zsearch is still running; quit it before installing"; fi
+  if pgrep -xq "$PROCESS"; then die "${APP%.app} is still running; quit it before installing"; fi
 fi
-if [ -e "$DEST/zsearch.app" ]; then
-  [ -d "$DEST/zsearch.app" ] || die "installed app path is not a directory"
-  mv "$DEST/zsearch.app" "$STAGE/previous.app"
+if [ -e "$DEST/$APP" ]; then
+  [ -d "$DEST/$APP" ] || die "installed app path is not a directory"
+  mv "$DEST/$APP" "$STAGE/previous.app"
 fi
-mv "$STAGE/zsearch.app" "$DEST/zsearch.app"
+mv "$STAGE/$APP" "$DEST/$APP"
 if [ "$NUMBER" -gt "$OLD_NUMBER" ] || { [ "$NUMBER" -eq "$OLD_NUMBER" ] && [ "$ATTEMPT" -ge "$OLD_ATTEMPT" ]; }; then
   printf '%s %s %s\n' "$NUMBER" "$ATTEMPT" "$DIGEST" > "$STAGE/state"
 else
@@ -219,5 +222,5 @@ if [ -f "$STATE" ]; then cp -p "$STATE" "$STAGE/previous.state"; fi
 STATE_WRITTEN=1
 mv "$STAGE/state" "$STATE"
 COMMITTED=1
-echo "Installed authenticated $CHANNEL build $RUN_ID-$ATTEMPT (commit $COMMIT) to $DEST/zsearch.app"
-if [ "$OPEN" = 1 ]; then open "$DEST/zsearch.app"; fi
+echo "Installed authenticated $CHANNEL build $RUN_ID-$ATTEMPT (commit $COMMIT) to $DEST/$APP"
+if [ "$OPEN" = 1 ]; then open "$DEST/$APP"; fi

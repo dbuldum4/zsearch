@@ -32,7 +32,7 @@ The app is built and tested on GitHub Actions ([`.github/workflows/macos-app.yml
 | --- | --- |
 | Any Linux or Mac with Swift | `swift test --package-path macos`: protocol decoding, line splitting, highlighting. `ZSearchKit` uses only Foundation. |
 | GitHub Actions, Linux | the same tests, in the `swift:6.2-noble` container |
-| GitHub Actions, macOS | builds the engine, runs the Swift tests against it (`ZSEARCH_ENGINE`), compiles the SwiftUI app, signs it ad hoc, makes `zsearch.dmg` and publishes it |
+| GitHub Actions, macOS | builds the engine, runs the Swift tests against it (`ZSEARCH_ENGINE`), compiles the SwiftUI app, signs it ad hoc, makes `zsearch.dmg` (with `zsearch Semantic.app` next to `zsearch.app`) and publishes it |
 
 Every pull request from this repository gets a GitHub-attested pre-release named `preview-pr-<n>-<run-id>-<attempt>`, plus a comment linking to it. Each push adds a versioned build and replaces the convenient `preview-pr-<n>` alias. The alias and all of the PR's versioned builds are deleted when the PR closes. `main` similarly publishes `preview-main-<run-id>-<attempt>` and a `preview-main` alias, and keeps its newest 10 versioned builds. Pushes to other branches, and pull requests from forks, upload the DMG as a workflow artifact only.
 
@@ -44,6 +44,7 @@ Keep `Sources/ZSearch` (the macOS-only UI) thin and put logic in `Sources/ZSearc
 brew install gh                            # current GitHub CLI; no login needed
 macos/scripts/install-preview.sh 12          # pull request #12
 macos/scripts/install-preview.sh main        # latest main
+macos/scripts/install-preview.sh main --semantic  # zsearch Semantic.app (Semantic search only)
 macos/scripts/install-preview.sh 12 --open
 macos/scripts/install-preview.sh main --build 123456789-1  # exact versioned build
 ```

@@ -21,7 +21,7 @@ final class SearchModel {
         // Semantic search runs the model on the query: wait for a pause in typing.
         didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
     }
-    var mode: Mode = .find {
+    var mode: Mode = Edition.semanticOnly ? .semantic : .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
     var selection: SearchHit.ID? {
@@ -182,12 +182,13 @@ final class SearchModel {
         case let .ready(ready):
             config = ready.config
             firstRun = ready.firstRun
-            mode = Mode(rawValue: ready.config.defaultMode) ?? .find
+            mode = Edition.semanticOnly ? .semantic : Mode(rawValue: ready.config.defaultMode) ?? .find
             Task {
                 await refreshStats()
                 await refreshSemantic()
                 // Semantic search's two models download when the app starts, unless it was turned off.
-                if let s = semantic, !s.declined, !s.model.ready { installSemantic() }
+                // The semantic-only app always downloads them: it has no other way to search.
+                if let s = semantic, !s.declined || Edition.semanticOnly, !s.model.ready { installSemantic() }
                 if ready.firstRun {
                     showSetup = true
                 } else if indexIsStale {
