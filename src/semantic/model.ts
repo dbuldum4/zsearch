@@ -1,57 +1,108 @@
 /**
- * The model semantic search runs, EmbeddingGemma 2 by Google DeepMind, in ggml-org's 8-bit GGUF
- * conversion at one pinned revision: the files DigUp runs (its `ModelFiles.swift`), with their
- * sizes and SHA-256 sums. Nothing is bundled: `zsearch semantic install` (or the Mac app's
- * settings) downloads them, and only then does zsearch make a network request at all.
+ * The two models semantic search runs, each at one pinned revision with its files' sizes and
+ * checksums:
  *
- * The text part (310 MB) is all that documents and queries need. The image encoder (555 MB) lets
- * the Mac app find photos by what they show; it is optional.
+ * - potion-retrieval-32M by Minish Lab (MIT), a Model2Vec static model: a passage's vector is the
+ *   average of its word pieces' vectors, with no network to run (`potion.ts`). It reads every file
+ *   in moments, so semantic search works right after the first index.
+ * - IBM's granite-embedding-small-english-r2 (Apache 2.0), a 47M-parameter ModernBERT encoder, in
+ *   mradermacher's 8-bit GGUF conversion, run by the llama.cpp helper (`helper.ts`). It reads the
+ *   files again in the background, and each file's Granite vectors replace its Potion ones once
+ *   they are in.
+ *
+ * Nothing is bundled: the Mac app downloads both when it starts (unless semantic search was
+ * turned off), and `zsearch semantic install` does in the terminal. That is the only network
+ * request zsearch makes.
  */
-import { createHash } from "node:crypto"
+import { createHash, type Hash } from "node:crypto"
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { paths } from "../config.ts"
 
-export const MODEL_REPOSITORY = "ggml-org/embeddinggemma-2-GGUF"
-export const MODEL_REVISION = "bfcd298762cc34d0357ece5ebdd31791a3a374d8"
-export const MODEL_LICENSE = "Apache 2.0 (as its model card and DigUp state it)"
-
 export interface ModelFile {
   name: string
   bytes: number
-  sha256: string
+  /** SHA-256 of the file (Hugging Face lists it for files kept with Git LFS)... */
+  sha256?: string
+  /** ...or its Git blob id (SHA-1), for small files kept in Git itself. */
+  gitOid?: string
 }
 
-export const TEXT_MODEL: ModelFile = { name: "embeddinggemma-2-Q8_0.gguf", bytes: 309_855_456, sha256: "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135" }
-export const MEDIA_MODEL: ModelFile = { name: "mmproj-embeddinggemma-2-Q8_0.gguf", bytes: 554_821_024, sha256: "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f" }
-
-export function modelUrl(file: ModelFile): string {
-  return `https://huggingface.co/${MODEL_REPOSITORY}/resolve/${MODEL_REVISION}/${file.name}`
+export interface ModelSpec {
+  /** "fast": read first, for every file; "full": read after, and preferred where it is in. */
+  tier: Tier
+  name: string
+  repository: string
+  revision: string
+  license: string
+  /** Its folder in the models folder. */
+  folder: string
+  files: ModelFile[]
 }
 
-/** Where the model files live: `$ZSEARCH_MODELS`, or a folder in zsearch's data folder. */
-export function modelDir(): string {
-  return process.env.ZSEARCH_MODELS || join(paths().data, "models", "embeddinggemma-2")
+export type Tier = "fast" | "full"
+
+export const POTION: ModelSpec = {
+  tier: "fast",
+  name: "potion-retrieval-32M",
+  repository: "minishlab/potion-retrieval-32M",
+  revision: "6fc8051fab2a1e0ee76689cf08c853792ac285e7",
+  license: "MIT",
+  folder: "potion-retrieval-32M",
+  files: [
+    { name: "model.safetensors", bytes: 129_210_456, sha256: "07609e5bd33aad37900b3fd62f4ec96f6daec88ca4d46b9d8b928bfababf6ea0" },
+    { name: "tokenizer.json", bytes: 1_493_150, gitOid: "933e7dae4cd4f6a4c5c9c50c53655819ada3e2b3" },
+  ],
 }
 
-export interface InstalledModel {
-  text: string | null
-  media: string | null
+export const GRANITE: ModelSpec = {
+  tier: "full",
+  name: "granite-embedding-small-english-r2",
+  repository: "mradermacher/granite-embedding-small-english-r2-GGUF",
+  revision: "2b2ad9b58f3e382821e007f4c924101d6bd4a5e2",
+  license: "Apache 2.0",
+  folder: "granite-embedding-small-english-r2",
+  files: [{ name: "granite-embedding-small-english-r2.Q8_0.gguf", bytes: 52_445_632, sha256: "d4b41f5d7db712806722103a1c6aba2f0fe99f77740501d6f313c8240641f145" }],
 }
 
-/** The model files that are there. A file only gets its final name once its checksum matched. */
-export function installedModel(dir = modelDir()): InstalledModel {
-  const at = (f: ModelFile) => {
+export const MODELS: ModelSpec[] = [POTION, GRANITE]
+
+export function modelSpec(tier: Tier): ModelSpec {
+  return tier === "fast" ? POTION : GRANITE
+}
+
+export function modelUrl(spec: ModelSpec, file: ModelFile): string {
+  return `https://huggingface.co/${spec.repository}/resolve/${spec.revision}/${file.name}`
+}
+
+/** The models folder: `$ZSEARCH_MODELS` (tests and benchmarks: every file in it, unchecked), or one in zsearch's data folder. */
+export function modelsRoot(): string {
+  return process.env.ZSEARCH_MODELS || join(paths().data, "models")
+}
+
+export function modelDir(spec: ModelSpec): string {
+  return process.env.ZSEARCH_MODELS || join(modelsRoot(), spec.folder)
+}
+
+/** A model's files, in the order its spec lists them, or null when one is missing. A file only gets its final name once its checksum matched. */
+export function installedModel(spec: ModelSpec): string[] | null {
+  const dir = modelDir(spec)
+  const out: string[] = []
+  for (const f of spec.files) {
     const p = join(dir, f.name)
-    // A folder named by $ZSEARCH_MODELS may hold other builds of the model (tests, benchmarks).
-    try { return statSync(p).size === f.bytes || process.env.ZSEARCH_MODELS ? p : null } catch { return null }
+    try {
+      if (statSync(p).size !== f.bytes && !process.env.ZSEARCH_MODELS) return null
+    } catch {
+      return null
+    }
+    out.push(p)
   }
-  return { text: at(TEXT_MODEL), media: at(MEDIA_MODEL) }
+  return out
 }
 
 /** What the model is, for fingerprints: a different model or revision means different vectors. */
-export function modelFingerprint(): string {
-  return `${MODEL_REPOSITORY}@${MODEL_REVISION}`
+export function modelFingerprint(spec: ModelSpec): string {
+  return `${spec.repository}@${spec.revision}`
 }
 
 export interface DownloadProgress {
@@ -60,25 +111,40 @@ export interface DownloadProgress {
   total: number
 }
 
-/**
- * Download the model files that are missing into `dir`, checking each one's size and SHA-256
- * before giving it its name. A `.part` file left by an interrupted download is continued.
- */
-export async function downloadModel(opts: { media: boolean; dir?: string; signal?: AbortSignal; onProgress?: (p: DownloadProgress) => void; fetchImpl?: typeof fetch }): Promise<InstalledModel> {
-  const dir = opts.dir ?? modelDir()
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const files = opts.media ? [TEXT_MODEL, MEDIA_MODEL] : [TEXT_MODEL]
-  for (const file of files) {
-    const final = join(dir, file.name)
-    if (existsSync(final) && statSync(final).size === file.bytes) continue
-    await downloadFile(file, final, opts)
-  }
-  return installedModel(dir)
+export interface DownloadOptions {
+  signal?: AbortSignal
+  onProgress?: (p: DownloadProgress) => void
+  fetchImpl?: typeof fetch
 }
 
-async function downloadFile(file: ModelFile, final: string, opts: { signal?: AbortSignal; onProgress?: (p: DownloadProgress) => void; fetchImpl?: typeof fetch }) {
+/**
+ * Download what is missing of both models, Potion first (it is what search uses first), checking
+ * each file's size and checksum before giving it its name. A `.part` file left by an interrupted
+ * download is continued.
+ */
+export async function downloadModels(opts: DownloadOptions = {}): Promise<void> {
+  // EmbeddingGemma 2, which earlier versions ran, takes 310 to 865 MB: no longer used.
+  rmSync(join(paths().data, "models", "embeddinggemma-2"), { recursive: true, force: true })
+  for (const spec of MODELS) {
+    const dir = modelDir(spec)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    for (const file of spec.files) {
+      const final = join(dir, file.name)
+      if (existsSync(final) && statSync(final).size === file.bytes) continue
+      await downloadFile(spec, file, final, opts)
+    }
+  }
+}
+
+function checksum(file: ModelFile): Hash {
+  if (file.sha256) return createHash("sha256")
+  // A Git blob id is the SHA-1 of a header and the contents.
+  return createHash("sha1").update(`blob ${file.bytes}\0`)
+}
+
+async function downloadFile(spec: ModelSpec, file: ModelFile, final: string, opts: DownloadOptions) {
   const part = `${final}.part`
-  const hash = createHash("sha256")
+  const hash = checksum(file)
   let have = 0
   if (existsSync(part)) {
     // Continue where it stopped: hash what is there first.
@@ -98,12 +164,12 @@ async function downloadFile(file: ModelFile, final: string, opts: { signal?: Abo
     }
   }
   if (have < file.bytes) {
-    const res = await (opts.fetchImpl ?? fetch)(modelUrl(file), { signal: opts.signal, headers: have ? { Range: `bytes=${have}-` } : {}, redirect: "follow" })
+    const res = await (opts.fetchImpl ?? fetch)(modelUrl(spec, file), { signal: opts.signal, headers: have ? { Range: `bytes=${have}-` } : {}, redirect: "follow" })
     if (have && res.status === 200) {
       // The server sent the whole file rather than the rest: start over.
       await res.body?.cancel()
       rmSync(part, { force: true })
-      return downloadFile(file, final, opts)
+      return downloadFile(spec, file, final, opts)
     }
     if (!res.ok || !res.body) throw new Error(`downloading ${file.name} failed: HTTP ${res.status}`)
     const fd = openSync(part, have ? "a" : "w", 0o600)
@@ -124,14 +190,21 @@ async function downloadFile(file: ModelFile, final: string, opts: { signal?: Abo
   }
   opts.onProgress?.({ file: file.name, received: have, total: file.bytes })
   const digest = hash.digest("hex")
-  if (have !== file.bytes || digest !== file.sha256) {
+  if (have !== file.bytes || digest !== (file.sha256 ?? file.gitOid)) {
     rmSync(part, { force: true })
-    throw new Error(`${file.name} did not match its checksum (got ${have} bytes, sha256 ${digest.slice(0, 12)}…); nothing was installed`)
+    throw new Error(`${file.name} did not match its checksum (got ${have} bytes, ${digest.slice(0, 12)}…); nothing was installed`)
   }
   renameSync(part, final)
 }
 
-/** Delete the model files (and any partial download). */
-export function removeModel(dir = modelDir()): void {
-  for (const f of [TEXT_MODEL, MEDIA_MODEL]) for (const p of [join(dir, f.name), join(dir, `${f.name}.part`)]) rmSync(p, { force: true })
+/** Bytes to download for both models. */
+export function modelBytes(spec?: ModelSpec): number {
+  return (spec ? [spec] : MODELS).reduce((s, m) => s + m.files.reduce((t, f) => t + f.bytes, 0), 0)
+}
+
+/** Delete the models (and any partial download, and the model earlier versions ran). */
+export function removeModels(): void {
+  if (process.env.ZSEARCH_MODELS) return
+  for (const spec of MODELS) rmSync(join(modelsRoot(), spec.folder), { recursive: true, force: true })
+  rmSync(join(modelsRoot(), "embeddinggemma-2"), { recursive: true, force: true })
 }

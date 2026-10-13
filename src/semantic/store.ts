@@ -1,7 +1,8 @@
 /**
- * The semantic index: a SQLite file of its own next to the main index (`index.semantic.db` by
- * `index.db`), so the main index's layout, size and compaction never depend on it, and turning
- * semantic search off is deleting one file.
+ * The semantic indexes, one per model: SQLite files of their own next to the main index
+ * (`index.semantic.db` for Granite and `index.semantic-fast.db` for Potion, by `index.db`), so the
+ * main index's layout, size and compaction never depend on them, and turning semantic search off
+ * is deleting two files.
  *
  *   vectors   one row per distinct passage text (by a hash of exactly what the model read): the
  *             same passage in two files, or in a file renamed, rebuilt or copied, is one vector.
@@ -9,20 +10,21 @@
  *   files     what each file's passages were made from (its size, date and text length), and how
  *             far through them the index got: long files are finished in a second round.
  *
- * Vectors are kept as 16-bit floats (1,536 bytes for 768 dimensions), as DigUp keeps them. 8-bit
+ * Vectors are kept as 16-bit floats (768 bytes for Granite's 384 dimensions), as DigUp keeps them. 8-bit
  * integers would take half that, but with the real model they changed 2.7% of the top ten results
  * (scripts/bench-semantic/quality.ts).
  */
 import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import type { Tier } from "./model.ts"
 
 // 2: vectors went from 8-bit integers with a scale to 16-bit floats.
 const SCHEMA_VERSION = 2
 
-export function semanticDbPath(dbPath: string): string {
+export function semanticDbPath(dbPath: string, tier: Tier = "full"): string {
   if (dbPath === ":memory:") return ":memory:"
-  return join(dirname(dbPath), `${basename(dbPath).replace(/\.db$/, "")}.semantic.db`)
+  return join(dirname(dbPath), `${basename(dbPath).replace(/\.db$/, "")}.semantic${tier === "fast" ? "-fast" : ""}.db`)
 }
 
 export function openSemanticDb(path: string, opts: { readonly?: boolean } = {}): Database | null {

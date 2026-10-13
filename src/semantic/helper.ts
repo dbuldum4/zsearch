@@ -1,5 +1,5 @@
 /**
- * The embedding helper, `zsearch-embed` (native/embed): EmbeddingGemma 2 on llama.cpp, in a
+ * The embedding helper, `zsearch-embed` (native/embed): Granite (see `model.ts`) on llama.cpp, in a
  * process of its own that zsearch talks to over a pipe. It is bundled next to the engine in the
  * Mac app (Contents/Helpers), built with `scripts/build-embed.sh` elsewhere, or named by
  * $ZSEARCH_EMBED (`0` turns semantic search off).
@@ -26,9 +26,19 @@ export interface EmbedderInfo {
   maxSeqs: number
 }
 
+/** What the indexer and search need of a model: the helper, or Potion in-process (`potion.ts`). */
+export interface TextEmbedder {
+  /** One L2-normalized vector per text, `dim` floats each, in one array; and the tokens they took. */
+  embedTexts(texts: string[]): Promise<{ vectors: Float32Array; dim: number; tokens: number }>
+  close(): void
+  kill(): void
+}
+
 export interface EmbedderOptions {
   tool: string
   model: string
+  /** How the model's outputs make one vector: its own setting, unless given. */
+  pooling?: "mean" | "cls"
   /** The image encoder: images are embedded only with it. */
   mmproj?: string | null
   threads?: number
@@ -49,7 +59,7 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 /** One helper process. Requests run one at a time, in order. */
-export class Embedder {
+export class Embedder implements TextEmbedder {
   private proc: ReturnType<typeof Bun.spawn>
   private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }> }
   private buf: Uint8Array = new Uint8Array(0)
@@ -61,6 +71,7 @@ export class Embedder {
   constructor(readonly opts: EmbedderOptions) {
     const args = [opts.tool, "--model", opts.model]
     if (opts.mmproj) args.push("--mmproj", opts.mmproj)
+    if (opts.pooling) args.push("--pooling", opts.pooling)
     if (opts.threads) args.push("--threads", String(opts.threads))
     if (opts.batchTokens) args.push("--batch-tokens", String(opts.batchTokens))
     if (opts.maxSeqs) args.push("--max-seqs", String(opts.maxSeqs))

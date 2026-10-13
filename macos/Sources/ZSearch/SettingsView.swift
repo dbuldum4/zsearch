@@ -13,7 +13,7 @@ struct SettingsView: View {
             IndexSettings()
                 .tabItem { Label("Index", systemImage: "externaldrive") }
             SemanticSettings()
-                .tabItem { Label("Meaning", systemImage: "sparkle.magnifyingglass") }
+                .tabItem { Label("Semantic", systemImage: "sparkle.magnifyingglass") }
         }
         .frame(width: 520)
     }
@@ -59,7 +59,7 @@ private struct GeneralSettings: View {
                 Text("Find (exact text, /regex/)").tag(Mode.find)
                 Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
                 if model.config?.semantic?.enabled == true {
-                    Text("Meaning (describe what you're looking for)").tag(Mode.semantic)
+                    Text("Semantic (describe what you're looking for)").tag(Mode.semantic)
                 }
             }
             Picker("Preview PDFs as", selection: $pdfShowsText) {
@@ -122,23 +122,24 @@ private struct GeneralSettings: View {
     }
 }
 
-/// Search by meaning: EmbeddingGemma 2, downloaded on request, as DigUp runs it.
+/// Semantic search: Potion reads every file first, then Granite in the background (both downloaded when the app starts).
 private struct SemanticSettings: View {
     @Environment(SearchModel.self) private var model
-    @State private var withImages = true
     @State private var confirmRemove = false
 
     var body: some View {
         Form {
             Section {
-                Text("Finds files by what they are about, and photos and screenshots by what they show: “the lease for the flat in Lisbon”, “screenshot of a flight booking”. It runs on this Mac with Google's EmbeddingGemma 2 model (Apache 2.0), which zsearch downloads only when you ask, using DigUp's ranking. Find and Fuzzy don't need it.")
+                Text("Finds files by what they are about, not only by their words: “the lease for the flat in Lisbon”. It runs on this Mac with two models zsearch downloads when it starts: Potion (Minish Lab, MIT) reads every file within moments, then IBM's Granite embedding model (Apache 2.0) reads them again in the background, and each file is searched with Granite once it's done. Results mix meaning with your words, using DigUp's ranking. Find and Fuzzy don't need it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let s = model.semantic {
-                    if s.enabled && s.model.text {
-                        LabeledContent("Model", value: s.model.media ? "Text and images" : "Text")
+                    if s.enabled && s.model.ready {
+                        if let i = s.fastIndex {
+                            LabeledContent("Quick pass (Potion)", value: "\(i.files.formatted()) files")
+                        }
                         if let i = s.index {
-                            LabeledContent("Files read", value: "\(i.files.formatted()) (\(ByteCountFormatter.string(fromByteCount: Int64(i.bytes), countStyle: .file)))")
+                            LabeledContent("Full pass (Granite)", value: "\(i.files.formatted()) files (\(ByteCountFormatter.string(fromByteCount: Int64(i.bytes), countStyle: .file)))")
                             if i.partial > 0 {
                                 LabeledContent("Long files to finish", value: i.partial.formatted())
                             }
@@ -147,8 +148,9 @@ private struct SemanticSettings: View {
                                     .font(.caption)
                                     .foregroundStyle(.red)
                             }
-                        } else {
-                            Text("Files are read for meaning with the next index update.")
+                        }
+                        if s.index == nil && s.fastIndex == nil {
+                            Text("Files are read for semantic search with the next index update.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -157,25 +159,22 @@ private struct SemanticSettings: View {
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
-                        Toggle("Photos and screenshots by what they show", isOn: semanticFlag(\.images))
-                            .disabled(!s.model.media)
-                            .help(s.model.media ? "Uses the image encoder." : "Download the model with images to turn this on.")
                         Toggle("Source code and data files", isOn: semanticFlag(\.code))
                             .help("Off by default: words find code better than meaning does.")
                         HStack {
-                            Button("Build Meaning Index Only") { model.buildMeaningIndex() }
+                            Button("Build Semantic Index Only") { model.buildMeaningIndex() }
                                 .disabled(model.indexing || s.blocked != nil)
                             Spacer()
-                            Button("Turn Off and Delete Model…", role: .destructive) { confirmRemove = true }
+                            Button("Turn Off and Delete Models…", role: .destructive) { confirmRemove = true }
                                 .disabled(model.indexing)
                         }
-                        Text("Builds only the meaning (Gemma) index from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
+                        Text("Builds only the semantic indexes from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if model.downloadingModel {
                         if let d = model.semanticDownload, d.total > 0 {
                             ProgressView(value: Double(d.received), total: Double(d.total)) {
-                                Text("Downloading \(ByteCountFormatter.string(fromByteCount: Int64(d.received), countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: Int64(d.total), countStyle: .file))")
+                                Text("Downloading \(d.file): \(ByteCountFormatter.string(fromByteCount: Int64(d.received), countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: Int64(d.total), countStyle: .file))")
                             }
                         } else {
                             ProgressView("Starting the download…")
@@ -185,34 +184,32 @@ private struct SemanticSettings: View {
                             Button("Cancel") { model.cancelSemanticInstall() }
                         }
                     } else {
-                        Toggle("Also find photos and screenshots by what they show", isOn: $withImages)
                         HStack {
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(s.model.textBytes + (withImages ? s.model.mediaBytes : 0)), countStyle: .file) + " download")
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(s.model.fastBytes + s.model.fullBytes), countStyle: .file) + " download")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("Download and Turn On") { model.installSemantic(images: withImages) }
+                            Button("Download and Turn On") { model.installSemantic() }
                                 .keyboardShortcut(.defaultAction)
-                                .disabled(s.helper == nil)
                         }
                         if s.helper == nil {
-                            Text("This copy of zsearch has no embedding helper.")
+                            Text("This copy of zsearch has no embedding helper, so only the quick pass (Potion) runs.")
                                 .font(.caption)
-                                .foregroundStyle(.red)
+                                .foregroundStyle(.orange)
                         }
                     }
                 } else {
                     ProgressView()
                 }
             } header: {
-                Text("Search by meaning")
+                Text("Semantic search")
             }
         }
         .formStyle(.grouped)
         .onAppear { Task { await model.refreshSemantic() } }
-        .confirmationDialog("Turn off search by meaning?", isPresented: $confirmRemove) {
+        .confirmationDialog("Turn off semantic search?", isPresented: $confirmRemove) {
             Button("Turn Off and Delete", role: .destructive) { model.removeSemantic() }
         } message: {
-            Text("The model and what was read for meaning are deleted. Find and Fuzzy keep working.")
+            Text("The models and what was read for semantic search are deleted, and they are no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
         }
     }
 

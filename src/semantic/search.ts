@@ -1,10 +1,13 @@
 /**
- * Search by meaning: DigUp's hybrid ranking (its `Searcher.swift`, MIT, Copyright (c) 2026 Abdur
- * Rahim, https://github.com/ARahim3/DigUp at 6faa29e), over zsearch's semantic index (`store.ts`)
+ * Semantic search: DigUp's hybrid ranking (its `Searcher.swift`, MIT, Copyright (c) 2026 Abdur
+ * Rahim, https://github.com/ARahim3/DigUp at 6faa29e), over zsearch's semantic indexes (`store.ts`)
  * and its keyword index.
  *
  * Every stored vector is scored against the query, and the scores are put on one scale for this
- * query (`meaning`): how many standard deviations a passage stands out from the rest. A file counts
+ * query (`meaning`): how many standard deviations a passage stands out from the rest. Each model's
+ * index is scored with its own query vector and put on its own scale, over all of its passages;
+ * a file then takes its passages from Granite's index once Granite has read it as it is, and from
+ * Potion's until then (`bestByFile`). A file counts
  * as a meaning match when its best passage stands out by Z_GATE or more, and as a word match when
  * it holds at least half of the query's words; its score is its meaning plus a bonus growing with
  * the share of words it holds, plus one for the kind of file the query asks for ("photo of…",
@@ -12,12 +15,11 @@
  * (`SearchEngine.runSemantic`) does the parts that need the main index: words, filters, snippets.
  */
 import type { Database } from "bun:sqlite"
-import { availableParallelism } from "node:os"
 import { statSync } from "node:fs"
 import type { Kind } from "../kinds.ts"
 import { foldTerm } from "../util/text.ts"
 import { queryPrompt } from "./chunk.ts"
-import { Embedder } from "./helper.ts"
+import type { TextEmbedder } from "./helper.ts"
 import { SCALE_PASSAGES } from "./indexer.ts"
 import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 
@@ -161,11 +163,30 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
+  /** What each file's passages were read from (its size, date and text length), by file id. */
+  sigs = new Map<number, string>()
   private values = new Float16Array(0)
   private distinct = 0
 
   get size(): number {
     return this.file.length
+  }
+
+  /** An index of these passages, one vector each (passages reranked at search time). */
+  static of(rows: { file: number; start: number; end: number; vector: Float32Array }[]): VectorIndex {
+    const v = new VectorIndex()
+    const n = rows.length
+    v.dim = n ? rows[0]!.vector.length : 0
+    v.file = Int32Array.from(rows, (r) => r.file)
+    v.start = Int32Array.from(rows, (r) => r.start)
+    v.end = Int32Array.from(rows, (r) => r.end)
+    v.vector = Int32Array.from(rows, (_, i) => i)
+    v.modality = new Uint8Array(n)
+    v.setsScale = new Uint8Array(n)
+    v.values = new Float16Array(n * v.dim)
+    rows.forEach((r, i) => v.values.set(r.vector, i * v.dim))
+    v.distinct = n
+    return v
   }
 
   static load(db: Database): VectorIndex {
@@ -201,6 +222,7 @@ export class VectorIndex {
       v.modality[i] = image ? 1 : 0
       v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
     })
+    for (const [file, sig] of db.query("SELECT file, sig FROM files").values() as [number, string][]) v.sigs.set(file, sig)
     return v
   }
 
@@ -291,19 +313,61 @@ function fileIno(path: string): number | null {
 
 /* ---------------------------------------------------- query vectors -- */
 
-/** Turns a query into its vector with the embedding helper, started on the first query and stopped when idle. */
+/**
+ * The files Granite read in a version that has changed since, and that Potion has read as they
+ * are now (`current`: what a file's passages would be read from today): Potion's are the ones to use.
+ */
+export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (file: number) => string | null): Set<number> {
+  const out = new Set<number>()
+  for (const [file, sig] of full.sigs) {
+    const now = fast.sigs.get(file)
+    if (now !== undefined && now !== sig && current(file) === now) out.add(file)
+  }
+  return out
+}
+
+/**
+ * Each file's best passage for this query, by how far it stands out (`meaning`): from `full` (Granite's
+ * index) for the files it has, from `fast` (Potion's) for the others. A part's `outdated` files
+ * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
+ */
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
+  const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+  const ok = new Map<number, boolean>()
+  const upgraded = new Set<number>()
+  // An image's own vector is stored under its file's negative id.
+  const isOutdated = (outdated: Set<number> | undefined, file: number) => !!outdated?.has(Math.abs(file))
+  for (const p of parts) if (p.tier === "full") for (const f of p.index.file) if (!isOutdated(p.outdated, f)) upgraded.add(f)
+  for (const { index, z, tier, outdated } of parts) {
+    for (let row = 0; row < z.length; row++) {
+      const file = index.file[row]!
+      if (tier === "fast" && upgraded.has(file)) continue
+      if (isOutdated(outdated, file)) continue
+      const b = best.get(file)
+      if (b && b.z >= z[row]!) continue
+      let allowed = ok.get(file)
+      if (allowed === undefined) ok.set(file, (allowed = usable(file)))
+      if (allowed) best.set(file, { z: z[row]!, row, index })
+    }
+  }
+  return best
+}
+
+/** Turns a query into its vector with a model, started on the first query and stopped when idle. */
 export class QueryEmbedder {
-  private embedder: Embedder | null = null
+  private embedder: TextEmbedder | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private cache = new Map<string, Float32Array>()
+  /** Passages embedded at search time (to rerank files the indexer hasn't reached), by their text. */
+  private passages = new Map<string, Float32Array>()
 
-  constructor(private tool: string, private model: string, private idleMs = 120_000) {}
+  constructor(private start: () => TextEmbedder, private idleMs = 120_000) {}
 
   async embed(text: string): Promise<Float32Array> {
     const key = text.trim().replace(/\s+/g, " ")
     const hit = this.cache.get(key)
     if (hit) return hit
-    this.embedder ??= new Embedder({ tool: this.tool, model: this.model, threads: Math.min(4, availableParallelism()), batchTokens: 512, maxSeqs: 1 })
+    this.embedder ??= this.start()
     if (this.idle) clearTimeout(this.idle)
     try {
       const { vectors } = await this.embedder.embedTexts([queryPrompt(key)])
@@ -318,6 +382,30 @@ export class QueryEmbedder {
       this.idle = setTimeout(() => this.close(), this.idleMs)
       this.idle.unref?.()
     }
+  }
+
+  /** Passages' vectors, embedded together (those not kept from an earlier search). */
+  async embedPassages(texts: string[]): Promise<Float32Array[]> {
+    const missing = [...new Set(texts.filter((t) => !this.passages.has(t)))]
+    if (missing.length) {
+      this.embedder ??= this.start()
+      if (this.idle) clearTimeout(this.idle)
+      try {
+        const { vectors, dim } = await this.embedder.embedTexts(missing)
+        missing.forEach((t, i) => {
+          if (this.passages.size >= 4096) this.passages.delete(this.passages.keys().next().value!)
+          this.passages.set(t, vectors.slice(i * dim, (i + 1) * dim))
+        })
+      } catch (err) {
+        this.embedder?.kill()
+        this.embedder = null
+        throw err
+      } finally {
+        this.idle = setTimeout(() => this.close(), this.idleMs)
+        this.idle.unref?.()
+      }
+    }
+    return texts.map((t) => this.passages.get(t)!)
   }
 
   close() {

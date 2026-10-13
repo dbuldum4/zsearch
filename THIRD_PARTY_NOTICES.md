@@ -69,11 +69,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## EmbeddingGemma 2
+## potion-retrieval-32M
 
-Google DeepMind's EmbeddingGemma 2, in ggml-org's 8-bit GGUF conversion
-(`ggml-org/embeddinggemma-2-GGUF` at revision bfcd298762cc34d0357ece5ebdd31791a3a374d8). zsearch
-doesn't include it: `zsearch semantic install`, or the Mac app's Meaning settings, downloads it
-from Hugging Face and checks its SHA-256 sums. DigUp, which uses the same files, states that the
-model is licensed under Apache 2.0; check the model card
-(https://huggingface.co/google/embeddinggemma-2) for the terms that apply to it.
+Minish Lab's potion-retrieval-32M (`minishlab/potion-retrieval-32M` at revision
+6fc8051fab2a1e0ee76689cf08c853792ac285e7), a Model2Vec static embedding model, MIT License
+(https://huggingface.co/minishlab/potion-retrieval-32M). zsearch doesn't include it: the Mac app
+(when it starts) or `zsearch semantic install` downloads it from Hugging Face and checks its
+checksums. `src/semantic/potion.ts` runs it the way Model2Vec (MIT,
+https://github.com/MinishLab/model2vec) does.
+
+## granite-embedding-small-english-r2
+
+IBM's granite-embedding-small-english-r2, Apache License 2.0
+(https://huggingface.co/ibm-granite/granite-embedding-small-english-r2), in mradermacher's 8-bit
+GGUF conversion (`mradermacher/granite-embedding-small-english-r2-GGUF` at revision
+2b2ad9b58f3e382821e007f4c924101d6bd4a5e2). zsearch doesn't include it: it is downloaded the same
+way and its SHA-256 checked.

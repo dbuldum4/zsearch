@@ -145,7 +145,7 @@ struct PanelShortcuts: View {
         Group {
             Button("Find") { model.mode = .find }.keyboardShortcut("1")
             Button("Fuzzy") { model.mode = .fuzzy }.keyboardShortcut("2")
-            Button("Meaning") { model.mode = .semantic }.keyboardShortcut("3")
+            Button("Semantic") { model.mode = .semantic }.keyboardShortcut("3")
             Button("Next Result") { model.moveSelection(by: 1) }.keyboardShortcut("j")
             Button("Previous Result") { model.moveSelection(by: -1) }.keyboardShortcut("k")
             Button("Open Main Window") { model.showMainWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])

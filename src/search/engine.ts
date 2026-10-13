@@ -17,11 +17,14 @@ import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { TopK } from "../util/top-k.ts"
 import { retryClock, type RetryClock } from "../util/clock.ts"
-import { embedToolPath } from "../semantic/helper.ts"
-import { installedModel } from "../semantic/model.ts"
-import { CODE_WORD_WEIGHT, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, WORD_WEIGHT } from "../semantic/search.ts"
+import { availableParallelism } from "node:os"
+import { Embedder, embedToolPath } from "../semantic/helper.ts"
+import { GRANITE, installedModel, POTION, type Tier } from "../semantic/model.ts"
+import { PotionEmbedder, PotionModel } from "../semantic/potion.ts"
+import { documentPrompt, titleOf } from "../semantic/chunk.ts"
+import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, outdatedFiles, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
-import { mainGeneration } from "../semantic/indexer.ts"
+import { mainGeneration, textSig } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -153,6 +156,18 @@ class TextCache {
 type TermGroup = { expr: string; terms: string[]; prefix: boolean; check?: RegExp }
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
+
+/** Files reranked with Granite at search time, at most, while Granite hasn't read every file. */
+const RERANK = 12
+/** Passages Granite's index needs before its scale is worth putting reranked passages on. */
+const RERANK_MIN_PASSAGES = 200
+
+function concatScores(a: Float32Array, b: Float32Array): Float32Array {
+  const out = new Float32Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
 
 export class SearchEngine {
   readonly catalog = new Catalog()
@@ -339,32 +354,84 @@ export class SearchEngine {
 
   /* ---------------------------------------------------------- semantic -- */
 
-  /** The semantic index, loaded on the first search by meaning. */
-  private vectors: SemanticVectors | null = null
-  private queryEmbedder: QueryEmbedder | null = null
-  /** Turns a query into its vector (tests pass their own). Null: the helper or the model is missing. */
-  embedQuery: ((text: string) => Promise<Float32Array>) | null | undefined
+  /** The semantic indexes (Potion's and Granite's), loaded on the first semantic search. */
+  private vectors: Partial<Record<Tier, SemanticVectors>> = {}
+  private queryEmbedders: Partial<Record<Tier, QueryEmbedder>> = {}
+  /** Turns a query into one model's vector (tests pass their own). Null: no model is there. */
+  embedQuery: ((text: string, tier: Tier) => Promise<Float32Array>) | null | undefined
 
-  private queryVectorFn(): ((text: string) => Promise<Float32Array>) | null {
-    if (this.embedQuery !== undefined) return this.embedQuery
-    const tool = embedToolPath()
-    const model = installedModel().text
-    if (!tool || !model) return null
-    if (this.queryEmbedder === null) this.queryEmbedder = new QueryEmbedder(tool, model)
-    const embedder = this.queryEmbedder
+  /** The query's vector for a model, or null when that model (or Granite's helper) is missing. */
+  private queryVectorFn(tier: Tier): ((text: string) => Promise<Float32Array>) | null {
+    if (this.embedQuery !== undefined) return this.embedQuery && ((text) => this.embedQuery!(text, tier))
+    let embedder = this.queryEmbedders[tier]
+    if (!embedder) {
+      if (tier === "fast") {
+        const files = installedModel(POTION)
+        if (!files) return null
+        embedder = new QueryEmbedder(() => new PotionEmbedder(PotionModel.load(files[0]!, files[1]!)))
+      } else {
+        const tool = embedToolPath()
+        const files = installedModel(GRANITE)
+        if (!tool || !files) return null
+        embedder = new QueryEmbedder(() => new Embedder({ tool, model: files[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }))
+      }
+      this.queryEmbedders[tier] = embedder
+    }
     return (text) => embedder.embed(text)
   }
 
-  /** Stop the query helper and let go of the vectors (the worker is shutting down, or idle). */
+  /** Passages Granite's index needs before its scale is worth putting reranked passages on (tests lower it). */
+  rerankMinPassages = RERANK_MIN_PASSAGES
+  /** Embeds passages with Granite at search time (tests pass their own). */
+  embedPassages: ((texts: string[]) => Promise<Float32Array[]>) | undefined
+
+  /**
+   * The best passage of each of the RERANK files Potion ranks highest that Granite hasn't read
+   * yet, embedded with Granite now (and kept for later searches), as a small index of its own.
+   */
+  private async rerankWithGranite(fast: { index: VectorIndex; z: Float64Array; tier: Tier }, full: VectorIndex, outdated: Set<number>, authorized: (file: number) => boolean): Promise<VectorIndex | null> {
+    const upgraded = new Set(full.file.filter((f) => !outdated.has(Math.abs(f))))
+    const pool = [...bestByFile([fast], (f) => !upgraded.has(f) && authorized(f))].sort((a, b) => b[1].z - a[1].z).slice(0, RERANK)
+    const picked: { file: number; start: number; end: number; text: string }[] = []
+    for (const [file, b] of pool) {
+      const stored = this.storedText(file)
+      const i = this.catalog.indexOf(file)
+      if (stored === null || i === undefined) continue
+      const start = fast.index.start[b.row]!
+      const end = fast.index.end[b.row]!
+      const name = this.catalog.paths[i]!.slice(this.catalog.paths[i]!.lastIndexOf("/") + 1)
+      picked.push({ file, start, end, text: documentPrompt(titleOf(name), stored.slice(start, end).replace(/[ \t ]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n")) })
+    }
+    if (!picked.length) return null
+    const embed = this.embedPassages ?? this.granitePassagesFn()
+    if (!embed) return null
+    const vectors = await embed(picked.map((p) => p.text))
+    return VectorIndex.of(picked.map((p, k) => ({ file: p.file, start: p.start, end: p.end, vector: vectors[k]! })))
+  }
+
+  /** What a file's passages would be read from now (see `textSig`), or null if it has no text. */
+  private semanticSig(file: number): string | null {
+    const r = this.db.query("SELECT size, mtime, content_len AS len FROM files WHERE id = ?").get(file) as { size: number; mtime: number; len: number } | null
+    return r ? textSig(r.size, r.mtime, r.len) : null
+  }
+
+  private granitePassagesFn(): ((texts: string[]) => Promise<Float32Array[]>) | null {
+    if (this.embedQuery !== undefined) return this.embedQuery && ((texts) => Promise.all(texts.map((t) => this.embedQuery!(t, "full"))))
+    if (!this.queryVectorFn("full")) return null
+    const embedder = this.queryEmbedders.full!
+    return (texts) => embedder.embedPassages(texts)
+  }
+
+  /** Stop the query models and let go of the vectors (the worker is shutting down, or idle). */
   closeSemantic() {
-    this.queryEmbedder?.close()
-    this.queryEmbedder = null
-    this.vectors?.close()
-    this.vectors = null
+    for (const e of Object.values(this.queryEmbedders)) e.close()
+    this.queryEmbedders = {}
+    for (const v of Object.values(this.vectors)) v.close()
+    this.vectors = {}
   }
 
   /**
-   * Search by meaning, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
+   * Semantic search, ranked as DigUp ranks (see src/semantic/search.ts): files whose best passage
    * stands out for the query, and files holding at least half of its words. Without the model, or
    * before files have vectors, only the words count, and a notice says why.
    */
@@ -373,7 +440,7 @@ export class SearchEngine {
     // While typing, wait a moment: the next key press would make this query's vector wasted work.
     if (q.typing && opts.cancelled) {
       await Bun.sleep(150)
-      if (opts.cancelled()) { res.partial = true; res.strategy = "meaning"; return }
+      if (opts.cancelled()) { res.partial = true; res.strategy = "semantic"; return }
     }
     const text = [...q.words, ...q.phrases].join(" ")
     const cat = this.catalog
@@ -383,39 +450,66 @@ export class SearchEngine {
       return i !== undefined && cat.passes(i, q.filters) ? i : undefined
     }
 
-    // Meaning: every passage on this query's scale, each file's best.
-    const best = new Map<number, { z: number; row: number }>()
-    let index = null
-    if (!this.config.semantic.enabled) notices.push("Search by meaning is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
-    else if (!this.config.content.enabled) notices.push("Search by meaning needs file contents, which are off")
+    // Meaning: every passage of each model's index on that model's scale for this query, and
+    // each file's best, from Granite's index once Granite has read the file, Potion's until then.
+    // While Granite is part way, the files Potion ranks highest that Granite hasn't read yet
+    // have their best passage embedded with Granite now (see `rerankWithGranite`).
+    let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+    const indexes: Partial<Record<Tier, VectorIndex>> = {}
+    if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
+    else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
     else {
-      this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:"))
-      index = this.vectors.get(mainGeneration(this.db))
-      const embed = this.queryVectorFn()
-      if (!embed) notices.push("Search by meaning needs its model: run `zsearch semantic install`. Showing word matches")
-      else if (!index?.size) notices.push("No files have been read for meaning yet: they are with the next index update")
-      else if (text.trim()) {
+      const generation = mainGeneration(this.db)
+      const scored: Partial<Record<Tier, { index: VectorIndex; scores: Float32Array; vector: Float32Array }>> = {}
+      const errors: string[] = []
+      let models = 0
+      for (const tier of ["full", "fast"] as const) {
+        const embed = this.queryVectorFn(tier)
+        if (!embed) continue
+        models++
+        const vectors = (this.vectors[tier] ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:", tier)))
+        const index = vectors.get(generation)
+        if (!index?.size || !text.trim()) continue
         try {
           const vector = await embed(text)
-          if (opts.cancelled?.()) { res.partial = true; res.strategy = "meaning"; return }
-          const scores = index.score(vector)
-          const z = meaning(scores, index.modality, index.setsScale)
-          const authorized = new Map<number, boolean>()
-          for (let row = 0; row < z.length; row++) {
-            const file = index.file[row]!
-            const b = best.get(file)
-            if (b && b.z >= z[row]!) continue
-            let ok = authorized.get(file)
-            if (ok === undefined) {
-              const i = usable(file)
-              authorized.set(file, (ok = i !== undefined && this.contentAuthorized(i, check)))
-            }
-            if (ok) best.set(file, { z: z[row]!, row })
-          }
+          if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
+          indexes[tier] = index
+          scored[tier] = { index, scores: index.score(vector), vector }
         } catch (err) {
-          notices.push(`Search by meaning failed (${(err as Error).message}). Showing word matches`)
+          errors.push((err as Error).message)
         }
       }
+      const authorized = (file: number) => {
+        const i = usable(file)
+        return i !== undefined && this.contentAuthorized(i, check)
+      }
+      const parts: { index: VectorIndex; z: Float64Array; tier: Tier; outdated?: Set<number> }[] = []
+      if (scored.fast) parts.push({ ...scored.fast, z: meaning(scored.fast.scores, scored.fast.index.modality, scored.fast.index.setsScale), tier: "fast" })
+      if (scored.full) {
+        const { index, scores, vector } = scored.full
+        // Files edited since Granite read them, that Potion has read again: Potion's passages count.
+        const outdated = scored.fast ? outdatedFiles(index, scored.fast.index, (file) => this.semanticSig(file)) : new Set<number>()
+        let extra: VectorIndex | null = null
+        if (scored.fast && index.size >= this.rerankMinPassages) {
+          try {
+            extra = await this.rerankWithGranite(parts[0]!, index, outdated, authorized)
+          } catch (err) {
+            errors.push((err as Error).message)
+          }
+          if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
+        }
+        // Reranked passages are put on the scale of Granite's index, without moving it.
+        const all = extra ? concatScores(scores, extra.score(vector)) : scores
+        const modality = extra ? new Uint8Array(all.length) : index.modality
+        const setsScale = extra ? Uint8Array.from({ length: all.length }, (_, i) => (i < scores.length ? index.setsScale[i]! : 0)) : index.setsScale
+        const z = meaning(all, modality, setsScale)
+        parts.push({ index, z: z.subarray(0, scores.length), tier: "full", outdated })
+        if (extra) parts.push({ index: extra, z: z.subarray(scores.length), tier: "full" })
+      }
+      if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
+      else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Semantic search failed (${errors[0]}). Showing word matches`)
+      else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for semantic search yet: they are with the next index update")
+      best = bestByFile(parts, authorized)
     }
 
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
@@ -484,7 +578,7 @@ export class SearchEngine {
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
     res.total = ranked.length
-    res.strategy = best.size ? "meaning + words" : "words"
+    res.strategy = best.size ? "semantic + words" : "words"
     if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
     const pattern = termsPattern(q.words, q.phrases, q.typing)
     res.hits = ranked.slice(0, limit).map((r, n) => {
@@ -494,11 +588,12 @@ export class SearchEngine {
       const h = this.hit(r.file, r.score, sources.length ? sources : ["content"])
       if (n >= 60) return h
       // Show the passage that matched by meaning; or, matched by words, the lines with them.
+      const index = r.row !== null ? best.get(r.file)!.index : undefined
       const useMeaning = r.row !== null && index && (r.z! >= 2 || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
       if (useMeaning) {
         const t = this.storedText(r.file)
         if (t !== null) {
-          h.lines = passageLines(t, index!.start[r.row!]!, index!.end[r.row!]!, pattern)
+          h.lines = passageLines(t, index.start[r.row!]!, index.end[r.row!]!, pattern)
           h.matchCount = h.lines.length
         }
       } else if (pattern && bodyMatch.has(r.file)) {

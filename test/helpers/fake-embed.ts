@@ -1,7 +1,7 @@
 /**
  * A stand-in for `zsearch-embed` (native/embed) that speaks its protocol with made-up vectors:
  * each word counts toward a dimension picked by its "concept", and a few words share one, so
- * "car" and "automobile" mean the same here and tests can tell search by meaning from search by
+ * "car" and "automobile" mean the same here and tests can tell semantic search from search by
  * words. Every request is logged to $FAKE_EMBED_LOG (one JSON line), for tests to count work.
  */
 import { appendFileSync } from "node:fs"
@@ -15,8 +15,11 @@ const CONCEPTS: Record<string, string> = {
   sunset: "sunset", beach: "sunset",
 }
 
+/** `--weak`: a lesser model (Potion's stand-in), which doesn't know that a sedan is a vehicle. */
+const WEAK = process.argv.includes("--weak")
+
 function dimOf(word: string): number {
-  const w = CONCEPTS[word] ?? word
+  const w = WEAK && word === "sedan" ? word : CONCEPTS[word] ?? word
   let h = 2166136261
   for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w.charCodeAt(i), 16777619)
   return (h >>> 0) % DIM

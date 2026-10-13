@@ -5,7 +5,7 @@ import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 import { PowerGate } from "./power.ts"
 import { embedToolPath } from "../semantic/helper.ts"
-import { SemanticIndexer, semanticAvailable } from "../semantic/indexer.ts"
+import { runSemanticPasses, semanticAvailable } from "../semantic/indexer.ts"
 
 declare const self: Worker
 
@@ -62,29 +62,28 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     running = indexer
     if (goNow) indexer.goNow()
     // A meaning-only run skips the scan and word content pass: it embeds the text earlier
-    // runs already extracted, so testing search by meaning never re-reads files for word search.
+    // runs already extracted, so testing semantic search never re-reads files for word search.
     const startedAt = Date.now()
     let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
     if (!msg.meaningOnly) result = await indexer.run()
-    // Then search by meaning: embed what the run read, under the same cancel, power and priority rules.
+    // Then semantic search: embed what the run read, under the same cancel, power and priority rules.
     const tool = embedToolPath()
     const blocked = semanticAvailable(msg.config, tool)
     if (msg.meaningOnly && blocked) {
       result.phase = "error"
-      result.error = `search by meaning cannot run: ${blocked}`
+      result.error = `semantic search cannot run: ${blocked}`
       result.elapsedMs = Date.now() - startedAt
     } else if (result.phase === "done" && !blocked) {
       const started = Date.now()
       const base = result.elapsedMs
-      const semantic = new SemanticIndexer(db, msg.config, tool, {
+      const summary = await runSemanticPasses(db, msg.config, tool, {
         signal: controller.signal,
         power,
         goNow: () => goNow,
         low: msg.background || undefined,
         onCommit,
-        onProgress: (p) => send({ type: "progress", progress: { ...result, phase: "meaning", current: p.current, waiting: p.waiting, elapsedMs: base + Date.now() - started, meaning: { total: p.total, done: p.done, embedded: p.embedded, reused: p.reused } } }),
+        onProgress: (p) => send({ type: "progress", progress: { ...result, phase: "meaning", current: p.current, waiting: p.waiting, elapsedMs: base + Date.now() - started, meaning: { tier: p.tier, total: p.total, done: p.done, embedded: p.embedded, reused: p.reused } } }),
       })
-      const summary = await semantic.run()
       result.elapsedMs = base + Date.now() - started
       result.meaning = { total: summary.files, done: summary.files, embedded: summary.embedded, reused: summary.reused, error: summary.error }
       if (summary.status === "cancelled") result.phase = "cancelled"

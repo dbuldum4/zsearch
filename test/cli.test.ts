@@ -37,7 +37,7 @@ describe("argument parsing", () => {
   test("progress lines", () => {
     const base = { scanned: 10, added: 0, updated: 0, removed: 0, contentTotal: 4, contentDone: 1, contentBytes: 2048, contentErrors: 0, current: "", startedAt: 0, elapsedMs: 1500 }
     expect(progressLine({ ...base, phase: "content" })).toContain("Word index: reading contents 25%")
-    expect(progressLine({ ...base, phase: "meaning", meaning: { total: 4, done: 1, embedded: 3, reused: 2 } })).toContain("Meaning index (Gemma) 25%")
+    expect(progressLine({ ...base, phase: "meaning", meaning: { total: 4, done: 1, embedded: 3, reused: 2 } })).toContain("Semantic index (Granite) 25%")
     expect(progressLine({ ...base, phase: "scan" })).toContain("Scanning… 10 items")
   })
 })
@@ -52,13 +52,13 @@ describe("zsearch command line", () => {
     expect(v.out.trim()).toMatch(/^\d+\.\d+\.\d+$/)
   })
 
-  test("index --meaning-only without meaning on explains and builds nothing", async () => {
-    const r = await zs("index", "--meaning-only")
+  test("index --semantic-only without semantic search on explains and builds nothing", async () => {
+    const r = await zs("index", "--semantic-only")
     expect(r.code).toBe(1)
-    expect(r.err).toContain("search by meaning cannot run")
+    expect(r.err).toContain("semantic search cannot run")
     const both = await zs("index", "--meaning-only", "--rebuild")
     expect(both.code).not.toBe(0)
-    expect(both.err).toContain("--meaning-only cannot be combined with --rebuild")
+    expect(both.err).toContain("--semantic-only cannot be combined with --rebuild")
   })
 
   test("search before indexing explains what to do", async () => {

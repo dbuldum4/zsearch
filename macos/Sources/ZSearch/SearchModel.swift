@@ -18,7 +18,7 @@ final class IndexActivity {
 @MainActor
 final class SearchModel {
     var query = "" {
-        // Search by meaning runs the model on the query: wait for a pause in typing.
+        // Semantic search runs the model on the query: wait for a pause in typing.
         didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
     }
     var mode: Mode = .find {
@@ -43,7 +43,7 @@ final class SearchModel {
     private(set) var preview: FilePreview?
     private(set) var stats: IndexStats?
     private(set) var config: Config?
-    /// Search by meaning: its model, helper and index; and the model download, while one runs.
+    /// Semantic search: its model, helper and index; and the model download, while one runs.
     private(set) var semantic: SemanticStatus?
     private(set) var semanticDownload: DownloadProgress?
     private(set) var downloadingModel = false
@@ -185,6 +185,9 @@ final class SearchModel {
             mode = Mode(rawValue: ready.config.defaultMode) ?? .find
             Task {
                 await refreshStats()
+                await refreshSemantic()
+                // Semantic search's two models download when the app starts, unless it was turned off.
+                if let s = semantic, !s.declined, !s.model.ready { installSemantic() }
                 if ready.firstRun {
                     showSetup = true
                 } else if indexIsStale {
@@ -204,7 +207,7 @@ final class SearchModel {
                 // Settings changed during the run still wait for the next one.
                 if indexedRevision == settingsRevision { needsReindex = false }
                 if let p = done.progress, let m = p.meaning, p.scanned == 0 {
-                    show("Meaning index (Gemma) updated · \(m.done.formatted()) files read · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused")
+                    show("Semantic index updated · \(m.done.formatted()) files read · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused")
                 } else if let p = done.progress {
                     let changed = p.added + p.updated + p.removed
                     show("Index updated · \(p.scanned.formatted()) items scanned" + (changed > 0 ? " · \(changed.formatted()) changed" : ""))
@@ -399,15 +402,15 @@ final class SearchModel {
         if case let .stats(s)? = try? await engine.request(.stats) { stats = s }
     }
 
-    // MARK: - Search by meaning
+    // MARK: - Semantic search
 
     func refreshSemantic() async {
         guard let engine else { return }
         if case let .semantic(s)? = try? await engine.request(.semanticStatus) { semantic = s }
     }
 
-    /// Download the model and turn search by meaning on; the engine then reads the files for it.
-    func installSemantic(images: Bool) {
+    /// Download both models and turn semantic search on; the engine then reads the files for it.
+    func installSemantic() {
         guard let engine, !downloadingModel else { return }
         downloadingModel = true
         semanticDownload = nil
@@ -417,7 +420,7 @@ final class SearchModel {
                 semanticDownload = nil
             }
             do {
-                let reply = try await engine.request(.semanticInstall(images: images))
+                let reply = try await engine.request(.semanticInstall)
                 if case let .semantic(s) = reply { semantic = s }
                 if case let .error(text) = reply { show(text) }
                 if case let .config(c)? = try? await engine.request(.config) { config = c }
@@ -463,7 +466,7 @@ final class SearchModel {
         }
     }
 
-    /// Build only the meaning (Gemma) index, from text earlier runs already read:
+    /// Build only the semantic indexes (Potion, then Granite), from text earlier runs already read:
     /// no scanning and no word-index pass, so testing meaning never re-reads files.
     func buildMeaningIndex() {
         guard let engine, !indexing else { return }

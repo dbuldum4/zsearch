@@ -1,4 +1,6 @@
-// zsearch-embed: EmbeddingGemma 2 vectors for zsearch's semantic search, on llama.cpp.
+// zsearch-embed: embedding vectors for zsearch's semantic search, on llama.cpp: IBM's Granite embedding
+// model (granite-embedding-small-english-r2, ModernBERT) for text. It was written for EmbeddingGemma 2, whose
+// image encoder (--mmproj) it can still run.
 //
 // Adapted from DigUp (https://github.com/ARahim3/DigUp): LlamaEmbedder.swift (how inputs are framed, pooled
 // and normalized, and how image rows feed the text model) and ImageSizing.swift (the reference's image
@@ -40,7 +42,7 @@
 
 // Which vectors this helper makes. Bump it with anything that changes them (llama.cpp tag, framing,
 // image sizing): zsearch then embeds everything again rather than mix incomparable vectors.
-static const int VECTOR_VERSION = 1;
+static const int VECTOR_VERSION = 2;   // 2: pooling as the model says (Granite: its CLS token)
 
 struct Options {
     std::string model;
@@ -51,6 +53,7 @@ struct Options {
     int max_input = 2048;      // tokens kept of one input (the reference's cut)
     bool sort = true;          // pack inputs of similar length together
     int flash_attn = -1;       // -1 auto, 0 off, 1 on
+    enum llama_pooling_type pooling = LLAMA_POOLING_TYPE_UNSPECIFIED;   // the model's own, unless given
 };
 
 static int log_level_min = GGML_LOG_LEVEL_WARN;
@@ -140,7 +143,7 @@ class Embedder {
         cp.n_seq_max = (uint32_t) opt.max_seqs;
         cp.kv_unified = true;   // each input may use the whole context, as in llama-embedding
         cp.embeddings = true;
-        cp.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        cp.pooling_type = opt.pooling;
         cp.flash_attn_type = opt.flash_attn < 0 ? LLAMA_FLASH_ATTN_TYPE_AUTO
                              : opt.flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
         int threads = opt.threads > 0 ? opt.threads : (int) std::max(1u, std::thread::hardware_concurrency());
@@ -180,7 +183,8 @@ class Embedder {
     }
     const Options & options() const { return opt; }
 
-    // `<bos> text <eos>`, cut the way transformers cuts (keeping both special tokens).
+    // The text with the model's special tokens (`<bos> text <eos>`, `[CLS] text [SEP]`), cut the way
+    // transformers cuts (keeping both).
     std::vector<llama_token> tokenize(const std::string & text) const {
         std::vector<llama_token> tokens(text.size() + 8);
         int n = llama_tokenize(vocab, text.data(), (int32_t) text.size(), tokens.data(), (int32_t) tokens.size(), true, true);
@@ -190,8 +194,9 @@ class Embedder {
         }
         tokens.resize((size_t) std::max(n, 0));
         if ((int) tokens.size() > opt.max_input) {
+            llama_token last = tokens.back();
             tokens.resize((size_t) opt.max_input - 1);
-            tokens.push_back(llama_vocab_eos(vocab));
+            tokens.push_back(last);
         }
         return tokens;
     }
@@ -589,6 +594,7 @@ static void usage() {
     fprintf(stderr,
             "usage: zsearch-embed --model TEXT.gguf [--mmproj MEDIA.gguf] [--threads N] [--batch-tokens N]\n"
             "                     [--max-seqs N] [--max-input N] [--no-sort] [--flash-attn auto|on|off]\n"
+            "                     [--pooling mean|cls]\n"
             "Reads requests on stdin and writes vectors on stdout (see the top of zsearch-embed.cpp).\n");
 }
 
@@ -608,6 +614,12 @@ int main(int argc, char ** argv) {
         else if (a == "--max-input") opt.max_input = std::max(8, atoi(next().c_str()));
         else if (a == "--no-sort") opt.sort = false;
         else if (a == "--flash-attn") { std::string v = next(); opt.flash_attn = v == "on" ? 1 : v == "off" ? 0 : -1; }
+        else if (a == "--pooling") {
+            std::string v = next();
+            if (v == "mean") opt.pooling = LLAMA_POOLING_TYPE_MEAN;
+            else if (v == "cls") opt.pooling = LLAMA_POOLING_TYPE_CLS;
+            else { usage(); return 2; }
+        }
         else if (a == "--verbose") log_level_min = GGML_LOG_LEVEL_INFO;
         else if (a == "--version") { printf("zsearch-embed vectors %d\n", VECTOR_VERSION); return 0; }
         else { usage(); return 2; }

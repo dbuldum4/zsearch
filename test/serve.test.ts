@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { readFileSync, writeFileSync } from "node:fs"
+import { closeSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { makeCorpus } from "./helpers/corpus.ts"
 
@@ -144,7 +144,7 @@ test("serve: meaningIndex without meaning on fails without touching the word ind
   expect((await s.reply(1)).type).toBe("ok")
   const done = await s.until((m) => m.type === "indexDone")
   expect(done.status).toBe("error")
-  expect(String(done.error ?? (done.progress as { error?: string })?.error ?? "")).toContain("search by meaning cannot run")
+  expect(String(done.error ?? (done.progress as { error?: string })?.error ?? "")).toContain("semantic search cannot run")
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
@@ -214,6 +214,42 @@ test("serve: only updates that started on their own wait on power, and asking fo
   expect(p.contentDone).toBe(p.contentTotal)
   expect(p.waiting).toBeUndefined()
 
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
+test("serve: semantic search installed while an update runs gets a run of its own after it", async () => {
+  for (let i = 0; i < 1100; i++) corpus.write(`bulk/file-${i}.txt`, `bulk word number${i}\n`)
+  // The models as if downloaded already: files of their sizes (unchecked, with $ZSEARCH_MODELS).
+  const models = join(corpus.home, ".models")
+  mkdirSync(models, { recursive: true })
+  for (const [name, bytes] of [["model.safetensors", 129_210_456], ["tokenizer.json", 1_493_150], ["granite-embedding-small-english-r2.Q8_0.gguf", 52_445_632]] as const) {
+    const fd = openSync(join(models, name), "w")
+    ftruncateSync(fd, bytes)
+    closeSync(fd)
+  }
+  const s = server({ ZSEARCH_POWER: "low-power", ZSEARCH_MODELS: models }, ".zsearch-install")
+  await s.until((m) => m.type === "ready")
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~/bulk"], semantic: { enabled: false, declined: false, code: false } } })
+  await s.reply(1)
+  // An update that started on its own, before semantic search was on, waits on power...
+  s.send({ id: 2, type: "index", background: true })
+  await s.reply(2)
+  await s.until((m) => m.type === "indexProgress" && Boolean((m.progress as { waiting?: string }).waiting))
+  // ...while the models install.
+  s.send({ id: 3, type: "semanticInstall" })
+  expect((await s.reply(3)).type).toBe("semantic")
+  s.send({ id: 4, type: "index" })
+  await s.reply(4)
+  const first = await s.until((m) => m.type === "indexDone")
+  expect((first.progress as { meaning?: unknown }).meaning).toBeUndefined()
+  // The run that follows has semantic search on.
+  const next = await s.until((m) => m.type === "indexProgress" || m.type === "indexDone")
+  expect(next.type).toBe("indexProgress")
+  s.send({ id: 5, type: "index" })
+  await s.reply(5)
+  const second = await s.until((m) => m.type === "indexDone")
+  expect((second.progress as { meaning?: unknown }).meaning).toBeDefined()
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
 }, 60_000)

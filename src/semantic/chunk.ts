@@ -126,12 +126,15 @@ export function titleOf(name: string): string {
   return stem.trim() || name
 }
 
-/** The text a passage is embedded as: EmbeddingGemma's document prompt, as DigUp writes it. */
+/**
+ * The text a passage is embedded as: its file's title, then the passage. Neither model takes a
+ * prompt (Granite's model card uses none, and Potion only averages words).
+ */
 export function documentPrompt(title: string, text: string): string {
-  return `title: ${title || "none"} | text: ${text}`
+  return title ? `${title}\n\n${text}` : text
 }
 
-/** The text a query is embedded as (EmbeddingGemma's search prompt, as DigUp writes it). */
+/** The text a query is embedded as: itself. */
 export function queryPrompt(text: string): string {
-  return `task: search result | query: ${text}`
+  return text
 }

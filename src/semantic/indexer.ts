@@ -1,7 +1,8 @@
 /**
- * The semantic pass of an index run: after the main index has read the files' text, embed what
- * is new or changed with EmbeddingGemma 2, and keep the semantic index (`store.ts`) in step with
- * the main one.
+ * The semantic passes of an index run: after the main index has read the files' text, embed what
+ * is new or changed, and keep the semantic indexes (`store.ts`) in step with the main one. There
+ * are two passes, one per model (`model.ts`): Potion first, which reads everything in moments, then
+ * Granite, which takes far longer and whose vectors search prefers for the files it has done.
  *
  * DigUp reads and embeds one file at a time, up to 16 passages per model call, and reads each
  * file again for it. This pass is built to do much less work for the same vectors:
@@ -17,29 +18,29 @@
  *   is off by default).
  *
  * Like the main index it respects the index settings: it runs only as part of an index run (so
- * not at all with "only when I ask" until someone asks), waits on power in a background run with
- * a lot to do, never reads keys and password files (they have no stored text), and stops at once
- * when the run is cancelled. Long files get their first passages in a first round and the rest
- * after every file has its start, as DigUp does.
+ * not at all with "only when I ask" until someone asks), and so only while zsearch runs (the Mac
+ * app is open); the Granite pass waits on power in a background run with a lot to do; neither reads
+ * keys and password files (they have no stored text); and both stop at once when the run is
+ * cancelled. Long files get their first passages in a first round and the rest after every file has
+ * its start, as DigUp does.
  */
 import type { Database } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
 import { availableParallelism } from "node:os"
-import { closeSync, openSync, readSync } from "node:fs"
-import { type Config, resolvePath } from "../config.ts"
+import type { Config } from "../config.ts"
 import { ContentState, decompressText, getMeta as getMainMeta, setMeta as setMainMeta } from "../index/db.ts"
-import { datasetFolders, DATASET_NOTE } from "../index/datasets.ts"
 import { loadShare } from "../index/load.ts"
 import type { PowerGate } from "../index/power.ts"
 import { crawlOptionsFor, pathPolicy } from "../index/policy.ts"
-import { SECRET_NOTE, secretFile } from "../index/secrets.ts"
-import { extOf, type Kind, OCR_EXTS } from "../kinds.ts"
+import { secretFile } from "../index/secrets.ts"
+import type { Kind } from "../kinds.ts"
 import { CHUNKER_VERSION, chunkText, documentPrompt, hasWords, titleOf } from "./chunk.ts"
-import { Embedder, type EmbedderOptions } from "./helper.ts"
-import { installedModel, modelFingerprint } from "./model.ts"
+import { Embedder, type TextEmbedder } from "./helper.ts"
+import { installedModel, modelFingerprint, modelSpec, POTION, type Tier } from "./model.ts"
+import { PotionEmbedder, PotionModel } from "./potion.ts"
 import { clearAll, clearPassages, getMeta, openSemanticDb, packVector, semanticDbPath, setMeta } from "./store.ts"
 
-/** Kinds whose text is embedded. Code and data files only with `semantic.code`. */
+/** Kinds whose text is embedded (images: the text OCR read in them). Code and data files only with `semantic.code`. */
 const TEXT_KINDS = new Set<Kind>(["text", "markdown", "web", "pdf", "doc", "sheet", "slides", "ebook", "email", "image", "other"])
 const CODE_KINDS = new Set<Kind>(["code", "data"])
 /** Passages of a file in the first round (DigUp's `docStep`); the rest come in the second. */
@@ -50,18 +51,18 @@ export const SCALE_PASSAGES = FIRST_ROUND
 const GROUP_INPUTS = 256
 /** ...and characters. */
 const GROUP_CHARS = 512 * 1024
-/** Images per request (as DigUp batches them). */
-const IMAGE_GROUP = 8
-/** Files to embed, at least, for a background run to wait on power. Embedding costs far more per file than reading. */
+/** Files to embed, at least, for a background Granite run to wait on power. Embedding costs far more per file than reading. */
 const BIG_RUN = 100
-/** Image files are hashed (to share vectors between copies) from at most their first bytes. */
-const IMAGE_HASH_BYTES = 64 * 1024 * 1024
+/** Potion's version here: bump it with anything that changes its vectors (`potion.ts`). */
+const POTION_VERSION = 1
 
 export interface SemanticProgress {
+  /** Which pass: Potion's ("fast") or Granite's ("full"). */
+  tier?: Tier
   /** Files to embed in this run, and done so far. */
   total: number
   done: number
-  /** Passages and images embedded, and found already embedded. */
+  /** Passages embedded, and found already embedded. */
   embedded: number
   reused: number
   waiting?: string
@@ -69,6 +70,8 @@ export interface SemanticProgress {
 }
 
 export interface SemanticOptions {
+  /** Which model's pass: "fast" (Potion) or "full" (Granite, the default). */
+  tier?: Tier
   signal?: AbortSignal
   /** Wait on power during a big pass (background runs). */
   power?: PowerGate
@@ -76,8 +79,8 @@ export interface SemanticOptions {
   goNow?: () => boolean
   onProgress?: (p: SemanticProgress) => void
   onCommit?: () => void
-  /** Starts the helper (tests and benchmarks pass their own). */
-  embedder?: (opts: Omit<EmbedderOptions, "tool" | "model">) => Embedder
+  /** Starts the model (tests and benchmarks pass their own). */
+  embedder?: (opts: { threads: number; low: boolean }) => TextEmbedder
   /** The helper's `VECTOR_VERSION`, when `embedder` is given. */
   vectorVersion?: number
   /** Run at a low priority (background runs). */
@@ -94,12 +97,18 @@ export interface SemanticSummary {
   error?: string
 }
 
-/** Whether semantic indexing can run with these settings: the model, the helper and the setting. */
+/** Whether semantic indexing can run with these settings: the setting, and Potion at least. */
 export function semanticAvailable(config: Config, tool: string | null): string | null {
   if (!config.semantic.enabled) return "semantic search is off"
   if (!config.content.enabled) return "file contents are off"
-  if (!tool) return "the embedding helper (zsearch-embed) is not installed"
-  if (!installedModel().text) return "the model is not downloaded (zsearch semantic install)"
+  if (!installedModel(POTION)) return "the models are not downloaded (zsearch semantic install)"
+  return tierBlocked("full", tool) && tierBlocked("fast", tool)
+}
+
+/** Why one model's pass can't run (its files, and Granite's helper), or null. */
+export function tierBlocked(tier: Tier, tool: string | null): string | null {
+  if (!installedModel(modelSpec(tier))) return `${modelSpec(tier).name} is not downloaded (zsearch semantic install)`
+  if (tier === "full" && !tool) return "the embedding helper (zsearch-embed) is not installed"
   return null
 }
 
@@ -129,8 +138,13 @@ export function mainGeneration(main: Database, create = false): string | null {
   return `${key}:${getMainMeta(main, "generation") ?? "0"}`
 }
 
-export function semanticFingerprint(vectorVersion: number): string {
-  return `${modelFingerprint()} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
+export function semanticFingerprint(tier: Tier, vectorVersion: number): string {
+  return `${modelFingerprint(modelSpec(tier))} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
+}
+
+/** What a file's passages are read from: its size, date and text length. */
+export function textSig(size: number, mtime: number, len: number): string {
+  return `t:${size}:${mtime}:${len}`
 }
 
 interface Candidate {
@@ -139,7 +153,6 @@ interface Candidate {
   name: string
   kind: Kind
   sig: string
-  image: boolean
   mtime: number
 }
 
@@ -171,46 +184,22 @@ function hashText(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s).digest().subarray(0, 16))
 }
 
-/** A hash of an image file's bytes and how it is embedded, or null when it can't be read. */
-function hashImage(path: string, budget: number): Uint8Array | null {
-  let fd: number
-  try { fd = openSync(path, "r") } catch { return null }
-  try {
-    const h = createHash("sha256").update(`image:${budget}:`)
-    const buf = new Uint8Array(1 << 20)
-    let pos = 0
-    for (;;) {
-      const n = readSync(fd, buf, 0, buf.length, pos)
-      if (!n) break
-      h.update(buf.subarray(0, n))
-      pos += n
-      if (pos >= IMAGE_HASH_BYTES) break
-    }
-    return new Uint8Array(h.digest().subarray(0, 16))
-  } catch {
-    return null
-  } finally {
-    closeSync(fd)
-  }
-}
-
-/** Screenshots get twice the image tokens of photos, as in DigUp: they hold small text. */
-export function imageBudget(name: string): number {
-  return /^(?:screen ?shot|cleanshot|capture d['’]écran|bildschirmfoto|schermata)/i.test(name) ? 280 : 140
-}
-
 export class SemanticIndexer {
-  private progress: SemanticProgress = { total: 0, done: 0, embedded: 0, reused: 0, current: "" }
+  private progress: SemanticProgress
   private lastEmit = 0
-  private embedder: Embedder | null = null
+  private embedder: TextEmbedder | null = null
   private tokens = 0
+  private tier: Tier
 
   constructor(
     private main: Database,
     private config: Config,
     private tool: string | null,
     private opts: SemanticOptions = {},
-  ) {}
+  ) {
+    this.tier = opts.tier ?? "full"
+    this.progress = { tier: this.tier, total: 0, done: 0, embedded: 0, reused: 0, current: "" }
+  }
 
   private get aborted() {
     return this.opts.signal?.aborted ?? false
@@ -224,7 +213,8 @@ export class SemanticIndexer {
   }
 
   private waitReason(big: boolean): string | undefined {
-    if (!big || this.opts.goNow?.()) return undefined
+    // Potion costs next to nothing: only Granite waits on power.
+    if (!big || this.tier === "fast" || this.opts.goNow?.()) return undefined
     return this.opts.power?.reason() ?? undefined
   }
 
@@ -266,21 +256,23 @@ export class SemanticIndexer {
     this.embedder = null
   }
 
-  private startEmbedder(images: boolean): Embedder {
+  private startEmbedder(): TextEmbedder {
     if (this.embedder) return this.embedder
     const cores = availableParallelism()
     const threads = Math.max(1, Math.round(cores * loadShare(this.config.indexLoad)))
-    const model = installedModel()
-    const mmproj = images ? model.media : null
     const low = this.opts.low ?? loadShare(this.config.indexLoad) < 1
-    this.embedder = this.opts.embedder ? this.opts.embedder({ mmproj, threads, low }) : new Embedder({ tool: this.tool!, model: model.text!, mmproj, threads, low })
+    if (this.opts.embedder) this.embedder = this.opts.embedder({ threads, low })
+    else if (this.tier === "fast") {
+      const [model, tokenizer] = installedModel(POTION)!
+      this.embedder = new PotionEmbedder(PotionModel.load(model!, tokenizer!))
+    } else this.embedder = new Embedder({ tool: this.tool!, model: installedModel(modelSpec("full"))![0]!, pooling: "cls", threads, low })
     return this.embedder
   }
 
   async run(): Promise<SemanticSummary> {
     const summary: SemanticSummary = { status: "done", files: 0, embedded: 0, reused: 0, removed: 0, tokens: 0 }
     const dbPath = this.main.filename && this.main.filename !== "" ? this.main.filename : ":memory:"
-    const store = openSemanticDb(semanticDbPath(dbPath))!
+    const store = openSemanticDb(semanticDbPath(dbPath, this.tier))!
     try {
       return await this.runWith(store, summary)
     } catch (err) {
@@ -295,8 +287,8 @@ export class SemanticIndexer {
   }
 
   private async runWith(store: Database, summary: SemanticSummary): Promise<SemanticSummary> {
-    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : 0)
-    const fingerprint = semanticFingerprint(version)
+    const version = this.opts.vectorVersion ?? (this.tier === "fast" ? POTION_VERSION : this.tool ? helperVectorVersion(this.tool) : 0)
+    const fingerprint = semanticFingerprint(this.tier, version)
     if (getMeta(store, "fingerprint") !== fingerprint) {
       // Vectors of another model or helper can't be compared with new ones.
       clearAll(store)
@@ -327,8 +319,8 @@ export class SemanticIndexer {
       if (!k || k.sig !== c.sig) queue.push({ ...c, from: 0 })
       else if (k.upto < k.total) queue.push({ ...c, from: k.upto })
     }
-    // Text first, newest first; then images, newest first.
-    queue.sort((a, b) => Number(a.image) - Number(b.image) || b.mtime - a.mtime)
+    // Newest first.
+    queue.sort((a, b) => b.mtime - a.mtime)
     this.progress.total = queue.length
     this.emit(true)
     if (!queue.length) {
@@ -338,14 +330,11 @@ export class SemanticIndexer {
     const big = queue.length >= BIG_RUN
     if (!(await this.waitPower(big))) return { ...summary, status: "cancelled" }
 
-    const texts = queue.filter((q) => !q.image)
-    const images = queue.filter((q) => q.image)
     const stats = { files: new Set<number>() }
     // Round one: every file's first passages. Round two: the rest of the long ones.
     for (const cap of [FIRST_ROUND, Infinity]) {
-      if (!(await this.textRound(store, texts, cap, big, stats))) return this.cancelled(summary, stats)
+      if (!(await this.textRound(store, queue, cap, big, stats))) return this.cancelled(summary, stats)
     }
-    if (images.length && !(await this.imageRound(store, images, big, stats))) return this.cancelled(summary, stats)
     this.finish(store, true)
     return { ...summary, files: stats.files.size, embedded: this.progress.embedded, reused: this.progress.reused, tokens: this.tokens }
   }
@@ -372,29 +361,14 @@ export class SemanticIndexer {
     const crawl = crawlOptionsFor(this.config)
     const out: Candidate[] = []
     const rows = this.main
-      .query("SELECT id, path, name, ext, kind, size, mtime, content_state AS state, content_len AS len, note, source_path AS source FROM files WHERE is_dir = 0 AND (content_state = ? OR kind = 'image')")
-      .all(ContentState.Indexed) as { id: number; path: string; name: string; ext: string; kind: Kind; size: number; mtime: number; state: number; len: number; note: string | null; source: string }[]
-    const images = this.imagesWanted()
-    const imageRows = images ? rows.filter((r) => r.kind === "image" && OCR_EXTS.has(r.ext) && r.note !== SECRET_NOTE && r.note !== DATASET_NOTE) : []
-    // Without OCR, dataset folders weren't looked for: look here, as `skipDatasetOcr` asks.
-    const datasets = new Set(imageRows.length && this.config.skipDatasetOcr ? datasetFolders(imageRows.map((r) => r.path), crawl.roots.map((r) => resolvePath(r))).map((d) => d.dir) : [])
+      .query("SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0")
+      .all(ContentState.Indexed) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
     for (const r of rows) {
-      const allowed = () => {
-        const p = pathPolicy(r.path, crawl)
-        return p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)
-      }
-      if (r.state === ContentState.Indexed && r.len > 0 && kinds.has(r.kind) && allowed()) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: `t:${r.size}:${r.mtime}:${r.len}`, image: false, mtime: r.mtime })
-      // An image also gets a vector of its own, of what it shows (with its OCR text, if any, as a passage above).
-      if (images && r.kind === "image" && OCR_EXTS.has(extOf(r.name)) && r.note !== SECRET_NOTE && r.note !== DATASET_NOTE && !datasets.has(r.path.slice(0, r.path.lastIndexOf("/"))) && allowed()) {
-        out.push({ id: -r.id, path: r.path, name: r.name, kind: r.kind, sig: `i:${r.size}:${r.mtime}:${imageBudget(r.name)}`, image: true, mtime: r.mtime })
-      }
+      if (!kinds.has(r.kind)) continue
+      const p = pathPolicy(r.path, crawl)
+      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime })
     }
     return out
-  }
-
-  /** Images get vectors with the image encoder downloaded, a helper that can read them, and the setting on. */
-  private imagesWanted(): boolean {
-    return this.config.semantic.images && (this.opts.embedder !== undefined || (installedModel().media !== null && process.platform === "darwin"))
   }
 
   /* ----------------------------------------------------------- text -- */
@@ -450,7 +424,7 @@ export class SemanticIndexer {
       if (this.aborted || !(await this.waitPower(big))) return false
       const { pending, needs } = group
       // The model works on this group while the next one is read and cut.
-      const job = needs.length ? this.startEmbedder(this.imagesWanted()).embedTexts(needs.map((n) => n.prompt)) : null
+      const job = needs.length ? this.startEmbedder().embedTexts(needs.map((n) => n.prompt)) : null
       const following = build()
       const result = job ? await this.unlessAborted(job) : null
       if (this.aborted) return false
@@ -497,53 +471,20 @@ export class SemanticIndexer {
     // The next round goes on from here.
     p.file.from = p.to
   }
+}
 
-  /* --------------------------------------------------------- images -- */
-
-  private async imageRound(store: Database, files: Queued[], big: boolean, stats: { files: Set<number> }): Promise<boolean> {
-    const hasVector = store.prepare("SELECT 1 FROM vectors WHERE hash = ?")
-    const insertVector = store.prepare("INSERT OR IGNORE INTO vectors(hash, vec) VALUES (?, ?)")
-    // Same budget together: one request is one budget.
-    const byBudget = new Map<number, Queued[]>()
-    for (const f of files) {
-      const b = imageBudget(f.name)
-      const list = byBudget.get(b) ?? []
-      list.push(f)
-      byBudget.set(b, list)
-    }
-    for (const [budget, list] of byBudget) {
-      for (let i = 0; i < list.length; i += IMAGE_GROUP) {
-        if (this.aborted || !(await this.waitPower(big))) return false
-        const batch = list.slice(i, i + IMAGE_GROUP)
-        const hashes = batch.map((f) => hashImage(f.path, budget))
-        const ask = batch.map((f, k) => ({ f, hash: hashes[k] })).filter((x) => x.hash && !hasVector.get(x.hash))
-        const seen = new Set<string>()
-        const unique = ask.filter((x) => !seen.has(hex(x.hash!)) && (seen.add(hex(x.hash!)), true))
-        const result = unique.length ? await this.unlessAborted(this.startEmbedder(true).embedImages(unique.map((x) => x.f.path), budget)) : { vectors: [], errors: [] }
-        if (this.aborted || !result) return false
-        const errors = new Map<string, string>()
-        store.transaction(() => {
-          unique.forEach((x, k) => {
-            const v = result.vectors[k]
-            if (v) insertVector.run(x.hash!, packVector(v, 0, v.length))
-            else errors.set(hex(x.hash!), result.errors[k] ?? "failed")
-          })
-          batch.forEach((f, k) => {
-            const hash = hashes[k]
-            const note = !hash ? "unreadable" : errors.get(hex(hash))
-            const rows = hash && !note ? [{ n: 0, hash, start: -1, end: -1 }] : []
-            this.storeFile(store, { file: f, total: 1, to: 1, rows, waiting: new Map(), note })
-            stats.files.add(f.id)
-          })
-        })()
-        this.progress.embedded += unique.length - errors.size
-        this.progress.reused += batch.length - unique.length
-        this.progress.done += batch.length
-        this.progress.current = batch.at(-1)!.path
-        this.emit()
-        this.opts.onCommit?.()
-      }
-    }
-    return true
+/**
+ * Both passes of an index run: Potion's, which reads every file in moments, then Granite's, where
+ * its helper and model are there. The summary is Granite's (Potion's, without it), with the
+ * passages of both; a cancelled or failed Potion pass stops there.
+ */
+export async function runSemanticPasses(main: Database, config: Config, tool: string | null, opts: Omit<SemanticOptions, "tier"> = {}): Promise<SemanticSummary> {
+  let summary: SemanticSummary | null = null
+  for (const tier of ["fast", "full"] as const) {
+    if (tierBlocked(tier, tool) && !opts.embedder) continue
+    const s = await new SemanticIndexer(main, config, tool, { ...opts, tier }).run()
+    summary = summary ? { ...s, embedded: summary.embedded + s.embedded, reused: summary.reused + s.reused, tokens: summary.tokens + s.tokens } : s
+    if (s.status !== "done") break
   }
+  return summary ?? { status: "skipped", files: 0, embedded: 0, reused: 0, removed: 0, tokens: 0 }
 }

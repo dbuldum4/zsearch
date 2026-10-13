@@ -9,7 +9,7 @@
  *       [--distractors=2000] [--json=OUT] [--min-overlap=0.99]
  *
  * Ranking by meaning alone orders a query's passages by cosine (DigUp's z-score is the same
- * order), so the top-10 overlap here is the overlap of what search by meaning shows. Exits 1 if
+ * order), so the top-10 overlap here is the overlap of what semantic search shows. Exits 1 if
  * the stored vectors agree with full precision on less than --min-overlap of the top 10, or if
  * packing passages into one model call moves any vector below DigUp's 0.999 cosine.
  */
@@ -57,7 +57,7 @@ rmSync(work, { recursive: true, force: true })
 
 const all = [...docs, ...distractors]
 log(`embedding ${evals.length} queries and ${all.length} passages (${docs.length} answers, ${distractors.length} distractors)`)
-const embedder = new Embedder({ tool: TOOL, model: MODEL })
+const embedder = new Embedder({ tool: TOOL, model: MODEL, pooling: "cls" })
 const t = performance.now()
 const P = await embedder.embedTexts(all)
 const Q = await embedder.embedTexts(evals.map((e) => queryPrompt(e.query)))

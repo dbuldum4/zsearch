@@ -12,6 +12,7 @@ import { parseQuery } from "../src/search/query.ts"
 import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk.ts"
 import { Embedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
+import { normalize, PotionEmbedder, PotionModel, preTokenize, WordPiece } from "../src/semantic/potion.ts"
 import { isLookup, kindHints, meaning, queryTerms, rank, strongCount } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, vectorValues } from "../src/semantic/store.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
@@ -103,6 +104,35 @@ describe("DigUp's ranking", () => {
   })
 })
 
+describe("Potion", () => {
+  test("cuts text as BERT's uncased WordPiece does", () => {
+    expect(normalize("Café\tNAÏVE\u0000 東京")).toBe("cafe naive  東  京 ")
+    expect(preTokenize("don't stop-me, $5.00!")).toEqual(["don", "'", "t", "stop", "-", "me", ",", "$", "5", ".", "00", "!"])
+    const wp = new WordPiece({ "[UNK]": 0, un: 1, "##afford": 2, "##able": 3, house: 4, ",": 5 })
+    expect(wp.encode("Unaffordable house, unknownword")).toEqual([1, 2, 3, 4, 5])
+    expect(wp.encode("house house house", 2)).toEqual([4, 4])
+  })
+
+  test("a text's vector is the normalized average of its pieces' vectors", async () => {
+    const model = PotionModel.of({ "[UNK]": 0, cat: 1, dog: 2 }, [[9, 9], [1, 0], [0, 1]])
+    const out = new Float32Array(2)
+    expect(model.embedInto("cat dog zebra", out)).toBe(2)
+    expect(out[0]).toBeCloseTo(Math.SQRT1_2, 3)
+    expect(out[1]).toBeCloseTo(Math.SQRT1_2, 3)
+    expect(model.embedInto("zebra", out)).toBe(0)
+    expect([...out]).toEqual([0, 0])
+  })
+
+  test("lets the event loop run while it embeds, and stops when killed", async () => {
+    const embedder = new PotionEmbedder(PotionModel.of({ "[UNK]": 0, cat: 1, dog: 2 }, [[9, 9], [1, 0], [0, 1]]))
+    const texts = Array.from({ length: 500_000 }, (_, i) => `cat dog cat number ${i}`)
+    let ticked = false
+    setTimeout(() => { ticked = true; embedder.kill() }, 0)
+    await expect(embedder.embedTexts(texts)).rejects.toThrow("stopped")
+    expect(ticked).toBe(true)
+  })
+})
+
 describe("semantic index and search", () => {
   let corpus: ReturnType<typeof makeCorpus>
   let db: Database
@@ -117,13 +147,15 @@ describe("semantic index and search", () => {
   const embeddedTexts = () => requests().filter((r) => r.op === "t").flatMap((r) => r.texts!)
   const resetLog = () => rmSync(log, { force: true })
   const fakeEmbedder: SemanticOptions["embedder"] = (o) => new Embedder({ ...o, tool, model: "fake.gguf" })
+  // Potion's stand-in: the same fake helper, told to see one concept less ("sedan" isn't a vehicle).
+  const fakePotion: SemanticOptions["embedder"] = (o) => new Embedder({ ...o, tool, model: "fake.gguf", extra: ["--weak"] })
   const semantic = (opts: SemanticOptions = {}) => new SemanticIndexer(db, config, tool, { embedder: fakeEmbedder, vectorVersion: 1, ...opts }).run()
   const store = () => openSemanticDb(semanticDbPath(dbPath))!
   const engine = () => {
     const e = new SearchEngine(db, config)
     e.embedQuery = async (text) => {
       const h = new Embedder({ tool, model: "fake.gguf" })
-      try { return (await h.embedTexts([`task: search result | query: ${text}`])).vectors } finally { h.close() }
+      try { return (await h.embedTexts([text])).vectors } finally { h.close() }
     }
     return e
   }
@@ -144,11 +176,9 @@ describe("semantic index and search", () => {
     corpus.write("notes/orders.txt", "Order K7Q2LM shipped on Monday. Tracking will follow.\n")
     corpus.write("notes/deploy.txt", "Deployed commit 3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a to production on Friday.\n")
     corpus.write("Documents/credentials", "user=admin password=hunter2 sedan\n")
-    corpus.write("Pictures/sunset-beach.png", new Uint8Array(4096).fill(7))
-    corpus.write("Pictures/broken.png", new Uint8Array(4096).fill(9))
     dbPath = join(corpus.home, ".zsearch-data", "index.db")
     db = openDb(dbPath)
-    config = { ...homeConfig(), semantic: { enabled: true, images: true, code: false } }
+    config = { ...homeConfig(), semantic: { enabled: true, declined: false, code: false } }
     await new Indexer(db, config, { inProcess: true }).run()
   })
 
@@ -165,7 +195,7 @@ describe("semantic index and search", () => {
     expect(r.status).toBe("done")
     expect(r.embedded).toBeGreaterThan(5)
     const texts = embeddedTexts()
-    expect(texts.some((t) => t.startsWith("title: garage | text: My sedan"))).toBe(true)
+    expect(texts.some((t) => t.startsWith("garage\n\nMy sedan"))).toBe(true)
     expect(texts.some((t) => t.includes("hunter2"))).toBe(false)
     expect(texts.some((t) => t.includes("getUserName"))).toBe(false)
     expect(texts.some((t) => t.includes("MAX_RETRIES"))).toBe(false)
@@ -174,10 +204,6 @@ describe("semantic index and search", () => {
     s.close()
     expect(stats.files).toBeGreaterThan(5)
     expect(stats.partial).toBe(0)
-    // Images: in one request (same budget), the broken one noted rather than tried on every run.
-    const images = requests().filter((q) => q.op === "m")
-    expect(images).toHaveLength(1)
-    expect(images[0]!.paths!.map((p) => p.slice(corpus.home.length + 1))).toEqual(expect.arrayContaining(["Pictures/sunset-beach.png", "Pictures/broken.png"]))
   })
 
   test("a run with nothing new embeds nothing", async () => {
@@ -197,7 +223,7 @@ describe("semantic index and search", () => {
     expect(r.status).toBe("done")
     // The copy shares its title and text with the old version: nothing to embed for it. The edit
     // is one passage.
-    expect(embeddedTexts()).toEqual(["title: garage | text: My sedan needs new tyres before winter.\n\nThe mechanic also said the brakes are worn, and the oil is due."])
+    expect(embeddedTexts()).toEqual(["garage\n\nMy sedan needs new tyres before winter.\n\nThe mechanic also said the brakes are worn, and the oil is due."])
     expect(r.reused).toBeGreaterThan(0)
 
     resetLog()
@@ -210,16 +236,14 @@ describe("semantic index and search", () => {
     const again = await semantic()
     expect(again.status).toBe("done")
     expect(again.embedded).toBe(0)
-    // Only the image that failed is tried again.
-    expect(requests().filter((q) => q.op === "t")).toHaveLength(0)
-    expect(requests().flatMap((q) => q.paths ?? []).map((p) => p.slice(corpus.home.length + 1))).toEqual(["Pictures/broken.png"])
+    expect(requests()).toHaveLength(0)
   })
 
   test("finds by meaning what has none of the query's words", async () => {
     const r = await engine().search("automobile", "semantic")
     expect(r.error).toBeUndefined()
     expect(r.resolved).toBe("semantic")
-    expect(r.strategy).toBe("meaning + words")
+    expect(r.strategy).toBe("semantic + words")
     expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     expect(r.hits[0]!.lines[0]!.text).toContain("sedan")
     expect(r.hits.some((h) => h.display === "Documents/credentials")).toBe(false)
@@ -227,12 +251,50 @@ describe("semantic index and search", () => {
     expect(pets.hits[0]!.display).toBe("notes/pets.md")
   })
 
-  test("images are found by what they show, and filters apply", async () => {
-    const r = await engine().search("photo of a sunset", "semantic")
-    expect(r.hits[0]!.display).toBe("Pictures/sunset-beach.png")
-    expect(r.hits[0]!.lines).toEqual([])
+  test("filters apply to meaning matches", async () => {
     const docs = await engine().search("automobile type:image", "semantic")
     expect(docs.hits.some((h) => h.display.startsWith("notes/"))).toBe(false)
+  })
+
+  test("Potion's vectors stand in for files Granite hasn't read, and Granite's replace them", async () => {
+    const fast = await semantic({ tier: "fast", embedder: fakePotion })
+    expect(fast.status).toBe("done")
+    // Granite has read every file: Potion's index is not used, and "sedan" is found as a vehicle.
+    const e = engine()
+    const both = await e.search("automobile", "semantic")
+    expect(both.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
+    e.closeSemantic()
+    // Before Granite has read any file, the files have Potion's vectors only.
+    const s = store()
+    s.exec("DELETE FROM passages")
+    s.exec("DELETE FROM files")
+    s.close()
+    const potionOnly = engine()
+    const r = await potionOnly.search("canine", "semantic")
+    expect(r.strategy).toBe("semantic + words")
+    expect(r.hits[0]!.display).toBe("notes/pets.md")
+    // Potion's stand-in doesn't know a sedan is a vehicle; Granite's does.
+    expect((await potionOnly.search("automobile", "semantic")).hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
+    potionOnly.closeSemantic()
+    expect((await semantic()).status).toBe("done")
+  })
+
+  test("a file edited since Granite read it takes Potion's vectors of it as it is now", async () => {
+    corpus.write("notes/errands.txt", "Errands for Saturday: groceries and laundry.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    expect((await semantic({ tier: "fast", embedder: fakePotion })).status).toBe("done")
+    corpus.write("notes/errands.txt", "Errands for Saturday: walk the puppy, then groceries and laundry.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    // Potion has caught up with the edit; Granite still has the old text.
+    expect((await semantic({ tier: "fast", embedder: fakePotion })).status).toBe("done")
+    const e = engine()
+    const r = await e.search("canine", "semantic")
+    expect(r.hits.some((h) => h.display === "notes/errands.txt")).toBe(true)
+    e.closeSemantic()
+    rmSync(join(corpus.home, "notes/errands.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
+    for (const tier of ["fast", "full"] as const) expect((await semantic(tier === "fast" ? { tier, embedder: fakePotion } : {})).status).toBe("done")
   })
 
   test("codes are looked up by their words", async () => {
@@ -319,14 +381,31 @@ describe("semantic index and search", () => {
     expect(r.files).toBeGreaterThanOrEqual(110)
   })
 
+  test("while Granite is part way, Potion's best files Granite hasn't read are reranked with Granite", async () => {
+    // Granite hasn't read the garage notes; Potion's stand-in doesn't know a sedan is a vehicle.
+    const s = store()
+    const ids = (db.query("SELECT id FROM files WHERE name LIKE 'garage%'").values() as number[][]).map((r) => r[0]!)
+    for (const id of ids) { s.query("DELETE FROM passages WHERE file = ?").run(id); s.query("DELETE FROM files WHERE file = ?").run(id) }
+    s.close()
+    const e = engine()
+    const without = await e.search("automobile", "semantic")
+    expect(without.hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
+    e.rerankMinPassages = 0
+    const r = await e.search("automobile", "semantic")
+    expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
+    expect(r.hits[0]!.lines[0]!.text).toContain("sedan")
+    e.closeSemantic()
+    expect((await semantic()).status).toBe("done")
+  })
+
   test("a search engine follows the index when it is removed and made again", async () => {
     const e = engine()
-    expect((await e.search("automobile", "semantic")).strategy).toBe("meaning + words")
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(semanticDbPath(dbPath) + suffix, { force: true })
+    expect((await e.search("automobile", "semantic")).strategy).toBe("semantic + words")
+    for (const tier of ["fast", "full"] as const) for (const suffix of ["", "-wal", "-shm"]) rmSync(semanticDbPath(dbPath, tier) + suffix, { force: true })
     expect((await e.search("automobile", "semantic")).strategy).toBe("words")
     expect((await semantic()).status).toBe("done")
     const r = await e.search("automobile", "semantic")
-    expect(r.strategy).toBe("meaning + words")
+    expect(r.strategy).toBe("semantic + words")
     expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     e.closeSemantic()
   })

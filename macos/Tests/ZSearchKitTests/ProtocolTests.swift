@@ -83,18 +83,19 @@ final class ProtocolTests: XCTestCase {
     func testSemanticRequestsAndReplies() throws {
         func json(_ r: Request) throws -> String { String(decoding: try r.encoded(id: 7), as: UTF8.self) }
         XCTAssertEqual(try json(.search(query: "red car", mode: .semantic)), #"{"id":7,"limit":200,"mode":"semantic","query":"red car","type":"search"}"#)
-        XCTAssertEqual(try json(.semanticInstall(images: false)), #"{"id":7,"images":false,"type":"semanticInstall"}"#)
+        XCTAssertEqual(try json(.semanticInstall), #"{"id":7,"type":"semanticInstall"}"#)
         XCTAssertEqual(try json(.meaningIndex), #"{"id":7,"type":"meaningIndex"}"#)
         XCTAssertEqual(try json(.semanticRemove), #"{"id":7,"type":"semanticRemove"}"#)
         XCTAssertEqual(
-            try json(.setConfig(ConfigPatch(semantic: SemanticConfig(enabled: true, images: true, code: false)))),
-            #"{"config":{"semantic":{"code":false,"enabled":true,"images":true}},"id":7,"type":"setConfig"}"#
+            try json(.setConfig(ConfigPatch(semantic: SemanticConfig(enabled: true, declined: false, code: false)))),
+            #"{"config":{"semantic":{"code":false,"declined":false,"enabled":true}},"id":7,"type":"setConfig"}"#
         )
-        let status = #"{"id":2,"type":"semantic","status":{"enabled":true,"images":true,"code":false,"helper":"/x/zsearch-embed","modelDir":"/m","model":{"text":true,"media":false,"textBytes":309855456,"mediaBytes":554821024},"blocked":null,"index":{"files":3,"passages":9,"vectors":8,"partial":0,"bytes":4096,"lastRunAt":1700000000000,"error":null}}}"#
+        let status = #"{"id":2,"type":"semantic","status":{"enabled":true,"declined":false,"code":false,"helper":"/x/zsearch-embed","modelDir":"/m","model":{"fast":true,"full":false,"fastBytes":130703606,"fullBytes":52445632},"blocked":null,"index":{"files":3,"passages":9,"vectors":8,"partial":0,"bytes":4096,"lastRunAt":1700000000000,"error":null},"fastIndex":null}}"#
         guard case let .semantic(s) = try Envelope.decode(Data(status.utf8)).message else { return XCTFail("expected a status") }
-        XCTAssertTrue(s.model.text)
+        XCTAssertTrue(s.model.fast)
+        XCTAssertFalse(s.model.ready)
         XCTAssertEqual(s.index?.vectors, 8)
-        let download = #"{"type":"semanticDownload","file":"embeddinggemma-2-Q8_0.gguf","received":10,"total":20}"#
+        let download = #"{"type":"semanticDownload","file":"granite-embedding-small-english-r2.Q8_0.gguf","received":10,"total":20}"#
         guard case let .semanticDownload(d) = try Envelope.decode(Data(download.utf8)).message else { return XCTFail("expected progress") }
         XCTAssertEqual(d.received, 10)
         let meaning = #"{"type":"indexProgress","progress":{"phase":"meaning","scanned":5,"added":0,"updated":0,"removed":0,"contentTotal":0,"contentDone":0,"contentBytes":0,"contentErrors":0,"current":"","elapsedMs":10,"meaning":{"total":4,"done":1,"embedded":7,"reused":2}}}"#

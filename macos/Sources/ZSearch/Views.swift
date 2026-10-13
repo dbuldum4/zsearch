@@ -89,12 +89,12 @@ struct SearchBar: View {
             Picker("Mode", selection: $model.mode) {
                 Text("Find").tag(Mode.find)
                 Text("Fuzzy").tag(Mode.fuzzy)
-                Text("Meaning").tag(Mode.semantic)
+                Text("Semantic").tag(Mode.semantic)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Meaning: files about what you describe (turn it on in Settings › Meaning).")
+            .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Semantic: files about what you describe (turn it on in Settings › Semantic).")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -367,14 +367,18 @@ struct IndexProgressView: View {
     private var text: String {
         guard let p = activity.progress else { return "Starting…" }
         if p.phase == "content", let waiting = p.waiting { return "Word index · waiting: \(waiting) · resumes on its own" }
-        if p.phase == "meaning", let waiting = p.waiting { return "Meaning index (Gemma) · waiting: \(waiting) · resumes on its own" }
+        if p.phase == "meaning", let waiting = p.waiting { return "Semantic index (\(meaningModel(p))) · waiting: \(waiting) · resumes on its own" }
         switch p.phase {
         case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
         case "content": return "Word index: reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
         case "cleanup": return "Cleaning up…"
-        case "meaning": return "Meaning index (Gemma): \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
+        case "meaning": return "Semantic index (\(meaningModel(p))): \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
         default: return "Indexing…"
         }
+    }
+
+    private func meaningModel(_ p: IndexProgress) -> String {
+        p.meaning?.tier == "fast" ? "Potion, quick pass" : "Granite"
     }
 }
 
