@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdirSync } from "node:fs"
+import { meaningOnly } from "../profile.ts"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
@@ -90,6 +91,11 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
   db.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`)
   if (path !== ":memory:") for (const suffix of ["-wal", "-shm"]) if (existsSync(path + suffix)) chmodSync(path + suffix, 0o600)
   if (!opts.readonly) migrate(db, opts)
+  const profile = getMeta(db, "search_profile") ?? "full"
+  if (profile !== (meaningOnly() ? "meaning-only" : "full")) {
+    db.close()
+    throw new Error("Index belongs to a different search profile; use a separate ZSEARCH_HOME or ZSEARCH_DB")
+  }
   return db
 }
 
@@ -161,7 +167,7 @@ function migrate(db: Database, opts: OpenOptions) {
     // size of detail=full. Phrases are matched as AND of their words; exact text and regex
     // searches check every candidate against the stored text anyway. No prefix index: prefix
     // queries scan the sorted term list, which is fast enough and saves another third.
-    db.exec(
+    if (!meaningOnly()) db.exec(
       `CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', ${contentlessDelete ? "contentless_delete=1, " : ""}tokenize='unicode61 remove_diacritics 2', detail=column)`,
     )
     // The content vocabulary, append-only: each row is a compressed, newline-separated batch of new terms.
@@ -172,6 +178,7 @@ function migrate(db: Database, opts: OpenOptions) {
       INSERT INTO meta(key, value) VALUES ('frecency_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;
     END`)
     db.exec("DELETE FROM meta WHERE key <> 'created_at'")
+    setMeta(db, "search_profile", meaningOnly() ? "meaning-only" : "full")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
     setMeta(db, "fts_delete", contentlessDelete ? "contentless" : "manual")
     setMeta(db, "generation", "0")
@@ -186,7 +193,9 @@ function migrate(db: Database, opts: OpenOptions) {
  */
 export function clearIndex(db: Database): void {
   db.transaction(() => {
-    if (getMeta(db, "fts_delete") === "manual") {
+    if (meaningOnly()) {
+      // There is no FTS table in this profile.
+    } else if (getMeta(db, "fts_delete") === "manual") {
       db.exec("DROP TABLE fts")
       db.exec("CREATE VIRTUAL TABLE fts USING fts5(name, dirs, body, content='', tokenize='unicode61 remove_diacritics 2', detail=column)")
     } else {
@@ -241,7 +250,7 @@ const VACUUM_FREE_BYTES = 4 * 1024 * 1024
  */
 export function compactIndex(db: Database, optimizeFts: boolean, rewritten = false): boolean {
   try {
-    if (optimizeFts) db.exec("INSERT INTO fts(fts) VALUES ('optimize')")
+    if (optimizeFts && !meaningOnly()) db.exec("INSERT INTO fts(fts) VALUES ('optimize')")
     const pages = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count
     const free = (db.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
     const size = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size

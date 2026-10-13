@@ -30,6 +30,14 @@ if git -C "$SOURCE" apply --check "$PATCH" 2>/dev/null; then
   git -C "$SOURCE" apply "$PATCH"
 fi
 
+ATTENTION_PATCH="$ROOT/native/embed/llama.cpp-sequence-attention.patch"
+if git -C "$SOURCE" apply --check "$ATTENTION_PATCH" 2>/dev/null; then
+  git -C "$SOURCE" apply "$ATTENTION_PATCH"
+elif ! git -C "$SOURCE" apply --reverse --check "$ATTENTION_PATCH" 2>/dev/null; then
+  echo "error: sequence-attention patch does not match llama.cpp $TAG" >&2
+  exit 1
+fi
+
 FLAGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_SOURCE="$SOURCE")
 if [ "$(uname)" = Darwin ]; then
   FLAGS+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGGML_NATIVE=OFF)

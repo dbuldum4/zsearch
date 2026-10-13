@@ -41,6 +41,7 @@ for (const target of targets) {
     compile: { target: target as Bun.Build.CompileTarget, outfile, autoloadBunfig: false, autoloadDotenv: false, autoloadTsconfig: false, autoloadPackageJson: false },
     define: {
       ZSEARCH_COMPILED: "true",
+      ZSEARCH_MEANING_ONLY: String(args.includes("--meaning-only")),
       "process.env.OPENTUI_LIBC": JSON.stringify(libc),
     },
   })

@@ -39,7 +39,9 @@ struct FilterBar: View {
             folderMenu(query)
             choiceMenu("Modified", icon: "calendar", keys: QueryFilters.modifiedKeys, options: Self.ages, anyTitle: "Any Time", query: query)
             choiceMenu("Size", icon: "internaldrive", keys: QueryFilters.sizeKeys, options: Self.sizes, anyTitle: "Any Size", query: query)
+            #if !MEANING_ONLY
             regexToggle(query)
+            #endif
             Spacer(minLength: 0)
             if QueryFilters.hasFilters(query) || QueryFilters.isRegex(query) {
                 Button("Clear Filters") {

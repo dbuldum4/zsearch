@@ -21,9 +21,15 @@ final class SearchModel {
         // Search by meaning runs the model on the query: wait for a pause in typing.
         didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
     }
+    #if MEANING_ONLY
+    var mode: Mode = .semantic {
+        didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
+    }
+    #else
     var mode: Mode = .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
+    #endif
     var selection: SearchHit.ID? {
         didSet {
             guard selection != oldValue else { return }
@@ -182,7 +188,11 @@ final class SearchModel {
         case let .ready(ready):
             config = ready.config
             firstRun = ready.firstRun
+            #if MEANING_ONLY
+            mode = .semantic
+            #else
             mode = Mode(rawValue: ready.config.defaultMode) ?? .find
+            #endif
             Task {
                 await refreshStats()
                 if ready.firstRun {

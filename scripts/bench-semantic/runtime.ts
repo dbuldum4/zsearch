@@ -12,16 +12,19 @@ for (const path of ["README.md", "macos/README.md"]) {
 }
 const prompts = docs.slice(0, 96)
 const queries = evals.map(e => queryPrompt(e.query))
-const variants: [string, string[]][] = [
-  ["baseline", []],
-  ["no-flash", ["--flash-attn", "off"]],
-  ["single", ["--max-seqs", "1"]],
-  ["single-no-flash", ["--max-seqs", "1", "--flash-attn", "off"]],
+const variants: [string, string[], boolean][] = [
+  ["baseline", [], true],
+  ["split", [], false],
+  ["split-one-thread", ["--threads", "1"], false],
+  ["split-two-threads", ["--threads", "2"], false],
+  ["single", ["--max-seqs", "1"], false],
 ]
 const results: Record<string, unknown>[] = []
 let reference: Float32Array | null = null
 let referenceQueries: Float32Array | null = null
-for (const [name, extra] of variants) {
+for (const [name, extra, dense] of variants) {
+  if (dense) process.env.ZSEARCH_EMBED_DENSE_ATTN = "1"
+  else delete process.env.ZSEARCH_EMBED_DENSE_ATTN
   const helper = new Embedder({ tool: "dist/zsearch-embed", model, extra })
   await helper.info()
   await helper.embedTexts(prompts.slice(0, 2))

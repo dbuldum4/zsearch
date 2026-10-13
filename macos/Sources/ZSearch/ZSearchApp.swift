@@ -49,10 +49,12 @@ struct ZSearchApp: App {
                     .disabled(model.selectedHit == nil)
             }
             CommandMenu("Search") {
+            #if !MEANING_ONLY
                 Button("Find in Names and Contents") { model.mode = .find; model.requestSearchFocus() }
                     .keyboardShortcut("1")
                 Button("Fuzzy Names") { model.mode = .fuzzy; model.requestSearchFocus() }
                     .keyboardShortcut("2")
+            #endif
                 Button("By Meaning") { model.mode = .semantic; model.requestSearchFocus() }
                     .keyboardShortcut("3")
                 Divider()

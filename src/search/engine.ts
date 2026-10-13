@@ -7,6 +7,7 @@ import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
+import { meaningOnly } from "../profile.ts"
 import { escapeRegExp, foldTerm, ftsPrefixExpr, ftsTerm, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
@@ -201,7 +202,7 @@ export class SearchEngine {
     this.cacheRemoved = (this.db.query("SELECT COALESCE(MAX(n), 0) AS n FROM removed").get() as { n: number }).n
     this.generation = gen
     this.catalog.load(this.db, !full)
-    this.vocab.load(this.db, !full)
+    if (!meaningOnly()) this.vocab.load(this.db, !full)
     const opens = getMeta(this.db, "frecency_seq") ?? "0"
     if (full || opens !== this.frecencySeq) {
       this.frecencySeq = opens
@@ -222,7 +223,7 @@ export class SearchEngine {
     this.now = Date.now()
     this.lastExpansions = []
     const limit = q.filters.limit ?? opts.limit ?? 100
-    const effective: Mode = q.forcedMode ?? mode
+    const effective: Mode = meaningOnly() ? "semantic" : q.forcedMode ?? mode
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
     try {
@@ -386,13 +387,13 @@ export class SearchEngine {
     // Meaning: every passage on this query's scale, each file's best.
     const best = new Map<number, { z: number; row: number }>()
     let index = null
-    if (!this.config.semantic.enabled) notices.push("Search by meaning is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
+    if (!this.config.semantic.enabled) notices.push(`Search by meaning is off: turn it on with \`zsearch semantic install\` (or in the app's settings). ${meaningOnly() ? "No word-search fallback in this build" : "Showing word matches"}`)
     else if (!this.config.content.enabled) notices.push("Search by meaning needs file contents, which are off")
     else {
       this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:"))
       index = this.vectors.get(mainGeneration(this.db))
       const embed = this.queryVectorFn()
-      if (!embed) notices.push("Search by meaning needs its model: run `zsearch semantic install`. Showing word matches")
+      if (!embed) notices.push(`Search by meaning needs its model: run \`zsearch semantic install\`. ${meaningOnly() ? "No word-search fallback in this build" : "Showing word matches"}`)
       else if (!index?.size) notices.push("No files have been read for meaning yet: they are with the next index update")
       else if (text.trim()) {
         try {
@@ -413,7 +414,7 @@ export class SearchEngine {
             if (ok) best.set(file, { z: z[row]!, row })
           }
         } catch (err) {
-          notices.push(`Search by meaning failed (${(err as Error).message}). Showing word matches`)
+          notices.push(`Search by meaning failed (${(err as Error).message}). ${meaningOnly() ? "No word-search fallback in this build" : "Showing word matches"}`)
         }
       }
     }
@@ -449,7 +450,7 @@ export class SearchEngine {
       if (ok === undefined) contentOk.set(id, (ok = this.contentAuthorized(i, check)))
       return ok
     }
-    terms.forEach((term, t) => {
+    if (!meaningOnly()) terms.forEach((term, t) => {
       // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
       const stem = stemOf(term)
       const prefix = stem !== term || (q.typing && t === terms.length - 1)
@@ -484,7 +485,7 @@ export class SearchEngine {
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
     res.total = ranked.length
-    res.strategy = best.size ? "meaning + words" : "words"
+    res.strategy = meaningOnly() ? "meaning" : best.size ? "meaning + words" : "words"
     if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
     const pattern = termsPattern(q.words, q.phrases, q.typing)
     res.hits = ranked.slice(0, limit).map((r, n) => {

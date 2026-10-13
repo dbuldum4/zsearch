@@ -1,4 +1,5 @@
 name: Gemma one-off runtime experiment
+# Second experiment: independent sequence attention.
 on:
   push:
     branches: [codex/meaning-gemma]

@@ -18,9 +18,10 @@ case "$WHICH" in
   *) CHANNEL="pr-$WHICH"; REF="refs/pull/$WHICH/merge"; EVENT=pull_request ;;
 esac
 shift
-BUILD=; ALLOW_DOWNGRADE=0; OPEN=0
+BUILD=; ALLOW_DOWNGRADE=0; OPEN=0; BUNDLE=zsearch.app
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --meaning-only) BUNDLE=zsearch-meaning.app; shift ;;
     --open) OPEN=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --build) [ "$#" -ge 2 ] || die "--build needs RUN_ID-ATTEMPT"; BUILD=$2; shift 2 ;;
@@ -182,10 +183,10 @@ fi
 mkdir -p "$MOUNT"
 hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT" "$TMP/zsearch.dmg"
 MOUNTED=1
-[ -d "$MOUNT/zsearch.app" ] && [ ! -L "$MOUNT/zsearch.app" ] || die "missing app bundle"
-codesign --verify --deep --strict "$MOUNT/zsearch.app"
+[ -d "$MOUNT/$BUNDLE" ] && [ ! -L "$MOUNT/$BUNDLE" ] || die "missing app bundle"
+codesign --verify --deep --strict "$MOUNT/$BUNDLE"
 STAGE=$(mktemp -d "$DEST/.zsearch-stage.XXXXXX")
-ditto --noqtn "$MOUNT/zsearch.app" "$STAGE/zsearch.app"
+ditto --noqtn "$MOUNT/$BUNDLE" "$STAGE/zsearch.app"
 codesign --verify --deep --strict "$STAGE/zsearch.app"
 [ "$(plutil -extract ZSearchCommit raw -o - "$STAGE/zsearch.app/Contents/Info.plist")" = "$COMMIT" ] || die "app commit does not match authenticated manifest"
 [ "$(plutil -extract CFBundleIdentifier raw -o - "$STAGE/zsearch.app/Contents/Info.plist")" = io.github.dbuldum4.zsearch ] || die "wrong app identity"

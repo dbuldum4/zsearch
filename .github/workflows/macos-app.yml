@@ -64,6 +64,24 @@ jobs:
         env:
           BUILD: ${{ github.run_number }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build meaning-only app in the same authenticated DMG
+        env:
+          BUILD: ${{ github.run_number }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          mv dist/zsearch.app work/zsearch-full.app
+          bun run build --meaning-only
+          ZSEARCH_MEANING_ONLY=1 macos/scripts/build-app.sh
+          mv dist/zsearch.app dist/zsearch-meaning.app
+          mv work/zsearch-full.app dist/zsearch.app
+          stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
+          cp -R dist/zsearch.app dist/zsearch-meaning.app "$stage/"
+          ln -s /Applications "$stage/Applications"
+          rm dist/zsearch.dmg
+          hdiutil create -quiet -volname zsearch -srcfolder "$stage" -fs HFS+ -format UDZO dist/zsearch.dmg
       - name: OCR helper on the test fixtures
         run: |
           dist/zsearch.app/Contents/Helpers/zsearch doctor | grep -F 'zsearch.app/Contents/Helpers/zsearch-ocr'
@@ -199,6 +217,10 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" \
             --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           codesign --verify --deep --strict "$ZSEARCH_APP_DIR/zsearch.app"
+          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" \
+            --meaning-only --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          codesign --verify --deep --strict "$ZSEARCH_APP_DIR/zsearch.app"
+          ZSEARCH_HOME="$RUNNER_TEMP/meaning-smoke" "$ZSEARCH_APP_DIR/zsearch.app/Contents/Helpers/zsearch" config get defaultMode | grep -F semantic
           attrs=$(xattr -r "$ZSEARCH_APP_DIR/zsearch.app")
           if [[ "$attrs" == *com.apple.quarantine* ]]; then echo 'Quarantine unexpectedly present' >&2; exit 1; fi
           # The latest alias resolves to this same build, so reinstalling is idempotent.

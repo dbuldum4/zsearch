@@ -55,6 +55,7 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            #if !MEANING_ONLY
             Picker("Search mode at start", selection: defaultMode) {
                 Text("Find (exact text, /regex/)").tag(Mode.find)
                 Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
@@ -62,6 +63,7 @@ private struct GeneralSettings: View {
                     Text("Meaning (describe what you're looking for)").tag(Mode.semantic)
                 }
             }
+            #endif
             Picker("Preview PDFs as", selection: $pdfShowsText) {
                 Text("Pages").tag(false)
                 Text("Text").tag(true)

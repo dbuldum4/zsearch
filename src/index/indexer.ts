@@ -9,6 +9,7 @@ const LONG_WORD_IN_TEXT = /(?<![A-Za-z0-9])[A-Za-z0-9]{32,64}(?![A-Za-z0-9])/
 /** Packages with a preview inside, which OCR reads when it is a picture. */
 const IWORK_EXTS = new Set(["pages", "numbers", "key"])
 import { ocrToolPath } from "../platform.ts"
+import { meaningOnly } from "../profile.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { compactIndex, compressBytes, ContentState, decompressText, encodeText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta, TEXT_HASHES, textHash } from "./db.ts"
@@ -176,11 +177,11 @@ export class Indexer {
       updateFile: q(
         "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, created = ?, dev = ?, ino = ?, source_path = ?, content_state = ? WHERE id = ?",
       ),
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = '' WHERE id = ?"),
+      setState: q(`UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = ${meaningOnly() ? 0 : 1}, metadata = '' WHERE id = ?`),
       inFts: q("SELECT in_fts FROM files WHERE id = ?"),
-      ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
-      ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
-      ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
+      ftsInsert: meaningOnly() ? q("SELECT 1") : q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
+      ftsDeleteRow: meaningOnly() ? q("SELECT 1") : q("DELETE FROM fts WHERE rowid = ?"),
+      ftsDeleteManual: meaningOnly() ? q("SELECT 1") : q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
       contentGet: q("SELECT data FROM content WHERE id = ?"),
       contentDel: q("DELETE FROM content_map WHERE id = ?"),
       fileDel: q("DELETE FROM files WHERE id = ?"),
@@ -214,6 +215,7 @@ export class Indexer {
   private dirCache = { dir: "", tokens: "" }
 
   private ftsFields(path: string) {
+    if (meaningOnly()) return { name: "", dirs: "" }
     const slash = path.lastIndexOf("/")
     const name = path.slice(slash + 1)
     const dir = slash <= 0 ? "/" : path.slice(0, slash)
@@ -223,6 +225,7 @@ export class Indexer {
 
   /** Remove the FTS row of a file, if it has one. `body` must be exactly what was indexed (manual mode). */
   private ftsDelete(id: number, path: string, body: string | null) {
+    if (meaningOnly()) return
     const row = this.st.inFts.get(id) as { in_fts: number } | null
     if (!row || row.in_fts !== 1) return
     if (!this.manualDelete) {
@@ -235,6 +238,7 @@ export class Indexer {
 
   /** The FTS body a file was indexed with, rebuilt from its stored text (manual mode). */
   private storedBody(id: number): string | null {
+    if (meaningOnly()) return null
     const row = this.st.contentGet.get(id) as { data: Uint8Array } | null
     return row ? ftsBody(decompressText(row.data)) : null
   }
@@ -315,7 +319,7 @@ export class Indexer {
    * out (see `secrets.ts`). Files matched by name lose their text in the scan.
    */
   private sweepSecrets() {
-    if (getMeta(this.db, "secrets_swept") === "1") return
+    if (meaningOnly() || getMeta(this.db, "secrets_swept") === "1") return
     const candidates = this.db
       .query("SELECT f.id, f.path FROM fts JOIN files f ON f.id = fts.rowid WHERE fts MATCH 'body:(private AND key) OR body:(putty AND user AND key AND file)' AND f.content_state = ?")
       .all(ContentState.Indexed) as { id: number; path: string }[]
@@ -410,7 +414,7 @@ export class Indexer {
           this.ftsDelete(old.entry.id, old.path, body)
           this.db.query("UPDATE files SET path = ?, name = ?, ext = ?, created = ?, source_path = ? WHERE id = ?").run(e.path, e.name, ext, e.created ?? 0, storedSource, old.entry.id)
           this.db.query("UPDATE OR IGNORE frecency SET path = ? WHERE path = ?").run(e.path, old.path)
-          const f = this.ftsFields(e.path); this.st.ftsInsert.run(old.entry.id, f.name, f.dirs, body ?? "")
+          const f = this.ftsFields(e.path); if (!meaningOnly()) this.st.ftsInsert.run(old.entry.id, f.name, f.dirs, body ?? "")
         })
         continue
       }
@@ -440,10 +444,10 @@ export class Indexer {
         batch.push(() => {
           // Files waiting for their contents get their FTS row once, in the content phase.
           // run() and lastInsertRowid cost about half as much as RETURNING id.
-          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, wants ? 0 : 1)
+          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, wants || meaningOnly() ? 0 : 1)
           if (!wants) {
             const f = this.ftsFields(e.path)
-            this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
+            if (!meaningOnly()) this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
             if (secret) this.st.setState.run(idle, 0, idleNote, Number(lastInsertRowid))
           } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
         })
@@ -472,7 +476,7 @@ export class Indexer {
     const body = this.manualDelete ? this.storedBody(id) : null
     this.ftsDelete(id, path, body)
     const f = this.ftsFields(path)
-    this.st.ftsInsert.run(id, f.name, f.dirs, "")
+    if (!meaningOnly()) this.st.ftsInsert.run(id, f.name, f.dirs, "")
     this.st.contentDel.run(id)
     this.st.setState.run(newState, 0, note, id)
   }
@@ -622,7 +626,7 @@ export class Indexer {
     const onAbort = () => { pool.close(); wake?.() }
     this.opts.signal?.addEventListener("abort", onAbort, { once: true })
     sink.onProgress = () => wake?.()
-    this.known ??= loadVocabTerms(this.db)
+    this.known ??= meaningOnly() ? new Set<string>() : loadVocabTerms(this.db)
     const known = this.known
     const done: (ExtractReply | undefined)[] = new Array(pending.length)
     /** Next job to write. */

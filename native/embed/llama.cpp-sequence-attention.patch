@@ -1,0 +1,101 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 1112ad8..a2b5ae2 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -438,6 +438,29 @@ static void print_mask(const T * data, int64_t n_tokens, int64_t n_kv, int64_t n
+     }
+ }
+ 
++// Lengths of independent, contiguous sequence runs. Shared/interleaved token sets use the dense path.
++static std::vector<int64_t> independent_sequence_lengths(const llama_ubatch & batch) {
++    std::vector<int64_t> lengths;
++    std::unordered_set<llama_seq_id> seen;
++    llama_seq_id previous = -1;
++    for (uint32_t i = 0; i < batch.n_tokens; ++i) {
++        if (batch.n_seq_id[i] != 1) return {};
++        const auto id = batch.seq_id[i][0];
++        if (id != previous) {
++            if (!seen.insert(id).second) return {};
++            lengths.push_back(0);
++            previous = id;
++        }
++        ++lengths.back();
++    }
++    return lengths;
++}
++
++bool llm_graph_input_attn_no_cache::can_reuse(const llm_graph_params & params) {
++    // The views baked into a split graph must follow the new batch's exact boundaries.
++    return sequence_lengths.empty() || sequence_lengths == independent_sequence_lengths(params.ubatch);
++}
++
+ void llm_graph_input_attn_no_cache::set_input(const llama_ubatch * ubatch) {
+     const int64_t n_kv     = ubatch->n_tokens;
+     const int64_t n_tokens = ubatch->n_tokens;
+@@ -2831,6 +2854,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+ 
+ llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() const {
+     auto inp = std::make_unique<llm_graph_input_attn_no_cache>(hparams, cparams);
++    if (arch == LLM_ARCH_GEMMA_EMBEDDING2 && !getenv("ZSEARCH_EMBED_DENSE_ATTN")) {
++        inp->sequence_lengths = independent_sequence_lengths(ubatch);
++    }
+ 
+     // flash attention requires an f16 mask
+     const auto type_mask = cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
+@@ -2889,7 +2915,27 @@ ggml_tensor * llm_graph_context::build_attn(
+     ggml_tensor * k = k_cur;
+     ggml_tensor * v = v_cur;
+ 
+-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
++    ggml_tensor * cur = nullptr;
++    if (inp->sequence_lengths.size() > 1 && !kq_b && !sinks && !v_mla) {
++        // The dense mask sets every cross-sequence score to -infinity. Never compute those
++        // scores: attention is independent for each passage, while QKV/FFN stay batched.
++        int64_t offset = 0;
++        for (const int64_t length : inp->sequence_lengths) {
++            auto slice = [&](ggml_tensor * t) {
++                return ggml_view_3d(ctx0, t, t->ne[0], t->ne[1], length,
++                                    t->nb[1], t->nb[2], offset * t->nb[2]);
++            };
++            auto * mask = ggml_cont(ctx0, ggml_view_4d(ctx0, kq_mask, length, length, 1, 1,
++                    kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3],
++                    offset * (kq_mask->nb[0] + kq_mask->nb[1])));
++            auto * block = build_attn_mha(slice(q), slice(k), slice(v), nullptr, mask,
++                                         nullptr, nullptr, 0, kq_scale, il);
++            cur = cur ? ggml_concat(ctx0, cur, block, 1) : block;
++            offset += length;
++        }
++    } else {
++        cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
++    }
+     cb(cur, "kqv_out", il);
+ 
+     if (wo) {
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 8385445..e857646 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -311,6 +311,8 @@ public:
+     ~llm_graph_input_attn_no_cache() = default;
+ 
+     void set_input(const llama_ubatch * ubatch) override;
++    bool can_reuse(const llm_graph_params & params) override;
++    std::vector<int64_t> sequence_lengths;
+ 
+     ggml_tensor * get_kq_mask()     const { return self_kq_mask_cnv; }
+     ggml_tensor * get_kq_mask_swa() const { return self_kq_mask_swa_cnv; }
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index ff2ea46..9f57017 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2458,6 +2460,10 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+         res *= 4;
+     }
+ 
++    if (model.arch == LLM_ARCH_GEMMA_EMBEDDING2) {
++        // Independent attention blocks add views/ops for each sequence in every layer.
++        res = std::max(res, 32u * model.hparams.n_layer() * cparams.n_seq_max);
++    }
+     return res;
+ }
+ 

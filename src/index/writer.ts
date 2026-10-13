@@ -31,6 +31,8 @@ export interface FileIdentity {
  * the small segments as it goes: with 4 MB, building the index costs about a third less.
  * Larger sizes gain little more, and leave more free pages behind once segments are merged.
  */
+import { meaningOnly } from "../profile.ts"
+
 const FTS_HASH_SIZE = 4 << 20
 
 /**
@@ -49,10 +51,10 @@ export class ContentWriter {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
     const q = (sql: string) => db.prepare(sql)
     this.st = {
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = ? WHERE id = ?"),
-      ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
-      ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
-      ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
+      setState: q(`UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = ${meaningOnly() ? 0 : 1}, metadata = ? WHERE id = ?`),
+      ftsInsert: meaningOnly() ? q("SELECT 1") : q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
+      ftsDeleteRow: meaningOnly() ? q("SELECT 1") : q("DELETE FROM fts WHERE rowid = ?"),
+      ftsDeleteManual: meaningOnly() ? q("SELECT 1") : q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
       contentGet: q("SELECT data FROM content WHERE id = ?"),
       textFind: q("SELECT text FROM content_map WHERE hash = ? LIMIT 1"),
       textPut: q("INSERT INTO texts(data) VALUES (?)"),
@@ -71,20 +73,20 @@ export class ContentWriter {
     if (!this.inTx) {
       this.db.exec("BEGIN")
       this.inTx = true
-      if (!this.tuned) {
+      if (!meaningOnly() && !this.tuned) {
         // A setting of the table, kept in the database: set once, in the first transaction.
         const row = this.db.query("SELECT v FROM fts_config WHERE k = 'hashsize'").get() as { v: number } | null
         if (row?.v !== FTS_HASH_SIZE) this.db.query("INSERT INTO fts(fts, rank) VALUES ('hashsize', ?)").run(FTS_HASH_SIZE)
         this.tuned = true
       }
     }
-    if (fresh.length) this.fresh.push(fresh.join("\n"))
+    if (!meaningOnly() && fresh.length) this.fresh.push(fresh.join("\n"))
     for (const item of items) this.store(item)
   }
 
   private store({ reply: r, name, dirs, inFts, identity }: ContentItem) {
     if (r.status === "error" && r.error === "cancelled") return
-    if (inFts) {
+    if (!meaningOnly() && inFts) {
       if (!this.manualDelete) this.st.ftsDeleteRow.run(r.id)
       else {
         // The classic protocol needs exactly what was indexed: rebuilt from the stored text.
@@ -93,7 +95,7 @@ export class ContentWriter {
       }
     }
     if (r.status === "ok") {
-      this.st.ftsInsert.run(r.id, name, dirs, r.body)
+      if (!meaningOnly()) this.st.ftsInsert.run(r.id, name, dirs, r.body)
       // The same text as another file's is kept once.
       const same = this.st.textFind.get(r.hash) as { text: number } | null
       const text = same ? same.text : Number(this.st.textPut.run(r.compressed).lastInsertRowid)
@@ -101,7 +103,7 @@ export class ContentWriter {
       if (r.ocr && identity?.ino) this.st.ocrPut.run(identity.dev, identity.ino, identity.size, identity.mtime, OCR_CACHE_VERSION, r.ocr)
       this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", r.id)
     } else {
-      this.st.ftsInsert.run(r.id, name, dirs, "")
+      if (!meaningOnly()) this.st.ftsInsert.run(r.id, name, dirs, "")
       this.st.contentDel.run(r.id)
       if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, "", r.id)
       else this.st.setState.run(ContentState.Error, 0, r.error, "", r.id)

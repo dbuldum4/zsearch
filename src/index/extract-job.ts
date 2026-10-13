@@ -8,6 +8,8 @@ import { fileMetadata, metadataText } from "./extract/metadata.ts"
 import { pathPolicy } from "./policy.ts"
 import { holdsPrivateKey, onlyKeys, redactPrivateKeys, SECRET_NOTE } from "./secrets.ts"
 
+import { meaningOnly } from "../profile.ts"
+
 const encoder = new TextEncoder()
 
 /** Jobs a worker extracts at once: one can wait (on pdftotext, say) while another computes. */
@@ -116,7 +118,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       const text = raw.status === "bytes" ? textOf(raw.bytes, opts.maxChars) : raw
       raw = { status: "ok", text: `${extra}\n\n${text.status === "ok" ? text.text : ""}`.slice(0, opts.maxChars), truncated: text.status === "ok" && (text.truncated || text.text.length + extra.length > opts.maxChars) }
     }
-    if (raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
+    if (!meaningOnly() && raw.status === "bytes" && raw.bytes.length <= opts.maxChars) {
       // UTF-8 text is stored as it is, and its words need no decoding.
       const a = byteTerms(raw.bytes, job.run)
       if (a) {
@@ -134,7 +136,7 @@ export async function processJob(job: ExtractJob, opts: ExtractOptions): Promise
       if (onlyKeys(text)) return { id: job.id, status: "skip", reason: SECRET_NOTE }
       r = { ...r, text }
     }
-    const { body, terms } = indexTerms(r.text)
+    const { body, terms } = meaningOnly() ? { body: "", terms: [] } : indexTerms(r.text)
     const bytes = encodeText(r.text)
     return {
       id: job.id,

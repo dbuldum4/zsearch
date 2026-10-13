@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
+import { meaningOnly } from "./profile.ts"
+
 export interface ContentConfig {
   /** Extract and index text inside files. */
   enabled: boolean
@@ -102,7 +104,7 @@ export function defaultConfig(): Config {
     semantic: { enabled: false, images: true, code: false },
     // Turning search by meaning on (semantic install, in the CLI or the app) makes it
     // the default mode; until then this stays "find".
-    defaultMode: "find",
+    defaultMode: meaningOnly() ? "semantic" : "find",
     preview: true,
   }
 }
@@ -152,11 +154,12 @@ export function paths(): Paths {
   if (override) {
     config = data = resolve(override)
   } else {
-    config = join(process.env.XDG_CONFIG_HOME || join(h, ".config"), "zsearch")
+    const app = meaningOnly() ? "zsearch-meaning" : "zsearch"
+    config = join(process.env.XDG_CONFIG_HOME || join(h, ".config"), app)
     if (process.platform === "darwin" && !process.env.XDG_DATA_HOME) {
-      data = join(h, "Library", "Application Support", "zsearch")
+      data = join(h, "Library", "Application Support", app)
     } else {
-      data = join(process.env.XDG_DATA_HOME || join(h, ".local", "share"), "zsearch")
+      data = join(process.env.XDG_DATA_HOME || join(h, ".local", "share"), app)
     }
   }
   return {

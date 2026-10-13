@@ -86,6 +86,7 @@ struct SearchBar: View {
                     model.query = ""
                     return .handled
                 }
+            #if !MEANING_ONLY
             Picker("Mode", selection: $model.mode) {
                 Text("Find").tag(Mode.find)
                 Text("Fuzzy").tag(Mode.fuzzy)
@@ -95,6 +96,8 @@ struct SearchBar: View {
             .labelsHidden()
             .fixedSize()
             .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Meaning: files about what you describe (turn it on in Settings › Meaning).")
+            #endif
+
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
