@@ -14,12 +14,13 @@
  *
  * Stages: words only (no model), Potion, Granite half way (with and without reranking Potion's
  * best files at search time), and Granite. Granite's stages run with the real Granite when it and
- * zsearch-embed are installed; with `--word-vectors` and no Granite, the stand-in plays Granite
- * too (which measures how the indexes are combined, not Granite).
+ * zsearch-embed are installed (on a Mac with the app: ZSEARCH_EMBED=/Applications/zsearch.app/
+ * Contents/Helpers/zsearch-embed); with `--word-vectors` and no Granite, the stand-in plays Granite
+ * too (which measures how the indexes are combined, not Granite). `--no-granite` skips Granite.
  *
  * Scores: nDCG@10, MRR@10 and recall@100, over the queries with judged documents.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
@@ -28,7 +29,7 @@ import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { embedToolPath, type TextEmbedder } from "../src/semantic/helper.ts"
 import { SemanticIndexer } from "../src/semantic/indexer.ts"
-import { GRANITE, installedModel, POTION } from "../src/semantic/model.ts"
+import { GRANITE, installedModel, modelDir, POTION } from "../src/semantic/model.ts"
 import { PotionEmbedder, PotionModel } from "../src/semantic/potion.ts"
 import { DIGUP_RANKING, RANKING, type Ranking } from "../src/semantic/search.ts"
 import { openSemanticDb, semanticDbPath } from "../src/semantic/store.ts"
@@ -87,6 +88,8 @@ const graniteReal = !!(tool && installedModel(GRANITE)) && !args.has("no-granite
 const potion: TextEmbedder | null = standIn ?? (potionFiles ? new PotionEmbedder(PotionModel.load(potionFiles[0]!, potionFiles[1]!)) : null)
 if (!potion) throw new Error("Potion is not installed: run `zsearch semantic install`, or pass --word-vectors")
 const granite: "real" | "stand-in" | null = graniteReal ? "real" : standIn ? "stand-in" : null
+/** Where the installed models are, before the run moves zsearch's data folder. */
+const modelDirs = [POTION, GRANITE].filter((m) => installedModel(m)).map((m) => [m.folder, modelDir(m)] as const)
 
 /* ------------------------------------------------------------ the runs -- */
 
@@ -105,6 +108,10 @@ const results: { stage: string; pipeline: string; ndcg: number; mrr: number; rec
 try {
   process.env.HOME = home
   process.env.ZSEARCH_HOME = join(home, ".zsearch-data")
+  if (!process.env.ZSEARCH_MODELS) {
+    mkdirSync(join(home, ".zsearch-data", "models"), { recursive: true })
+    for (const [folder, dir] of modelDirs) symlinkSync(dir, join(home, ".zsearch-data", "models", folder))
+  }
   const idOf = new Map<string, string>()
   mkdirSync(join(home, "Documents"), { recursive: true })
   for (const d of docs) {
