@@ -23,9 +23,9 @@
  * every word still come first, ordered by meaning; meaning weighs against words among the rest.
  *
  * Both ways, a file whose name or folders hold the query's words gains on one that only mentions
- * them, and a file's best passage stands out by less the more passages it has (`LENGTH_PENALTY`):
+ * them, and a file's best passage stands out by less the more passages it has (`Ranking.length`):
  * the best of a long book's hundreds of passages stands out by chance; and the more files share it
- * (`SHARED_PENALTY`): the same import lines at the top of a thousand files match everything alike.
+ * (`shared`): the same import lines at the top of a thousand files match everything alike.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -40,14 +40,35 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 export const Z_GATE = 2.0
 /** How much Potion's meaning counts, against words: enough to order files the words tie. */
 const POTION_WEIGHT = 1e-3
-/** What the query's words in a file's name or folders add to its score (all of them: half of what holding them does). */
-export const NAME_WEIGHT = 1
-/** A file's best passage counts for less the more passages it has (deviations per e-fold): the best of many stands out by chance. */
-export const LENGTH_PENALTY = 0.3
-/** ...and by this much per e-fold of passages sharing its text: a header many files repeat says little about any one of them. */
-export const SHARED_PENALTY = 0.5
-/** What holding every word of the query adds to a file's score with Granite's meaning: it puts them first. */
-const EVERY_WORD = 100
+
+/** How results are put together; benchmarks (`scripts/semantic-bench.ts`) try others. */
+export interface Ranking {
+  /**
+   * When words rank the files and meaning only orders ties and adds files after them: "auto"
+   * while any passage is anchored (Potion's, or Granite's while it is part way), "always", or
+   * "never" (DigUp's way: meaning and words added up).
+   */
+  anchor: "auto" | "always" | "never"
+  /** "score": by the scores above; "rrf": reciprocal rank fusion of the word and meaning orders. */
+  fusion: "score" | "rrf"
+  /** What the query's words in a file's name or folders add (all of them). */
+  name: number
+  /** A file's best passage stands out by this much less per e-fold of passages it has: the best of many stands out by chance. */
+  length: number
+  /** ...and per e-fold of passages sharing its text: a header many files repeat says little about any one of them. */
+  shared: number
+  /** What holding every word adds, with unanchored meaning (100: those files first). */
+  everyWord: number
+  /** How much words and meaning count (meaning-only search: words 0). */
+  words: number
+  meaning: number
+  /** What keyword search's own order of the word matches (BM25) adds, at most. */
+  strength: number
+}
+
+export const RANKING: Ranking = { anchor: "auto", fusion: "score", name: 1, length: 0.3, shared: 0.5, everyWord: 100, words: 1, meaning: 1, strength: 0 }
+/** DigUp's, as zsearch ranked before. */
+export const DIGUP_RANKING: Ranking = { anchor: "never", fusion: "score", name: 0, length: 0, shared: 0, everyWord: 0, words: 1, meaning: 1, strength: 0 }
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -155,36 +176,52 @@ export interface Ranked {
  * half of the query's words (`coverage`, 0..1). An `anchored` best passage (Potion's, or any while
  * Granite is part way) only orders the word matches that tie, and puts the files with none of the
  * words after them all. `named`: the share of the words in a file's name or folders, which puts a
- * file named for the query ahead of one that mentions it.
+ * file named for the query ahead of one that mentions it. `strength`: keyword search's own score
+ * of a word match, 0..1.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number; anchored?: boolean }>; named?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number; anchored?: boolean }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking }): Ranked[] {
+  const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? Z_GATE
-  const [meaningWeight, wordsWeight] = opts.lookup ? [0.5, opts.wordWeight * 2] : [1, opts.wordWeight]
+  const [meaningWeight, wordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
   const candidates = new Set<number>()
   for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
-  for (const [file, share] of opts.coverage) if (share >= 0.5) candidates.add(file)
+  if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= 0.5) candidates.add(file)
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
     const words = opts.coverage.get(file) ?? 0
     const z = b?.z ?? 0
     let score: number
-    const name = NAME_WEIGHT * (opts.named?.get(file) ?? 0)
-    if (b?.anchored) {
+    const name = (R.name * (opts.named?.get(file) ?? 0) + R.strength * (opts.strength?.get(file) ?? 0)) * R.words
+    const anchored = R.anchor === "always" || (R.anchor === "auto" && !!b?.anchored)
+    if (anchored) {
       // As without a model, meaning only ordering the files the words tie (bounded, so that it
       // can't reach the next word match), and its own matches after every word match.
       score = (words >= 0.5 ? wordsWeight * words ** 1.5 + name : 0) + POTION_WEIGHT * Math.tanh(z / 4)
-      if (words < 0.5) { out.push({ file, score, row: b.row, z }); continue }
+      if (words < 0.5) { out.push({ file, score, row: b?.row ?? null, z }); continue }
     } else {
       // Granite's, once it has read every file: meaning and words together, but the files holding
       // every word first.
-      score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + (words >= 0.5 ? name : 0) + (words >= 1 ? EVERY_WORD : 0)
+      score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + (words >= 0.5 ? name : 0) + (words >= 1 ? R.everyWord * R.words : 0)
     }
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
   }
+  if (R.fusion === "rrf") {
+    // Each file's rank by words (and name) and by meaning, fused: 1/(60 + rank) from each list it is in.
+    const byWords = out.filter((r) => (opts.coverage.get(r.file) ?? 0) >= 0.5).sort((a, b) => wordsOf(b.file) - wordsOf(a.file) || a.file - b.file)
+    const byMeaning = out.filter((r) => r.z !== null).sort((a, b) => b.z! - a.z! || a.file - b.file)
+    const fused = new Map<number, number>()
+    byWords.forEach((r, i) => fused.set(r.file, (fused.get(r.file) ?? 0) + 1 / (60 + i)))
+    byMeaning.forEach((r, i) => fused.set(r.file, (fused.get(r.file) ?? 0) + 1 / (60 + i)))
+    for (const r of out) r.score = fused.get(r.file) ?? 0
+  }
   return out.sort((a, b) => b.score - a.score || a.file - b.file)
+
+  function wordsOf(file: number): number {
+    return (opts.coverage.get(file) ?? 0) ** 1.5 * 2 + R.name * (opts.named?.get(file) ?? 0) + R.strength * (opts.strength?.get(file) ?? 0)
+  }
 }
 
 /* ------------------------------------------------------- the vectors -- */
@@ -391,7 +428,7 @@ export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (fi
  * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
  * A part's passages are `anchored` (Potion's are, by default) when words are to rank the files.
  */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number>; anchored?: boolean }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }> {
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number>; anchored?: boolean }[], usable: (file: number) => boolean, ranking: Ranking = RANKING): Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }> {
   const best = new Map<number, { z: number; row: number; index: VectorIndex; anchored: boolean }>()
   const ok = new Map<number, boolean>()
   const upgraded = new Set<number>()
@@ -410,7 +447,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (allowed) best.set(file, { z: z[row]!, row, index, anchored: anchored ?? tier === "fast" })
     }
   }
-  for (const b of best.values()) b.z -= LENGTH_PENALTY * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1)) + SHARED_PENALTY * Math.log(Math.max(b.index.sharing(b.row), 1))
+  for (const b of best.values()) b.z -= ranking.length * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1)) + ranking.shared * Math.log(Math.max(b.index.sharing(b.row), 1))
   return best
 }
 

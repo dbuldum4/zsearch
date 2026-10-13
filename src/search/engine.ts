@@ -22,7 +22,7 @@ import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel, POTION, type Tier } from "../semantic/model.ts"
 import { PotionEmbedder, PotionModel } from "../semantic/potion.ts"
 import { documentPrompt, titleOf } from "../semantic/chunk.ts"
-import { bestByFile, CODE_WORD_WEIGHT, isLookup, kindHints, meaning, outdatedFiles, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
+import { bestByFile, CODE_WORD_WEIGHT, RANKING, type Ranking, isLookup, kindHints, meaning, outdatedFiles, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { mainGeneration, textSig } from "../semantic/indexer.ts"
 
@@ -380,6 +380,9 @@ export class SearchEngine {
     return (text) => embedder.embed(text)
   }
 
+  /** How semantic results are put together (benchmarks try others). */
+  ranking: Ranking = RANKING
+
   /** Passages Granite's index needs before its scale is worth putting reranked passages on (tests lower it). */
   rerankMinPassages = RERANK_MIN_PASSAGES
   /** Embeds passages with Granite at search time (tests pass their own). */
@@ -513,7 +516,7 @@ export class SearchEngine {
       if (!models) notices.push("Semantic search needs its models: run `zsearch semantic install`. Showing word matches")
       else if (!indexes.fast && !indexes.full && errors.length) notices.push(`Semantic search failed (${errors[0]}). Showing word matches`)
       else if (!indexes.fast && !indexes.full && text.trim()) notices.push("No files have been read for semantic search yet: they are with the next index update")
-      best = bestByFile(parts, authorized)
+      best = bestByFile(parts, authorized, this.ranking)
     }
 
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
@@ -567,10 +570,19 @@ export class SearchEngine {
       for (const id of matching("body", n, false)) { best.delete(id); coverage.delete(id) }
     }
 
+    // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
+    const strength = new Map<number, number>()
+    if (this.ranking.strength > 0 && coverage.size) {
+      const kw = this.keywordMatches(q, Math.min(coverage.size, 2000), q.typing)
+      const top = kw.reduce((m, r) => Math.max(m, r.raw ?? 0), 0)
+      if (top > 0) for (const r of kw) if (coverage.has(r.id)) strength.set(r.id, (r.raw ?? 0) / top)
+    }
     const ranked = rank({
       best,
       coverage,
       named,
+      strength,
+      ranking: this.ranking,
       lookup: isLookup(terms),
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),
