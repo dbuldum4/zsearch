@@ -39,12 +39,16 @@ export interface Ranking {
   keywordName?: number
   keywordCoverage?: number
   keywordEveryWord?: number
+  /** Keyword search's order of the word matches (BM25), at most, without model vectors. */
+  keywordStrength?: number
+  /** Without model vectors, a long query's file is a word match with this many of its words (else half). */
+  keywordCover?: number
 }
 
 export const RANKING: Ranking = {
   fusion: "score", name: 2, namePower: 2, length: 0.7, shared: 0.5,
   everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 0.5,
-  keywordName: 1, keywordCoverage: 0, keywordEveryWord: 0.5,
+  keywordName: 1, keywordCoverage: 1, keywordEveryWord: 0.5, keywordStrength: 0.5, keywordCover: 3,
 }
 /** DigUp's, as zsearch ranked before. */
 export const DIGUP_RANKING: Ranking = { fusion: "score", name: 0, length: 0, shared: 0, everyWord: 0, words: 1, meaning: 1, strength: 0 }
@@ -158,7 +162,7 @@ export interface Ranked {
  * use separate weights; code and number lookups retain their exact-word preference.
  * Alternative benchmark pipelines can request rank fusion.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number }): Ranked[] {
   const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
@@ -166,17 +170,19 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   const nameWeight = hasMeaning ? R.name : (R.keywordName ?? R.name)
   const namePower = hasMeaning ? (R.namePower ?? 1) : 1
   const everyWord = hasMeaning ? R.everyWord : (R.keywordEveryWord ?? R.everyWord)
+  const strength = hasMeaning ? R.strength : (R.keywordStrength ?? R.strength)
+  const gate = hasMeaning ? 0.5 : Math.min(0.5, (R.keywordCover ?? Infinity) / Math.max(opts.terms ?? 1, 1))
   const [meaningWeight, baseWordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
   const wordsWeight = baseWordsWeight * coverageWeight
   const candidates = new Set<number>()
   for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
-  if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= 0.5) candidates.add(file)
+  if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= gate) candidates.add(file)
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
     const words = opts.coverage.get(file) ?? 0
     const z = b?.z ?? 0
-    const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + R.strength * (opts.strength?.get(file) ?? 0)) * R.words
+    const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
     // No word match automatically outranks a better semantic answer.
     let score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
     const kind = opts.kindOf(file)
@@ -185,7 +191,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   }
   if (R.fusion === "rrf") {
     // Each file's rank by words (and name) and by meaning, fused: 1/(60 + rank) from each list it is in.
-    const byWords = out.filter((r) => (opts.coverage.get(r.file) ?? 0) >= 0.5).sort((a, b) => wordsOf(b.file) - wordsOf(a.file) || a.file - b.file)
+    const byWords = out.filter((r) => (opts.coverage.get(r.file) ?? 0) >= gate).sort((a, b) => wordsOf(b.file) - wordsOf(a.file) || a.file - b.file)
     const byMeaning = out.filter((r) => r.z !== null).sort((a, b) => b.z! - a.z! || a.file - b.file)
     const fused = new Map<number, number>()
     byWords.forEach((r, i) => fused.set(r.file, (fused.get(r.file) ?? 0) + 1 / (60 + i)))
@@ -195,7 +201,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   return out.sort((a, b) => b.score - a.score || a.file - b.file)
 
   function wordsOf(file: number): number {
-    return (opts.coverage.get(file) ?? 0) ** 1.5 * 2 + R.name * (opts.named?.get(file) ?? 0) + R.strength * (opts.strength?.get(file) ?? 0)
+    return (opts.coverage.get(file) ?? 0) ** 1.5 * 2 + R.name * (opts.named?.get(file) ?? 0) + strength * (opts.strength?.get(file) ?? 0)
   }
 }
 

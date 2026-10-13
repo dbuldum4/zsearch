@@ -145,7 +145,7 @@ try {
   // Words only.
   const words = new SearchEngine(db, config)
   words.embedQuery = null
-  await run("words only", words, { "words only": RANKING, "words only + BM25 order": { ...RANKING, strength: 0.5 }, "words only, no name boost": { ...RANKING, name: 0 } })
+  await run("words only", words, { "words only": RANKING, "words only, before BM25 order and coverage": { ...RANKING, keywordCoverage: 0, keywordStrength: 0, keywordCover: undefined }, "words only, no name boost": { ...RANKING, keywordName: 0 } })
 
   if (granite) {
     t = performance.now()

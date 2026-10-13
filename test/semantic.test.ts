@@ -103,6 +103,15 @@ describe("DigUp's ranking", () => {
     expect(queryTerms("how much did the plumber charge")).toEqual(["much", "plumber", "charge"])
   })
 
+  test("without vectors, word matches follow coverage and keyword order, and long queries need only three words", () => {
+    const none = new Map<number, { z: number; row: number }>()
+    // Eight content words: three of them make a match; more words, then keyword order, rank first.
+    const r = rank({ best: none, coverage: new Map([[1, 3 / 8], [2, 5 / 8], [3, 5 / 8], [4, 2 / 8]]), strength: new Map([[1, 1], [2, 0.2], [3, 0.9]]), terms: 8, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(r.map(x => x.file)).toEqual([3, 2, 1])
+    // Short queries still need half their words.
+    expect(rank({ best: none, coverage: new Map([[1, 1 / 4]]), terms: 4, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })).toEqual([])
+  })
+
   test("Granite readiness requires the current sequence and passage completion", () => {
     const index = new VectorIndex()
     index.completeSeq = "12"

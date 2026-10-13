@@ -471,8 +471,9 @@ export class SearchEngine {
 
     // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
     const strength = new Map<number, number>()
-    if (this.ranking.strength > 0 && coverage.size) {
-      const kw = this.keywordMatches(q, Math.min(coverage.size, 2000), q.typing)
+    if ((best.size ? this.ranking.strength : (this.ranking.keywordStrength ?? this.ranking.strength)) > 0 && coverage.size) {
+      // Content words only: stopwords would let a long query's filler decide the order.
+      const kw = this.keywordMatches({ ...parseQuery(terms.join(" ")), filters: q.filters }, Math.min(coverage.size, 2000), q.typing)
       const top = kw.reduce((m, r) => Math.max(m, r.raw ?? 0), 0)
       if (top > 0) for (const r of kw) if (coverage.has(r.id)) strength.set(r.id, (r.raw ?? 0) / top)
     }
@@ -482,6 +483,7 @@ export class SearchEngine {
       named,
       strength,
       ranking: this.ranking,
+      terms: terms.length,
       lookup: isLookup(terms),
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),

@@ -13,6 +13,12 @@ Semantic search uses one pinned model: IBM's `granite-embedding-small-english-r2
 
 Digit-only passages deliberately have no vectors and still count as processed. A referenced vector that is missing makes a snapshot unusable.
 
+## Words only
+
+Until Granite completes, results come from word matches. They are ordered by body-word coverage, the filename/folder boost, and up to 0.5 from keyword search's BM25 order of the query's content words. A query with more than six content words needs only three of them to match.
+
+On BEIR SciFact (5,183 abstracts, 300 dev queries; `bun scripts/semantic-bench.ts --dataset=DIR --no-granite`), words-only nDCG@10 rose from 0.465 to 0.585 and recall@100 from 0.590 to 0.773. On the development sets below, words-only nDCG@10 went from 0.723 to 0.726 (tuning), 0.529 to 0.570 (validation) and stayed 0.850 (audit). Granite-stage ranking is unchanged.
+
 ## Measurements
 
 A bounded real-model check on 2026-10-13 used 20 package documents per set, without the optional handbook PDFs. The authored corpus contributes 49 notes to tuning and 57 to validation/audit. The rebuilt helper reports vector version 2 and uses CLS pooling; no stand-in model is involved.
