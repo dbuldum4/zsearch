@@ -7,7 +7,6 @@ import type { Kind } from "../kinds.ts"
 import { fileMetadata, metadataText } from "./extract/metadata.ts"
 import { pathPolicy } from "./policy.ts"
 import { holdsPrivateKey, onlyKeys, redactPrivateKeys, SECRET_NOTE } from "./secrets.ts"
-
 import { meaningOnly } from "../profile.ts"
 
 const encoder = new TextEncoder()

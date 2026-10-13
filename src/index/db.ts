@@ -95,7 +95,7 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
   if (hasMeta && Number(getMeta(db, "schema_version") ?? 0) > 0) {
     const profile = getMeta(db, "search_profile") ?? "full"
     if (profile !== (meaningOnly() ? "meaning-only" : "full")) {
-      db.close()
+      db.close(true)
       throw new Error("Index belongs to a different search profile; use a separate ZSEARCH_HOME or ZSEARCH_DB")
     }
   }

@@ -64,7 +64,7 @@ macos/scripts/install-preview.sh 12         # pull request #12
 For the **meaning-only** app, install the same CI preview with:
 
 ```sh
-macos/scripts/install-preview.sh 12 --meaning-only   # replace 12 with the PR number; main works too
+macos/scripts/install-preview.sh main --meaning-only   # or a PR number for its preview
 ```
 
 This variant offers Meaning search only. It extracts text for embeddings and previews, but builds no word index or vocabulary and has no keyword fallback. Download the model in Settings › Meaning, then update the index. It uses separate settings and data (`zsearch-meaning`) so switching between variants preserves each index. Installing replaces the app; it does not run both variants together. For a local build, run `bun run build --meaning-only` and `ZSEARCH_MEANING_ONLY=1 macos/scripts/build-app.sh`. Source runs can use `ZSEARCH_MEANING_ONLY=1 bun src/main.ts`.
@@ -113,6 +113,7 @@ Reading files for meaning is the slow part, so zsearch does much less of it than
 
 - It embeds the text the index already extracted, rather than reading every file again.
 - Passages from many files go to the model together, sorted by length and packed into as few model calls as fit; the next batch is prepared while one runs.
+- On Mac, attention runs independently within each passage, so the model skips scores between unrelated passages. Accelerate also reuses decoded model weights, with a 512 MiB memory limit.
 - A passage is embedded once wherever it appears: copies of a file (`report (1).pdf`), text shared between files, and files that were renamed, moved or re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded again, because passages end where the text says (at paragraphs a hash picks) rather than at fixed offsets.
 - Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
 - Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
@@ -125,7 +126,9 @@ With EmbeddingGemma 2 on a GitHub-hosted macOS runner, 188 text files with 10 co
 | After editing 5 files | 10 passages, 8.8 s | 6 embedded, 4 reused, 5.9 s |
 | After `zsearch index --rebuild` | everything again, about 720 s | nothing embedded, 0.1 s |
 
-The first index saves what skipping overlap and reusing copies save; more copies save more. Packing passages together leaves each vector within 0.999 cosine of embedding it alone (0.9994 at worst), and on a CPU it is no faster. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs the comparison.
+That earlier comparison measures the savings from skipping overlap and reusing copies; more copies save more. `bun scripts/bench-semantic/bench.ts --model=MODEL.gguf` runs it.
+
+The Mac runtime improvements additionally reduced a cold index from **948 s to 533 s (1.78× faster)** on a virtual M1 runner, with the same 561 passages and 235k tokens and no reused vectors. Minimum vector cosine against the previous runtime was 0.99956. A separate 15-query check kept every first neighbour and 98.67% of the top ten. See [measurements, memory tradeoffs and manual benchmark commands](native/embed/PERFORMANCE.md); speed on physical Macs will depend on their CPU/GPU and workload.
 
 
 It follows the index settings: it runs as part of an index update (so not at all with **Only when I ask** until you ask), waits with the rest of a big automatic update in Low Power Mode, runs at a low priority below 100% `indexLoad`, and never reads the files zsearch indexes by name only (keys, password files). The vectors live in a file of their own next to the index (`index.semantic.db`), as 16-bit floats like DigUp's: 8-bit numbers would take half the space, but with the real model they changed 2.7% of the top ten results.

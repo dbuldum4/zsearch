@@ -1,0 +1,96 @@
+{
+  "baselineCommit": "9f64f96",
+  "optimizedCommit": "40c0a82",
+  "run": "https://github.com/dbuldum4/zsearch/actions/runs/38328564371",
+  "hardware": "Apple M1 (Virtual), 3 CPU cores, macos-latest",
+  "model": {
+    "name": "embeddinggemma-2-Q8_0.gguf",
+    "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"
+  },
+  "runtime": [
+    {
+      "name": "baseline",
+      "seconds": 54.36281874999999,
+      "times": [
+        54.36281874999999
+      ],
+      "tokens": 14930,
+      "passages": 66,
+      "minCosine": 0.9999998942007096,
+      "meanCosine": 1.0000000032128062,
+      "overlap": 0.9999999999999999,
+      "at1": 0.9999999999999999
+    },
+    {
+      "name": "arm-split",
+      "seconds": 35.91921816699998,
+      "times": [
+        35.91921816699998
+      ],
+      "tokens": 14930,
+      "passages": 66,
+      "minCosine": 0.9997521066544341,
+      "meanCosine": 0.9999318970073012,
+      "overlap": 0.9866666666666666,
+      "at1": 0.9999999999999999
+    },
+    {
+      "name": "arm-dense",
+      "seconds": 48.20423337500001,
+      "times": [
+        48.20423337500001
+      ],
+      "tokens": 14930,
+      "passages": 66,
+      "minCosine": 0.9999998942007096,
+      "meanCosine": 1.0000000032128062,
+      "overlap": 0.9999999999999999,
+      "at1": 0.9999999999999999
+    },
+    {
+      "name": "arm-split-flash",
+      "seconds": 26.739709291000008,
+      "times": [
+        26.739709291000008
+      ],
+      "tokens": 14930,
+      "passages": 66,
+      "minCosine": 0.9995621827759951,
+      "meanCosine": 0.9998430847577168,
+      "overlap": 0.9733333333333334,
+      "at1": 0.9999999999999999
+    }
+  ],
+  "coldIndex": [
+    {
+      "name": "baseline",
+      "extractionSeconds": 0.414006,
+      "semanticSeconds": 948.0669090409999,
+      "totalSeconds": 948.4809150409999,
+      "mainFiles": 438,
+      "status": "done",
+      "files": 178,
+      "embedded": 561,
+      "reused": 0,
+      "removed": 0,
+      "tokens": 235219,
+      "minCosine": 1,
+      "meanCosine": 1.00000000000001
+    },
+    {
+      "name": "optimized",
+      "extractionSeconds": 0.414006,
+      "semanticSeconds": 532.6019080419999,
+      "totalSeconds": 533.0159140419998,
+      "mainFiles": 438,
+      "status": "done",
+      "files": 178,
+      "embedded": 561,
+      "reused": 0,
+      "removed": 0,
+      "tokens": 235219,
+      "minCosine": 0.9995634567077132,
+      "meanCosine": 0.9999023003671982
+    }
+  ]
+}

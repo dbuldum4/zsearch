@@ -3,6 +3,7 @@ import { ftsBody } from "../util/text.ts"
 import { compressText, ContentState, decompressText, getMeta, OCR_CACHE_VERSION, openDb } from "./db.ts"
 import { type ExtractReply, replyBuffers } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
+import { meaningOnly } from "../profile.ts"
 
 /** What is stored of an extraction: all of it but the vocabulary terms. */
 type StoredReply = Exclude<ExtractReply, { status: "ok" }> | Omit<Extract<ExtractReply, { status: "ok" }>, "terms">
@@ -31,8 +32,6 @@ export interface FileIdentity {
  * the small segments as it goes: with 4 MB, building the index costs about a third less.
  * Larger sizes gain little more, and leave more free pages behind once segments are merged.
  */
-import { meaningOnly } from "../profile.ts"
-
 const FTS_HASH_SIZE = 4 << 20
 
 /**
