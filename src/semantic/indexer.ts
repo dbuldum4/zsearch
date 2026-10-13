@@ -15,7 +15,7 @@
  *   re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded.
  * - Passages don't overlap (see `chunk.ts`), and text that is mostly digits is left to keyword search.
  * - Source code and data files are left out unless `semantic.code` is on (as DigUp's code search
- *   is off by default).
+ *   is off by default), and Lean proofs always are (see `semanticExcluded`).
  *
  * Like the main index it respects the index settings: it runs only as part of an index run (so
  * not at all with "only when I ask" until someone asks), and so only while zsearch runs (the Mac
@@ -33,7 +33,7 @@ import { loadShare } from "../index/load.ts"
 import type { PowerGate } from "../index/power.ts"
 import { crawlOptionsFor, pathPolicy } from "../index/policy.ts"
 import { secretFile } from "../index/secrets.ts"
-import type { Kind } from "../kinds.ts"
+import { type Kind, semanticExcluded } from "../kinds.ts"
 import { CHUNKER_VERSION, chunkText, documentPrompt, hasWords, titleOf } from "./chunk.ts"
 import { Embedder, type TextEmbedder } from "./helper.ts"
 import { installedModel, modelFingerprint, modelSpec, POTION, type Tier } from "./model.ts"
@@ -364,7 +364,7 @@ export class SemanticIndexer {
       .query("SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0")
       .all(ContentState.Indexed) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
     for (const r of rows) {
-      if (!kinds.has(r.kind)) continue
+      if (!kinds.has(r.kind) || semanticExcluded(r.path)) continue
       const p = pathPolicy(r.path, crawl)
       if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime })
     }

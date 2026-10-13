@@ -6,7 +6,7 @@ import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
-import type { Kind } from "../kinds.ts"
+import { type Kind, semanticExcluded } from "../kinds.ts"
 import { escapeRegExp, foldTerm, ftsPrefixExpr, ftsTerm, smartCaseSensitive } from "../util/text.ts"
 import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
@@ -447,14 +447,14 @@ export class SearchEngine {
     const check = policyFor(crawlOptionsFor(this.config))
     const usable = (id: number): number | undefined => {
       const i = cat.indexOf(id)
-      return i !== undefined && cat.passes(i, q.filters) ? i : undefined
+      return i !== undefined && cat.passes(i, q.filters) && !semanticExcluded(cat.paths[i]!) ? i : undefined
     }
 
     // Meaning: every passage of each model's index on that model's scale for this query, and
     // each file's best, from Granite's index once Granite has read the file, Potion's until then.
     // While Granite is part way, the files Potion ranks highest that Granite hasn't read yet
     // have their best passage embedded with Granite now (see `rerankWithGranite`).
-    let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+    let best = new Map<number, { z: number; row: number; index: VectorIndex; tier: Tier }>()
     const indexes: Partial<Record<Tier, VectorIndex>> = {}
     if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
     else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
@@ -589,7 +589,9 @@ export class SearchEngine {
       if (n >= 60) return h
       // Show the passage that matched by meaning; or, matched by words, the lines with them.
       const index = r.row !== null ? best.get(r.file)!.index : undefined
-      const useMeaning = r.row !== null && index && (r.z! >= 2 || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
+      // Potion's passage only when the words aren't in the text: its best one may not be about them.
+      const strong = best.get(r.file)?.tier === "fast" ? false : r.z! >= 2
+      const useMeaning = r.row !== null && index && (strong || !bodyMatch.has(r.file)) && index.start[r.row]! >= 0
       if (useMeaning) {
         const t = this.storedText(r.file)
         if (t !== null) {

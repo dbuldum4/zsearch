@@ -109,12 +109,14 @@ In the Mac app it is **Settings › Semantic**, and the **Semantic** tab next to
 
 Every passage of every file is scored against the query, and the scores are put on one scale per query and model: how far a passage stands out from the rest of that model's passages. A file is a result if its best passage stands out clearly, or if it holds at least half of the query's words; it scores its meaning plus a bonus for the words it holds, plus one for the kind of file the query asks for ("…pdf", "slides…"). A query of codes and numbers (`INV-2024-118`) weighs words double. The preview opens at the passage that matched.
 
+Until Granite has read a file, Potion's meaning doesn't weigh against words: a static model too often finds a long manual or an unrelated note as close as the file the words point at. The files holding the query's words rank as they would without any model, Potion only orders the ones the words can't tell apart, and the files it finds by meaning alone come after them. On `scripts/semantic-eval.ts` (a home folder of 49 notes and letters and 210 package READMEs and licences, 34 questions), Potion with words ranks 1 of the 34 questions below words alone (by ordering a tie differently) and 8 above, where scoring Potion's meaning against words had put 6 below. Lean proofs (`.lean`) are left to find and fuzzy: they are neither read for meaning nor shown in the semantic tab.
+
 Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
 
 - It embeds the text the index already extracted, rather than reading every file again.
 - Passages from many files go to the model together, sorted by length and packed into as few model calls as fit; the next batch is prepared while one runs.
 - A passage is embedded once wherever it appears: copies of a file (`report (1).pdf`), text shared between files, and files that were renamed, moved or re-indexed from scratch cost nothing more. An edited file only has its edited passages embedded again, because passages end where the text says (at paragraphs a hash picks) rather than at fixed offsets.
-- Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code`.
+- Passages don't overlap, text that is mostly digits is left to word search, and code and data files are left out unless you set `semantic.code` (Lean proofs always are).
 - Long files get their first 40 passages in a first round and the rest after every file has its start, as DigUp does.
 
 With EmbeddingGemma 2, the model earlier versions ran, on a GitHub-hosted macOS runner, 188 text files with 10 copies among them:

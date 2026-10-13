@@ -13,6 +13,12 @@
  * the share of words it holds, plus one for the kind of file the query asks for ("photo of…",
  * "…in a pdf"). Queries of codes and numbers weigh words double and meaning half. The engine
  * (`SearchEngine.runSemantic`) does the parts that need the main index: words, filters, snippets.
+ *
+ * Potion's meaning is not good enough to weigh against words: a static model's best passage of a
+ * long or unrelated file often stands out as far as the file the words point at. So until Granite
+ * has read a file, its words rank it as they would without any model, and Potion only orders the
+ * files the words can't tell apart, and adds the files it finds by meaning alone after every word
+ * match.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -25,6 +31,8 @@ import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
 
 /** A file's best passage must stand out by this many deviations to count as a meaning match. */
 export const Z_GATE = 2.0
+/** How much Potion's meaning counts, against words: enough to order files the words tie. */
+const POTION_WEIGHT = 1e-3
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
 export const WORD_WEIGHT = 2.0
 export const CODE_WORD_WEIGHT = 1.0
@@ -129,9 +137,10 @@ export interface Ranked {
 
 /**
  * Score the candidates: files whose best passage stands out (`best`), and files holding at least
- * half of the query's words (`coverage`, 0..1).
+ * half of the query's words (`coverage`, 0..1). A best passage of Potion's (`tier` "fast") orders
+ * the word matches that tie, and puts the files with none of the words after them all.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number; tier?: "fast" | "full" }>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number }): Ranked[] {
   const zGate = opts.zGate ?? Z_GATE
   const [meaningWeight, wordsWeight] = opts.lookup ? [0.5, opts.wordWeight * 2] : [1, opts.wordWeight]
   const candidates = new Set<number>()
@@ -140,7 +149,15 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; cove
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
-    let score = meaningWeight * Math.max(b?.z ?? 0, 0) + wordsWeight * (opts.coverage.get(file) ?? 0) ** 1.5
+    const words = opts.coverage.get(file) ?? 0
+    const z = b?.z ?? 0
+    let score: number
+    if (b?.tier === "fast") {
+      // As without a model, Potion only ordering the files the words tie (bounded, so that it can't
+      // reach the next word match), and its meaning matches after every word match.
+      score = (words >= 0.5 ? wordsWeight * words ** 1.5 : 0) + POTION_WEIGHT * Math.tanh(z / 4)
+      if (words < 0.5) { out.push({ file, score, row: b.row, z }); continue }
+    } else score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
@@ -331,8 +348,8 @@ export function outdatedFiles(full: VectorIndex, fast: VectorIndex, current: (fi
  * index) for the files it has, from `fast` (Potion's) for the others. A part's `outdated` files
  * (see `outdatedFiles`) don't count in it. `usable` says whether a file may be shown (filters, access).
  */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
-  const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full"; outdated?: Set<number> }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex; tier: "fast" | "full" }> {
+  const best = new Map<number, { z: number; row: number; index: VectorIndex; tier: "fast" | "full" }>()
   const ok = new Map<number, boolean>()
   const upgraded = new Set<number>()
   // An image's own vector is stored under its file's negative id.
@@ -347,7 +364,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (b && b.z >= z[row]!) continue
       let allowed = ok.get(file)
       if (allowed === undefined) ok.set(file, (allowed = usable(file)))
-      if (allowed) best.set(file, { z: z[row]!, row, index })
+      if (allowed) best.set(file, { z: z[row]!, row, index, tier })
     }
   }
   return best

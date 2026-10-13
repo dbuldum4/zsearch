@@ -24,6 +24,7 @@ const CODE = `
 c h cc cpp cxx hpp hh hxx ino m mm cs fs fsx fsi vb java kt kts scala sc groovy gradle clj cljs cljc edn
 go rs zig nim v d dart swift py pyi pyw ipynb rb rake gemspec php phtml pl pm t lua r jl ex exs erl hrl
 hs lhs ml mli elm purs re res rkt scm ss lisp el sol vy move cairo
+lean agda lagda idr thy
 js mjs cjs jsx ts mts cts tsx vue svelte astro
 sh bash zsh fish ksh csh tcsh ps1 psm1 bat cmd awk sed
 sql prisma graphql gql proto thrift avsc capnp
@@ -34,7 +35,7 @@ dockerfile containerfile makefile justfile rakefile gemfile podfile vagrantfile 
 `
 const MARKDOWN = `md markdown mdown mkd mkdn mdx rst adoc asciidoc org textile wiki pod rdoc tex latex bib`
 const TEXT = `txt text log out err nfo me readme license licence changelog authors contributors copying todo notes srt vtt sub ass diff patch`
-const DATA = `json jsonc json5 jsonl ndjson geojson yaml yml toml ini cfg conf config env properties prop xml xsd xsl xslt plist csv tsv psv dat lock gitignore gitattributes editorconfig npmrc htaccess`
+const DATA = `json jsonc json5 jsonl ndjson geojson yaml yml toml ini cfg conf config env properties prop xml xsd xsl xslt plist csv tsv psv dat ilean lock gitignore gitattributes editorconfig npmrc htaccess`
 const WEB = `html htm xhtml shtml mhtml svg`
 const DOC = `doc docx docm dot dotx odt ott rtf pages wpd wps abw fodt`
 const SHEET = `xls xlsx xlsm xlsb xlt xltx ods ots numbers fods`
@@ -45,7 +46,7 @@ const IMAGE = `png jpg jpeg gif bmp tif tiff webp heic heif avif ico icns raw cr
 const AUDIO = `mp3 wav flac aac m4a ogg oga opus wma aiff aif alac mid midi`
 const VIDEO = `mp4 m4v mov avi mkv webm wmv flv mpg mpeg 3gp ogv`
 const ARCHIVE = `zip tar gz tgz bz2 tbz xz txz zst 7z rar dmg iso img pkg deb rpm apk jar war whl gem crate`
-const APP = `app exe dll so dylib a o obj class pyc pyo wasm bin elf msi appimage`
+const APP = `app exe dll so dylib a o obj class pyc pyo wasm bin elf msi appimage olean`
 
 const EXT_KIND = new Map<string, Kind>()
 const add = (list: string, kind: Kind) => {
@@ -232,4 +233,13 @@ export const KIND_ALIASES: Record<string, Kind[]> = {
   app: ["app"],
   binary: ["app"],
   other: ["other"],
+}
+
+/**
+ * Files semantic search leaves to find and fuzzy: Lean proofs (and Lean's build files), whose
+ * comments read like prose to a model and crowd out the files a question is about. They are
+ * neither embedded nor shown in the semantic tab, whatever `semantic.code` says.
+ */
+export function semanticExcluded(path: string): boolean {
+  return /\.(?:lean|olean|ilean)$/i.test(path)
 }

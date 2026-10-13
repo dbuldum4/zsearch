@@ -6,6 +6,7 @@ import { join } from "node:path"
 import type { Config } from "../src/config.ts"
 import { clearIndex, openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
+import { kindOf, semanticExcluded } from "../src/kinds.ts"
 import type { PowerGate } from "../src/index/power.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { parseQuery } from "../src/search/query.ts"
@@ -84,6 +85,32 @@ describe("DigUp's ranking", () => {
     expect(isLookup(queryTerms("trip 2024"))).toBe(false)
     expect([...kindHints("screenshot of the error")]).toEqual(["image"])
     expect(strongCount([10, 8, 5, 4.9, 1])).toBe(3)
+  })
+
+  test("Potion's meaning only orders word matches that tie, and adds its own after them", () => {
+    // 1 and 2 hold every word, 3 half of them; 4 and 5 none, but Potion finds them close.
+    const best = new Map([
+      [1, { z: 0.2, row: 0, tier: "fast" as const }],
+      [2, { z: 1.5, row: 1, tier: "fast" as const }],
+      [3, { z: 6, row: 2, tier: "fast" as const }],
+      [4, { z: 9, row: 3, tier: "fast" as const }],
+      [5, { z: 3, row: 4, tier: "fast" as const }],
+      [6, { z: 1.9, row: 5, tier: "fast" as const }],
+    ])
+    const coverage = new Map([[1, 1], [2, 1], [3, 0.5]])
+    const r = rank({ best, coverage, lookup: false, wordWeight: 2, hinted: new Set(["text"]), kindOf: () => "text" })
+    expect(r.map((x) => x.file)).toEqual([2, 1, 3, 4, 5])
+    // Granite's meaning still counts against words.
+    const full = rank({ best: new Map([[4, { z: 9, row: 3, tier: "full" as const }]]), coverage, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
+    expect(full[0]!.file).toBe(4)
+  })
+
+  test("Lean files are left to find and fuzzy", () => {
+    expect(kindOf("Continuity.lean")).toBe("code")
+    expect(kindOf("Continuity.olean")).toBe("app")
+    expect(semanticExcluded("/home/me/proofs/Continuity.lean")).toBe(true)
+    expect(semanticExcluded("/home/me/proofs/.lake/build/Continuity.ilean")).toBe(true)
+    expect(semanticExcluded("/home/me/notes/lean-recipes.md")).toBe(false)
   })
 
   test("vectors keep their direction in 16 bits", () => {
@@ -176,6 +203,7 @@ describe("semantic index and search", () => {
     corpus.write("notes/orders.txt", "Order K7Q2LM shipped on Monday. Tracking will follow.\n")
     corpus.write("notes/deploy.txt", "Deployed commit 3f9a1c7e5b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a to production on Friday.\n")
     corpus.write("Documents/credentials", "user=admin password=hunter2 sedan\n")
+    corpus.write("proofs/Kennel.lean", "/-- A dog in its kennel chews the sofa. -/\ntheorem kennel_sofa : True := trivial\n")
     dbPath = join(corpus.home, ".zsearch-data", "index.db")
     db = openDb(dbPath)
     config = { ...homeConfig(), semantic: { enabled: true, declined: false, code: false } }
@@ -199,6 +227,7 @@ describe("semantic index and search", () => {
     expect(texts.some((t) => t.includes("hunter2"))).toBe(false)
     expect(texts.some((t) => t.includes("getUserName"))).toBe(false)
     expect(texts.some((t) => t.includes("MAX_RETRIES"))).toBe(false)
+    expect(texts.some((t) => t.includes("kennel_sofa"))).toBe(false)
     const s = store()
     const stats = semanticStats(s)
     s.close()
@@ -249,6 +278,9 @@ describe("semantic index and search", () => {
     expect(r.hits.some((h) => h.display === "Documents/credentials")).toBe(false)
     const pets = await engine().search("canine", "semantic")
     expect(pets.hits[0]!.display).toBe("notes/pets.md")
+    // Lean proofs are for find, not for the semantic tab, even by their words.
+    expect((await engine().search("kennel sofa", "semantic")).hits.some((h) => h.display.endsWith(".lean"))).toBe(false)
+    expect((await engine().search("kennel_sofa", "find")).hits.map((h) => h.display)).toContain("proofs/Kennel.lean")
   })
 
   test("filters apply to meaning matches", async () => {
