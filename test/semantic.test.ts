@@ -97,7 +97,7 @@ describe("DigUp's ranking", () => {
     expect(vectorValues(packed.subarray(2), 768)).toBeNull()
   })
 
-  test("a version 2 index keeps its vectors, passages and model in the new layout", () => {
+  test("a version 2 index is made again from scratch in the new layout, and gives its space back", () => {
     const dir = mkdtempSync(join(tmpdir(), "zsearch-store-"))
     try {
       const path = join(dir, "index.semantic.db")
@@ -115,13 +115,15 @@ describe("DigUp's ranking", () => {
       old.exec("INSERT INTO files VALUES (1, 'sig', 1, 1, NULL)")
       old.close()
 
+      const before = Bun.file(path).size
       const db = openSemanticDb(path)!
       expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "3" })
-      expect(db.query("SELECT value FROM meta WHERE key = 'fingerprint'").get()).toEqual({ value: "granite" })
+      expect(db.query("SELECT value FROM meta WHERE key = 'fingerprint'").get()).toBeNull()
       const stats = semanticStats(db)
-      expect([stats.vectors, stats.passages, stats.files]).toEqual([50, 1, 1])
-      expect((db.query("SELECT vec FROM vectors WHERE hash = ?").get(new Uint8Array(16).fill(7)) as { vec: Uint8Array }).vec).toEqual(vec)
+      expect([stats.vectors, stats.passages, stats.files]).toEqual([0, 0, 0])
       expect(db.query("SELECT sql FROM sqlite_schema WHERE name = 'vectors'").get()).toEqual({ sql: expect.not.stringContaining("WITHOUT ROWID") })
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+      expect(Bun.file(path).size).toBeLessThan(before / 4)
       db.close()
     } finally {
       rmSync(dir, { recursive: true, force: true })
