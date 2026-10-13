@@ -170,6 +170,23 @@ export class VectorIndex {
     return this.file.length
   }
 
+  /** An index of these passages, one vector each (passages reranked at search time). */
+  static of(rows: { file: number; start: number; end: number; vector: Float32Array }[]): VectorIndex {
+    const v = new VectorIndex()
+    const n = rows.length
+    v.dim = n ? rows[0]!.vector.length : 0
+    v.file = Int32Array.from(rows, (r) => r.file)
+    v.start = Int32Array.from(rows, (r) => r.start)
+    v.end = Int32Array.from(rows, (r) => r.end)
+    v.vector = Int32Array.from(rows, (_, i) => i)
+    v.modality = new Uint8Array(n)
+    v.setsScale = new Uint8Array(n)
+    v.values = new Float16Array(n * v.dim)
+    rows.forEach((r, i) => v.values.set(r.vector, i * v.dim))
+    v.distinct = n
+    return v
+  }
+
   static load(db: Database): VectorIndex {
     const v = new VectorIndex()
     const index = new Map<string, number>()
@@ -298,8 +315,8 @@ function fileIno(path: string): number | null {
  * index) for the files it has, from `fast` (Potion's) for the others. `usable` says whether a file
  * may be shown (filters, access).
  */
-export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full" }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; tier: "fast" | "full" }> {
-  const best = new Map<number, { z: number; row: number; tier: "fast" | "full" }>()
+export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "fast" | "full" }[], usable: (file: number) => boolean): Map<number, { z: number; row: number; index: VectorIndex }> {
+  const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
   const ok = new Map<number, boolean>()
   const upgraded = new Set<number>()
   for (const p of parts) if (p.tier === "full") for (const f of p.index.file) upgraded.add(f)
@@ -311,7 +328,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (b && b.z >= z[row]!) continue
       let allowed = ok.get(file)
       if (allowed === undefined) ok.set(file, (allowed = usable(file)))
-      if (allowed) best.set(file, { z: z[row]!, row, tier })
+      if (allowed) best.set(file, { z: z[row]!, row, index })
     }
   }
   return best
@@ -322,6 +339,8 @@ export class QueryEmbedder {
   private embedder: TextEmbedder | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private cache = new Map<string, Float32Array>()
+  /** Passages embedded at search time (to rerank files the indexer hasn't reached), by their text. */
+  private passages = new Map<string, Float32Array>()
 
   constructor(private start: () => TextEmbedder, private idleMs = 120_000) {}
 
@@ -344,6 +363,30 @@ export class QueryEmbedder {
       this.idle = setTimeout(() => this.close(), this.idleMs)
       this.idle.unref?.()
     }
+  }
+
+  /** Passages' vectors, embedded together (those not kept from an earlier search). */
+  async embedPassages(texts: string[]): Promise<Float32Array[]> {
+    const missing = [...new Set(texts.filter((t) => !this.passages.has(t)))]
+    if (missing.length) {
+      this.embedder ??= this.start()
+      if (this.idle) clearTimeout(this.idle)
+      try {
+        const { vectors, dim } = await this.embedder.embedTexts(missing)
+        missing.forEach((t, i) => {
+          if (this.passages.size >= 4096) this.passages.delete(this.passages.keys().next().value!)
+          this.passages.set(t, vectors.slice(i * dim, (i + 1) * dim))
+        })
+      } catch (err) {
+        this.embedder?.kill()
+        this.embedder = null
+        throw err
+      } finally {
+        this.idle = setTimeout(() => this.close(), this.idleMs)
+        this.idle.unref?.()
+      }
+    }
+    return texts.map((t) => this.passages.get(t)!)
   }
 
   close() {

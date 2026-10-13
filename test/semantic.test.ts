@@ -353,6 +353,23 @@ describe("semantic index and search", () => {
     expect(r.files).toBeGreaterThanOrEqual(110)
   })
 
+  test("while Granite is part way, Potion's best files Granite hasn't read are reranked with Granite", async () => {
+    // Granite hasn't read the garage notes; Potion's stand-in doesn't know a sedan is a vehicle.
+    const s = store()
+    const ids = (db.query("SELECT id FROM files WHERE name LIKE 'garage%'").values() as number[][]).map((r) => r[0]!)
+    for (const id of ids) { s.query("DELETE FROM passages WHERE file = ?").run(id); s.query("DELETE FROM files WHERE file = ?").run(id) }
+    s.close()
+    const e = engine()
+    const without = await e.search("automobile", "semantic")
+    expect(without.hits.some((h) => h.display.startsWith("notes/garage"))).toBe(false)
+    e.rerankMinPassages = 0
+    const r = await e.search("automobile", "semantic")
+    expect(r.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
+    expect(r.hits[0]!.lines[0]!.text).toContain("sedan")
+    e.closeSemantic()
+    expect((await semantic()).status).toBe("done")
+  })
+
   test("a search engine follows the index when it is removed and made again", async () => {
     const e = engine()
     expect((await e.search("automobile", "semantic")).strategy).toBe("semantic + words")
