@@ -261,6 +261,7 @@ export function mergeConfig(base: Config, patch: unknown): Config {
   // Older versions had auto, exact and regex modes: all of them are "find" now.
   if (out.defaultMode !== "fuzzy" && out.defaultMode !== "semantic") out.defaultMode = "find"
   if (out.defaultMode === "semantic" && !(out.semantic as SemanticConfig).enabled) out.defaultMode = "find"
+  if (meaningOnly()) out.defaultMode = "semantic"
   return out as unknown as Config
 }
 
@@ -284,7 +285,7 @@ export function saveConfig(config: Config): void {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   chmodSync(dirname(file), 0o700)
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600, flag: "wx" })
+  writeFileSync(tmp, JSON.stringify(meaningOnly() ? { ...config, defaultMode: "semantic" } : config, null, 2) + "\n", { mode: 0o600, flag: "wx" })
   renameSync(tmp, file)
 }
 

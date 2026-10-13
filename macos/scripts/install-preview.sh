@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install a GitHub-authenticated preview, without Apple credentials or quarantine.
 # Requires a current GitHub CLI (brew install gh); no GitHub login is needed.
-# Usage: install-preview.sh <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]
+# Usage: install-preview.sh <main|PR-number> [--build RUN_ID-ATTEMPT] [--meaning-only] [--allow-downgrade] [--open]
 set -euo pipefail
 umask 077
 
@@ -14,7 +14,7 @@ DEST=${ZSEARCH_APP_DIR:-$HOME/Applications}
 WHICH=${1:-}
 case "$WHICH" in
   main) CHANNEL=main; REF=refs/heads/main; EVENT=push ;;
-  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]" ;;
+  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--build RUN_ID-ATTEMPT] [--meaning-only] [--allow-downgrade] [--open]" ;;
   *) CHANNEL="pr-$WHICH"; REF="refs/pull/$WHICH/merge"; EVENT=pull_request ;;
 esac
 shift

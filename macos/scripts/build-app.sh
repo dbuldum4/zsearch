@@ -25,7 +25,7 @@ fi
 
 SWIFT_FLAGS=()
 [ "${ZSEARCH_MEANING_ONLY:-0}" = 1 ] && SWIFT_FLAGS=(-Xswiftc -DMEANING_ONLY)
-swift build -c release --package-path "$ROOT/macos" --product ZSearch "${SWIFT_FLAGS[@]}"
+swift build -c release --package-path "$ROOT/macos" --product ZSearch ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 swift build -c release --package-path "$ROOT/macos" --product zsearch-ocr
 BIN=$(swift build -c release --package-path "$ROOT/macos" --show-bin-path)
 

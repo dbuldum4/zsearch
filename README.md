@@ -61,6 +61,14 @@ macos/scripts/install-preview.sh main       # latest main
 macos/scripts/install-preview.sh 12         # pull request #12
 ```
 
+For the **meaning-only** app, install the same CI preview with:
+
+```sh
+macos/scripts/install-preview.sh 12 --meaning-only   # replace 12 with the PR number; main works too
+```
+
+This variant offers Meaning search only. It extracts text for embeddings and previews, but builds no word index or vocabulary and has no keyword fallback. Download the model in Settings › Meaning, then update the index. It uses separate settings and data (`zsearch-meaning`) so switching between variants preserves each index. Installing replaces the app; it does not run both variants together. For a local build, run `bun run build --meaning-only` and `ZSEARCH_MEANING_ONLY=1 macos/scripts/build-app.sh`. Source runs can use `ZSEARCH_MEANING_ONLY=1 bun src/main.ts`.
+
 Install a current GitHub CLI first (`brew install gh`). The preview installer verifies GitHub provenance before mounting the download, stages a recoverable replacement, and installs without a quarantine marker. No GitHub login or Apple credentials are required. See [Mac installation and verification](macos/README.md#installing-a-preview).
 
 See [macos/README.md](macos/README.md) for how it is built and how to work on it without Xcode.

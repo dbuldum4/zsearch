@@ -5,7 +5,8 @@ import { type Config, manualIndexing, tildify } from "../config.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
-import { MODES, type Mode } from "../search/query.ts"
+import { meaningOnly } from "../profile.ts"
+import { MODES as ALL_MODES, type Mode } from "../search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "../util/text.ts"
 import { clampScroll, previewLayout, type Row, resultRows } from "./layout.ts"
 import type { IndexHandle, Services } from "./services.ts"
@@ -25,6 +26,7 @@ interface AppProps {
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+const MODES: Mode[] = meaningOnly() ? ["semantic"] : ALL_MODES
 const MODE_LABEL: Record<Mode, string> = { find: "find", fuzzy: "fuzzy", semantic: "semantic" }
 
 function RowText(props: { row: Row; width: number }) {
@@ -427,7 +429,7 @@ export function App(props: AppProps) {
           return handled(() => jumpMatch(-1))
       }
     }
-    if (key.meta && (k === "1" || k === "2" || k === "3")) return handled(() => setMode(MODES[Number(k) - 1]!))
+    if (key.meta && (k === "1" || k === "2" || k === "3")) return handled(() => setMode(meaningOnly() ? "semantic" : MODES[Number(k) - 1]!))
   })
 
   /* ------------------------------------------------------------- view -- */
@@ -478,7 +480,7 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
-    lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : mode() === "fuzzy" ? "  Tip: press Tab to search by meaning." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
+    if (!meaningOnly()) lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : mode() === "fuzzy" ? "  Tip: press Tab to search by meaning." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines
   })

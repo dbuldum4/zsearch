@@ -425,6 +425,16 @@ export class SearchEngine {
     const nameMatch = new Set<number>()
     const bodyMatch = new Set<number>()
     const matching = (column: string, term: string, prefix: boolean): number[] => {
+      if (meaningOnly()) {
+        // Negative query terms filter semantic candidates directly; no word index is built or read.
+        const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(term)}${prefix ? "" : "(?![\\p{L}\\p{N}])"}`, "iu")
+        return [...best.keys()].filter(id => {
+          const i = usable(id)
+          if (i === undefined) return false
+          const value = column === "body" ? this.storedText(id) : cat.paths[i]
+          return value != null && pattern.test(value)
+        })
+      }
       try {
         // The same expression find builds for a word, so the index's way of keeping words applies.
         const fts = this.ftsWords([term], prefix)
