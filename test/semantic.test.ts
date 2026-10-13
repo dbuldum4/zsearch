@@ -298,6 +298,14 @@ describe("semantic index and search", () => {
   test("filters apply to meaning matches", async () => {
     const docs = await engine().search("automobile type:image", "semantic")
     expect(docs.hits.some((h) => h.display.startsWith("notes/"))).toBe(false)
+    // Only the words go to the model, not the filters.
+    const asked: string[] = []
+    const e = engine()
+    const embed = e.embedQuery!
+    e.embedQuery = (text, tier) => { asked.push(text); return embed(text, tier) }
+    await e.search("canine type:text", "semantic")
+    expect(asked.length).toBeGreaterThan(0)
+    expect(asked.every((t) => t === "canine")).toBe(true)
   })
 
   test("Potion's vectors stand in for files Granite hasn't read, and Granite's replace them", async () => {

@@ -111,7 +111,7 @@ Every passage of every file is scored against the query, and the scores are put 
 
 Until Granite has read every file, meaning doesn't weigh against words: a static model like Potion too often finds a long manual or an unrelated note as close as the file the words point at, and while Granite is part way the files it has read would be scored on meaning and the rest on words alone. So the files holding the query's words rank as they would without any model, meaning only orders the ones the words can't tell apart, and the files found by meaning alone come after them. Once Granite has read everything, the files holding every word still come first, ordered by meaning, and meaning weighs against words among the rest. Either way, a file named for the query (`SHS Handbook.pdf`) comes before one that only mentions it, and a long file's best passage counts for a little less, since the best of hundreds stands out by chance. Lean proofs (`.lean`) are left to find and fuzzy: they are neither read for meaning nor shown in the semantic tab.
 
-`scripts/semantic-eval.ts` measures this on a home folder of 49 notes and letters and 210 package READMEs and licences, with 36 questions. With Potion, words and meaning now rank 1 question below words alone (by ordering a tie differently) and 8 above it. Before, 7 ranked below.
+`scripts/semantic-eval.ts` measures this on a home folder of 49 notes and letters and 210 package READMEs and licences, with 37 questions. With Potion, words and meaning now rank 1 question below words alone (by ordering a tie differently) and 8 above it. Before, 8 ranked below.
 
 Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
 

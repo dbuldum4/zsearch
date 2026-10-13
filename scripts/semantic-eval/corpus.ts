@@ -279,6 +279,7 @@ export const QUESTIONS: Question[] = [
   { q: "vitamin d supplement", type: "words", relevant: { "Documents/health/blood-test-results.txt": 2 } },
   { q: "permission slip museum", type: "words", relevant: { "Documents/personal/school-letter.txt": 2 } },
   { q: "handbook", type: "words", relevant: { "Documents/work/employee-handbook.md": 2 } },
+  { q: "handbook type:markdown", type: "words", relevant: { "Documents/work/employee-handbook.md": 2 } },
   { q: "resume", type: "words", relevant: { "Documents/work/resume.md": 2, "Documents/work/cover-letter.txt": 1 } },
   // Some of the words are there.
   { q: "how much was the plumber", type: "mixed", relevant: { "Documents/home/plumber-visit.txt": 2 } },
