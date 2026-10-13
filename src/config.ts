@@ -177,7 +177,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 /** Validation shared by the CLI, app and MCP. */
 const CONFIG_RULES: Record<string, (v: unknown) => string | null> = {
-  defaultMode: (v) => v === "find" || v === "fuzzy" || v === "semantic" ? null : 'must be "find", "fuzzy" or "semantic"',
+  defaultMode: (v) => meaningOnly() && v !== "semantic" ? "this build searches by meaning only" : v === "find" || v === "fuzzy" || v === "semantic" ? null : 'must be "find", "fuzzy" or "semantic"',
   indexLoad: (v) => Number.isInteger(v) && Number(v) >= 10 && Number(v) <= 100 ? null : "must be a whole number from 10 to 100 (percent)",
   workers: (v) => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 64 ? null : "must be a whole number from 0 (automatic) to 64",
   autoRefreshMinutes: (v) => Number.isFinite(v) && Number(v) >= 0 ? null : "must be 0 (off) or more",

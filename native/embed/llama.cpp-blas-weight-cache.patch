@@ -1,0 +1,68 @@
+diff --git a/ggml/src/ggml-blas/ggml-blas.cpp b/ggml/src/ggml-blas/ggml-blas.cpp
+index 6feb370..87a9cfc 100644
+--- a/ggml/src/ggml-blas/ggml-blas.cpp
++++ b/ggml/src/ggml-blas/ggml-blas.cpp
+@@ -6,6 +6,8 @@
+ #include <future>
+ #include <vector>
+ #include <cstring>
++#include <unordered_map>
++#include <cstdlib>
+ 
+ #if defined(GGML_BLAS_USE_ACCELERATE)
+ #   include <Accelerate/Accelerate.h>
+@@ -23,6 +25,13 @@ struct ggml_backend_blas_context {
+     int n_threads = GGML_DEFAULT_N_THREADS;
+     std::unique_ptr<char[]> work_data;
+     size_t work_size = 0;
++#if defined(GGML_BLAS_USE_ACCELERATE)
++    // Model buffers are immutable for this inference context. Decode each weight once,
++    // instead of launching conversion threads again on every batch and every layer.
++    std::unordered_map<const ggml_tensor *, std::vector<float>> weights;
++    size_t weights_bytes = 0;
++    static constexpr size_t weights_budget = 512ull << 20;
++#endif
+ #ifndef GGML_USE_OPENMP
+     std::vector<std::future<void>> tasks;
+ #endif
+@@ -58,14 +67,35 @@ static void ggml_backend_blas_mul_mat(ggml_backend_blas_context * ctx, struct gg
+     const int64_t ne_plane      = ne01*ne00;
+     const size_t  desired_wsize = type == GGML_TYPE_F32 ? 0 : ne03*ne02*ne_plane*sizeof(float);
+ 
+-    if (ctx->work_size < desired_wsize) {
+-        ctx->work_data.reset(new char[desired_wsize]);
+-        ctx->work_size = desired_wsize;
++    void * wdata = nullptr;
++    bool convert = type != GGML_TYPE_F32;
++#if defined(GGML_BLAS_USE_ACCELERATE)
++    const bool immutable = src0->buffer &&
++        ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
++        src0->op == GGML_OP_NONE;
++    if (convert && immutable && !getenv("ZSEARCH_EMBED_NO_BLAS_CACHE")) {
++        auto cached = ctx->weights.find(src0);
++        if (cached != ctx->weights.end()) {
++            wdata = cached->second.data();
++            convert = false;
++        } else if (desired_wsize <= ctx->weights_budget - ctx->weights_bytes) {
++            auto & values = ctx->weights[src0];
++            values.resize(desired_wsize / sizeof(float));
++            wdata = values.data();
++            ctx->weights_bytes += desired_wsize;
++        }
++    }
++#endif
++    if (!wdata && desired_wsize) {
++        if (ctx->work_size < desired_wsize) {
++            ctx->work_data.reset(new char[desired_wsize]);
++            ctx->work_size = desired_wsize;
++        }
++        wdata = ctx->work_data.get();
+     }
+-    void * wdata = ctx->work_data.get();
+ 
+     // convert src0 to float
+-    if (type != GGML_TYPE_F32) {
++    if (convert) {
+         const auto * type_traits = ggml_get_type_traits(type);
+         ggml_to_float_t const to_float = type_traits->to_float;
+ 

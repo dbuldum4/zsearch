@@ -2,7 +2,7 @@ import { expect } from "bun:test"
 import { chmodSync, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { defaultConfig } from "../../src/config.ts"
+import { defaultConfig, loadConfig, saveConfig } from "../../src/config.ts"
 import { clearIndex, openDb } from "../../src/index/db.ts"
 import { Indexer } from "../../src/index/indexer.ts"
 import { SemanticIndexer } from "../../src/semantic/indexer.ts"
@@ -16,6 +16,10 @@ try {
   process.env.ZSEARCH_HOME = join(dir, "data")
   const config = { ...defaultConfig(), roots: [root], indexLoad: 100, semantic: { enabled: true, images: false, code: true } }
   expect(config.defaultMode).toBe("semantic")
+  saveConfig(config)
+  expect(loadConfig().defaultMode).toBe("semantic")
+  saveConfig({ ...config, defaultMode: "find", semantic: { ...config.semantic, enabled: false } })
+  expect(loadConfig().defaultMode).toBe("semantic")
   const car = join(root, "garage.txt")
   writeFileSync(car, "My sedan needs new tyres before winter.")
   for (let i = 0; i < 32; i++) writeFileSync(join(root, `other${i}.txt`), `We cooked pancakes with milk and flour. Recipe number ${i}.`)
@@ -46,6 +50,7 @@ try {
   expect(result.strategy).toBe("meaning")
   expect(result.hits[0]?.path).toBe(car)
   expect(result.hits[0]?.lines[0]?.text).toContain("sedan")
+  expect((await engine.search("automobile -sedan", "find")).hits.some(h => h.path === car)).toBe(false)
   engine.embedQuery = null
   expect((await engine.search("pancakes", "fuzzy")).hits).toHaveLength(0)
   engine.closeSemantic()

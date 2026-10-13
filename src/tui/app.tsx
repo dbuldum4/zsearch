@@ -43,7 +43,7 @@ export function App(props: AppProps) {
   const [screen, setScreen] = createSignal<"setup" | "search">(svc.firstRun ? "setup" : "search")
   const [overlay, setOverlay] = createSignal<null | "help" | "settings">(null)
   const [query, setQuery] = createSignal(props.initialQuery ?? "")
-  const [mode, setMode] = createSignal<Mode>(props.initialMode ?? svc.config.defaultMode)
+  const [mode, setMode] = createSignal<Mode>(meaningOnly() ? "semantic" : props.initialMode ?? svc.config.defaultMode)
   const [response, setResponse] = createSignal<SearchResponse | null>(null)
   const [searching, setSearching] = createSignal(false)
   const [selected, setSelected] = createSignal(0)

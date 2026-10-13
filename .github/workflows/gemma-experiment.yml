@@ -1,5 +1,5 @@
 name: Gemma one-off runtime experiment
-# Third experiment: portable Apple silicon CPU features.
+# Fourth experiment: reuse immutable decoded BLAS weights and compare real indexing.
 on:
   push:
     branches: [codex/meaning-gemma]
@@ -42,8 +42,12 @@ jobs:
       - run: '[ -x dist/zsearch-embed ] || scripts/build-embed.sh'
       - run: sysctl -n machdep.cpu.brand_string; sysctl -n hw.ncpu
       - run: mkdir -p work && bun scripts/bench-semantic/runtime.ts
+      - run: bun scripts/bench-semantic/compare-indexing.ts --baseline=work/baseline/zsearch-embed --tool=dist/zsearch-embed --model=work/models/embeddinggemma-2-Q8_0.gguf
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: gemma-runtime
-          path: work/runtime.json
+          path: |
+            work/runtime.json
+            work/index-comparison/results.json
