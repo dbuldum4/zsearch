@@ -24,7 +24,8 @@
  *
  * Both ways, a file whose name or folders hold the query's words gains on one that only mentions
  * them, and a file's best passage stands out by less the more passages it has (`LENGTH_PENALTY`):
- * the best of a long book's hundreds of passages stands out by chance.
+ * the best of a long book's hundreds of passages stands out by chance; and the more files share it
+ * (`SHARED_PENALTY`): the same import lines at the top of a thousand files match everything alike.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -43,6 +44,8 @@ const POTION_WEIGHT = 1e-3
 export const NAME_WEIGHT = 1
 /** A file's best passage counts for less the more passages it has (deviations per e-fold): the best of many stands out by chance. */
 export const LENGTH_PENALTY = 0.3
+/** ...and by this much per e-fold of passages sharing its text: a header many files repeat says little about any one of them. */
+export const SHARED_PENALTY = 0.5
 /** What holding every word of the query adds to a file's score with Granite's meaning: it puts them first. */
 const EVERY_WORD = 100
 /** How much the query's words count against meaning (DigUp's `wordWeight`; code's are worth half). */
@@ -216,6 +219,16 @@ export class VectorIndex {
       for (const f of this.file) this.counts.set(f, (this.counts.get(f) ?? 0) + 1)
     }
     return this.counts.get(file) ?? 0
+  }
+
+  private uses: Int32Array | null = null
+  /** How many passages share this passage's text (its vector): boilerplate many files hold. */
+  sharing(row: number): number {
+    if (!this.uses) {
+      this.uses = new Int32Array(this.distinct)
+      for (const k of this.vector) this.uses[k]!++
+    }
+    return this.uses[this.vector[row]!] ?? 1
   }
 
   /** An index of these passages, one vector each (passages reranked at search time). */
@@ -397,7 +410,7 @@ export function bestByFile(parts: { index: VectorIndex; z: Float64Array; tier: "
       if (allowed) best.set(file, { z: z[row]!, row, index, anchored: anchored ?? tier === "fast" })
     }
   }
-  for (const b of best.values()) b.z -= LENGTH_PENALTY * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1))
+  for (const b of best.values()) b.z -= LENGTH_PENALTY * Math.log(Math.max(b.index.passages(b.index.file[b.row]!), 1)) + SHARED_PENALTY * Math.log(Math.max(b.index.sharing(b.row), 1))
   return best
 }
 

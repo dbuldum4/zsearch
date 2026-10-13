@@ -115,6 +115,10 @@ describe("DigUp's ranking", () => {
     const best = bestByFile([{ index, z: new Float64Array(21).fill(3), tier: "full" }], () => true)
     expect(best.get(1)!.z).toBeCloseTo(3)
     expect(best.get(2)!.z).toBeLessThan(2.2)
+    // A passage 20 files share (a header they all repeat) says little about any one of them.
+    const shared = VectorIndex.of(Array.from({ length: 20 }, (_, n) => ({ file: n + 1, start: 0, end: 1, vector: v })))
+    shared.vector.fill(0)
+    expect(bestByFile([{ index: shared, z: new Float64Array(20).fill(3), tier: "full" }], () => true).get(1)!.z).toBeLessThan(1.6)
   })
 
   test("Lean files are left to find and fuzzy", () => {
