@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import type { Database } from "bun:sqlite"
+import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -95,6 +95,37 @@ describe("DigUp's ranking", () => {
     for (let i = 0; i < 768; i++) { dot += v[i]! * h[i]!; a += v[i]! ** 2; b += h[i]! ** 2 }
     expect(dot / Math.sqrt(a * b)).toBeGreaterThan(0.99999)
     expect(vectorValues(packed.subarray(2), 768)).toBeNull()
+  })
+
+  test("a version 2 index keeps its vectors, passages and model in the new layout", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-store-"))
+    try {
+      const path = join(dir, "index.semantic.db")
+      const old = new Database(path, { create: true, strict: true })
+      old.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+      old.exec("CREATE TABLE vectors (hash BLOB PRIMARY KEY, vec BLOB NOT NULL) WITHOUT ROWID")
+      old.exec("CREATE TABLE passages (file INTEGER NOT NULL, n INTEGER NOT NULL, hash BLOB NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, PRIMARY KEY (file, n)) WITHOUT ROWID")
+      old.exec("CREATE INDEX passages_hash ON passages(hash)")
+      old.exec("CREATE TABLE files (file INTEGER PRIMARY KEY, sig TEXT NOT NULL, upto INTEGER NOT NULL, total INTEGER NOT NULL, note TEXT)")
+      old.exec("INSERT INTO meta VALUES ('schema_version', '2'), ('fingerprint', 'granite')")
+      const vec = packVector(new Float32Array(768).fill(0.5), 0, 768)
+      const insert = old.prepare("INSERT INTO vectors VALUES (?, ?)")
+      for (let i = 0; i < 50; i++) insert.run(new Uint8Array(16).fill(i), vec)
+      old.exec("INSERT INTO passages VALUES (1, 0, x'00000000000000000000000000000000', 0, 10)")
+      old.exec("INSERT INTO files VALUES (1, 'sig', 1, 1, NULL)")
+      old.close()
+
+      const db = openSemanticDb(path)!
+      expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: "3" })
+      expect(db.query("SELECT value FROM meta WHERE key = 'fingerprint'").get()).toEqual({ value: "granite" })
+      const stats = semanticStats(db)
+      expect([stats.vectors, stats.passages, stats.files]).toEqual([50, 1, 1])
+      expect((db.query("SELECT vec FROM vectors WHERE hash = ?").get(new Uint8Array(16).fill(7)) as { vec: Uint8Array }).vec).toEqual(vec)
+      expect(db.query("SELECT sql FROM sqlite_schema WHERE name = 'vectors'").get()).toEqual({ sql: expect.not.stringContaining("WITHOUT ROWID") })
+      db.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("queries pick semantic mode with s: and keep their words", () => {
