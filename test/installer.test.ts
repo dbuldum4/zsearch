@@ -50,7 +50,9 @@ elif name=='gh':
     print(filtered.stdout,end='')
     sys.exit(filtered.returncode)
 elif name=='hdiutil':
-    if args[0]=='attach': shutil.copytree(remote/'zsearch.app',pathlib.Path(value('-mountpoint'))/'zsearch.app')
+    if args[0]=='attach':
+        for bundle in ['zsearch.app','zsearch-meaning.app']:
+            if (remote/bundle).exists(): shutil.copytree(remote/bundle,pathlib.Path(value('-mountpoint'))/bundle)
 elif name=='codesign':
     if failure=='codesign' or (failure=='staged-signature' and '.zsearch-stage.' in args[-1]): sys.exit(1)
 elif name=='ditto':
@@ -136,6 +138,18 @@ describe("authenticated preview installer", () => {
     expect(statSync(join(f.dest, ".zsearch-preview-state/main")).mode & 0o777).toBe(0o600)
     expect(f.install().status).toBe(0)
     expect(readdirSync(f.dest).some((n) => n.startsWith(".zsearch-stage.") || n === ".zsearch-install-lock")).toBe(false)
+  }))
+
+  test("meaning-only selects the authenticated second bundle and can switch back", () => fixture((f) => {
+    const app = join(f.remote, "zsearch-meaning.app")
+    mkdirSync(join(app, "Contents"), { recursive: true })
+    writeFileSync(join(app, "version"), "meaning-only")
+    writeFileSync(join(app, "Contents/Info.plist"), "fixture")
+    expect(f.install({}, ["main", "--meaning-only"]).status).toBe(0)
+    expect(f.version()).toBe("meaning-only")
+    expect(f.calls().some(c => c.command === "ditto" && c.args.at(-2)?.endsWith("/zsearch-meaning.app"))).toBe(true)
+    expect(f.install().status).toBe(0)
+    expect(f.version()).toBe("new")
   }))
 
   for (const failure of ["manifest-proof", "dmg-proof", "copy", "codesign", "staged-signature", "quarantine", "attributes", "running", "quit-denied", "swap", "state", "interrupt", "state-interrupt"]) {

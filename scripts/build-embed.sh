@@ -41,6 +41,9 @@ fi
 FLAGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_SOURCE="$SOURCE")
 if [ "$(uname)" = Darwin ]; then
   FLAGS+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGGML_NATIVE=OFF)
+  # Every Apple-silicon Mac supports FP16 arithmetic and integer dot products (including M1).
+  # GGML_NATIVE=OFF alone otherwise falls back to baseline NEON, disabling both fast paths.
+  if [ "$(uname -m)" = arm64 ]; then FLAGS+=(-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16); fi
   JOBS=$(sysctl -n hw.ncpu)
 else
   JOBS=$(nproc)
