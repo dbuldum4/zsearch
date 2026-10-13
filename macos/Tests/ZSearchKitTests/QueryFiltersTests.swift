@@ -4,6 +4,16 @@ import XCTest
 final class QueryFiltersTests: XCTestCase {
     typealias Q = QueryFilters
 
+    func testSemanticOnlyKeepsEveryQueryInSemanticMode() {
+        XCTAssertEqual(Q.semanticOnly("fuzzy: report"), "semantic:fuzzy: report")
+        XCTAssertEqual(Q.semanticOnly("/inv.*ice/"), "semantic:/inv.*ice/")
+        XCTAssertEqual(Q.semanticOnly("lease ext:pdf"), "semantic:lease ext:pdf")
+        XCTAssertEqual(Q.semanticOnly(""), "")
+        XCTAssertEqual(Q.semanticOnly("  "), "  ")
+        // The filters still read through the prefix.
+        XCTAssertEqual(Q.value(Q.extKeys, in: Q.semanticOnly("lease ext:pdf")), "pdf")
+    }
+
     func testReadsFilterValues() {
         let q = "budget type:pdf in:~/Documents -type:image modified:week"
         XCTAssertEqual(Q.value(Q.typeKeys, in: q), "pdf")

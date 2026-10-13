@@ -59,11 +59,15 @@ jobs:
         run: swift test --package-path macos
         env:
           ZSEARCH_ENGINE: ${{ github.workspace }}/dist/zsearch
-      - name: Build zsearch.app and zsearch.dmg
-        run: macos/scripts/build-app.sh
+      - name: Build zsearch.app, zsearch Semantic.app and zsearch.dmg
+        run: |
+          macos/scripts/build-app.sh
+          [ "$(plutil -extract ZSearchSemanticOnly raw -o - "dist/zsearch Semantic.app/Contents/Info.plist")" = true ]
+          if plutil -extract ZSearchSemanticOnly raw -o - dist/zsearch.app/Contents/Info.plist 2>/dev/null; then exit 1; fi
         env:
           BUILD: ${{ github.run_number }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          ZSEARCH_SEMANTIC_APP: "1"
       - name: OCR helper on the test fixtures
         run: |
           dist/zsearch.app/Contents/Helpers/zsearch doctor | grep -F 'zsearch.app/Contents/Helpers/zsearch-ocr'
@@ -155,7 +159,7 @@ jobs:
           set -euo pipefail
           if [ -n "$PR_NUMBER" ]; then tag="preview-pr-$PR_NUMBER"; else tag=preview-main; fi
           versioned="$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          printf 'GitHub-attested preview of commit %s.\n\nInstall from a trusted checkout with a current GitHub CLI:\n\n    macos/scripts/install-preview.sh %s --build %s-%s\n\nThe installer verifies the DMG and manifest against the expected GitHub workflow before mounting. It installs without quarantine. Browser downloads may still need Open Anyway because previews are ad-hoc signed, not Apple-notarized.\n' \
+          printf 'GitHub-attested preview of commit %s.\n\nInstall from a trusted checkout with a current GitHub CLI:\n\n    macos/scripts/install-preview.sh %s --build %s-%s\n\nAdd --semantic to install zsearch Semantic.app, which has Semantic as its only search mode, next to the full app.\n\nThe installer verifies the DMG and manifest against the expected GitHub workflow before mounting. It installs without quarantine. Browser downloads may still need Open Anyway because previews are ad-hoc signed, not Apple-notarized.\n' \
             "$SHA" "${PR_NUMBER:-main}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > notes.md
           gh release create "$versioned" preview/zsearch.dmg preview/zsearch.dmg.sha256 \
             preview/preview.manifest preview/provenance.jsonl --repo "$GITHUB_REPOSITORY" \
@@ -203,6 +207,14 @@ jobs:
           if [[ "$attrs" == *com.apple.quarantine* ]]; then echo 'Quarantine unexpectedly present' >&2; exit 1; fi
           # The latest alias resolves to this same build, so reinstalling is idempotent.
           env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}"
+          # The semantic-only app installs next to it from the same DMG.
+          env -u GH_TOKEN -u GITHUB_TOKEN bash macos/scripts/install-preview.sh "${PR_NUMBER:-main}" --semantic \
+            --build "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          semantic="$ZSEARCH_APP_DIR/zsearch Semantic.app"
+          codesign --verify --deep --strict "$semantic"
+          [ "$(plutil -extract ZSearchSemanticOnly raw -o - "$semantic/Contents/Info.plist")" = true ]
+          "$semantic/Contents/Helpers/zsearch" --version
+          [ -d "$ZSEARCH_APP_DIR/zsearch.app" ]
       - name: Reject modified metadata and an unrelated publisher with the real verifier
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}

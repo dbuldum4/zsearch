@@ -6,6 +6,8 @@
 #   macos/scripts/build-app.sh
 #
 # Environment: VERSION (default: package.json), BUILD (default: 1), COMMIT (default: git HEAD).
+# ZSEARCH_SEMANTIC_APP=1 also builds dist/zsearch Semantic.app, the same app with Semantic as its
+# only search mode, and puts both apps in the DMG.
 # Preview builds are ad-hoc signed. Releases use Developer ID and notarization (macos/README.md).
 set -euo pipefail
 
@@ -70,12 +72,32 @@ codesign --verify --strict --verbose=2 "$APP"
 "$APP/Contents/Helpers/zsearch" --version
 [ -x "$APP/Contents/Helpers/zsearch-embed" ] && "$APP/Contents/Helpers/zsearch-embed" --version
 
+# The semantic-only app: the same binaries under another name and identity, so it can sit next to
+# the full app. It runs the same engine on the same index; ZSearchSemanticOnly hides the other modes.
+SEMANTIC_APP="$DIST/zsearch Semantic.app"
+rm -rf "$SEMANTIC_APP"
+if [ "${ZSEARCH_SEMANTIC_APP:-0}" = 1 ]; then
+  ditto "$APP" "$SEMANTIC_APP"
+  mv "$SEMANTIC_APP/Contents/MacOS/ZSearch" "$SEMANTIC_APP/Contents/MacOS/ZSearchSemantic"
+  PLIST="$SEMANTIC_APP/Contents/Info.plist"
+  plutil -replace CFBundleExecutable -string ZSearchSemantic "$PLIST"
+  plutil -replace CFBundleIdentifier -string io.github.dbuldum4.zsearch.semantic "$PLIST"
+  plutil -replace CFBundleName -string "zsearch Semantic" "$PLIST"
+  plutil -replace CFBundleDisplayName -string "zsearch Semantic" "$PLIST"
+  plutil -insert ZSearchSemanticOnly -bool YES "$PLIST"
+  plutil -lint "$PLIST"
+  codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" "$SEMANTIC_APP"
+  codesign --verify --strict --verbose=2 "$SEMANTIC_APP"
+fi
+
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP" "$STAGE/"
+[ -d "$SEMANTIC_APP" ] && cp -R "$SEMANTIC_APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DIST/zsearch.dmg"
 hdiutil create -quiet -volname "zsearch $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO "$DIST/zsearch.dmg"
+[ -d "$SEMANTIC_APP" ] && echo "Built $SEMANTIC_APP"
 echo "Built $APP and $DIST/zsearch.dmg (version $VERSION, build $BUILD, commit $COMMIT)"
 
 if [ "${ZSEARCH_RELEASE:-0}" = "1" ]; then

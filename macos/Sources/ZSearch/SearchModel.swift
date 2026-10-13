@@ -21,7 +21,7 @@ final class SearchModel {
         // Semantic search runs the model on the query: wait for a pause in typing.
         didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
     }
-    var mode: Mode = .find {
+    var mode: Mode = Edition.semanticOnly ? .semantic : .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
     var selection: SearchHit.ID? {
@@ -96,6 +96,11 @@ final class SearchModel {
     }
 
     // MARK: - Engine
+
+    /// The query text sent to the engine. The semantic-only app never lets a prefix switch modes.
+    private static func sent(_ query: String) -> String {
+        Edition.semanticOnly ? QueryFilters.semanticOnly(query) : query
+    }
 
     /// The engine binary: $ZSEARCH_ENGINE when set (development), else the one inside the app bundle.
     static func engineURL() -> URL? {
@@ -182,12 +187,13 @@ final class SearchModel {
         case let .ready(ready):
             config = ready.config
             firstRun = ready.firstRun
-            mode = Mode(rawValue: ready.config.defaultMode) ?? .find
+            mode = Edition.semanticOnly ? .semantic : Mode(rawValue: ready.config.defaultMode) ?? .find
             Task {
                 await refreshStats()
                 await refreshSemantic()
                 // Semantic search's two models download when the app starts, unless it was turned off.
-                if let s = semantic, !s.declined, !s.model.ready { installSemantic() }
+                // The semantic-only app always downloads them: it has no other way to search.
+                if let s = semantic, !s.declined || Edition.semanticOnly, !s.model.ready { installSemantic() }
                 if ready.firstRun {
                     showSetup = true
                 } else if indexIsStale {
@@ -264,7 +270,7 @@ final class SearchModel {
         guard let engine else { return }
         let (query, mode) = (self.query, self.mode)
         do {
-            guard case let .results(r) = try await engine.request(.search(query: query, mode: mode)) else { return }
+            guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
             if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits { return }
@@ -298,7 +304,7 @@ final class SearchModel {
             return
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
-        let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: hit.lines.first?.line)
+        let request = Request.preview(file: hit.id, query: Self.sent(query), mode: mode, focusLine: hit.lines.first?.line)
         let epoch = previewEpoch
         previewTask = Task { [weak self] in
             let reply = try? await engine.request(request)
@@ -325,7 +331,7 @@ final class SearchModel {
         let epoch = previewEpoch
         prefetchTask?.cancel()
         prefetchTask = Task { [weak self] in
-            let request = Request.previews(files: ids, query: query, mode: mode, focusLines: focusLines)
+            let request = Request.previews(files: ids, query: Self.sent(query), mode: mode, focusLines: focusLines)
             guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
             for p in list where p.message == nil || p.isDir {
@@ -656,7 +662,7 @@ final class SearchModel {
         let target = delta > 0 ? (lines.first { $0 > p.focusLine } ?? lines[0]) : (lines.last { $0 < p.focusLine } ?? lines[lines.count - 1])
         guard target != p.focusLine else { return }
         // The preview holds the lines around its focus only: ask for the ones around the target.
-        let request = Request.preview(file: p.id, query: key.query, mode: key.mode, focusLine: target)
+        let request = Request.preview(file: p.id, query: Self.sent(key.query), mode: key.mode, focusLine: target)
         let epoch = previewEpoch
         previewTask?.cancel()
         previewTask = Task { [weak self] in

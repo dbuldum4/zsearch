@@ -50,7 +50,8 @@ elif name=='gh':
     print(filtered.stdout,end='')
     sys.exit(filtered.returncode)
 elif name=='hdiutil':
-    if args[0]=='attach': shutil.copytree(remote/'zsearch.app',pathlib.Path(value('-mountpoint'))/'zsearch.app')
+    if args[0]=='attach':
+        for app in remote.glob('*.app'): shutil.copytree(app,pathlib.Path(value('-mountpoint'))/app.name)
 elif name=='codesign':
     if failure=='codesign' or (failure=='staged-signature' and '.zsearch-stage.' in args[-1]): sys.exit(1)
 elif name=='ditto':
@@ -233,6 +234,24 @@ describe("authenticated preview installer", () => {
     expect(f.install({ MOCK_FAIL: "restore" }).stderr).toContain("previous app retained")
     const stage = readdirSync(f.dest).find((n) => n.startsWith(".zsearch-stage."))!
     expect(readFileSync(join(f.dest, stage, "previous.app/version"), "utf8")).toBe("old")
+  }))
+
+  test("--semantic installs the semantic-only app next to the full app, with its own build history", () => fixture((f) => {
+    const semantic = join(f.remote, "zsearch Semantic.app")
+    const options = { MOCK_APP_ID: "io.github.dbuldum4.zsearch.semantic" }
+    expect(f.install(options, ["main", "--semantic"]).stderr).toContain("this build has no zsearch Semantic.app")
+    mkdirSync(join(semantic, "Contents"), { recursive: true })
+    writeFileSync(join(semantic, "version"), "semantic")
+    // The full app's identity is not accepted for the semantic-only app.
+    expect(f.install({}, ["main", "--semantic"]).stderr).toContain("wrong app identity")
+    const result = f.install(options, ["main", "--semantic"])
+    expect(result.stderr).toBe("")
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(f.dest, "zsearch Semantic.app/version"), "utf8")).toBe("semantic")
+    expect(f.version()).toBe("old")
+    expect(existsSync(join(f.dest, ".zsearch-preview-state/main-semantic"))).toBe(true)
+    expect(existsSync(join(f.dest, ".zsearch-preview-state/main"))).toBe(false)
+    expect(f.calls().filter((c) => c.command === "pgrep").every((c) => c.args.at(-1) === "ZSearchSemantic")).toBe(true)
   }))
 
   test("rejects repository overrides, wrong requested builds and symlinked destinations", () => fixture((f) => {
