@@ -149,6 +149,38 @@ test("serve: meaningIndex without meaning on fails without touching the word ind
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
 
+test("serve: meaningIndex on a fresh install reads the files first", async () => {
+  // The models as if downloaded already: files of their sizes (unchecked, with $ZSEARCH_MODELS).
+  const models = join(corpus.home, ".models-fresh")
+  mkdirSync(models, { recursive: true })
+  const fd = openSync(join(models, "granite-embedding-small-english-r2.Q8_0.gguf"), "w")
+  ftruncateSync(fd, 52_445_632)
+  closeSync(fd)
+  const helper = join(models, "fake-embed")
+  writeFileSync(helper, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "helpers", "fake-embed.ts")}" "$@"\n`)
+  chmodSync(helper, 0o755)
+  corpus.write("fresh/note.txt", "wombatic semaphore\n")
+  const s = server({ ZSEARCH_MODELS: models, ZSEARCH_EMBED: helper }, ".zsearch-fresh")
+  await s.until((m) => m.type === "ready")
+  // What "Only when I ask" saves, with semantic search on: nothing has been read yet.
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~/fresh"], autoRefreshMinutes: 0, liveUpdates: false, semantic: { enabled: true, declined: false, code: false } } })
+  await s.reply(1)
+  s.send({ id: 2, type: "meaningIndex" })
+  expect((await s.reply(2)).type).toBe("ok")
+  const done = await s.until((m) => m.type === "indexDone")
+  expect(done.status).toBe("done")
+  const p = done.progress as { added: number; meaning?: { total: number } }
+  expect(p.added).toBeGreaterThan(0)
+  expect(p.meaning?.total).toBeGreaterThan(0)
+  // Read once: the next one embeds the stored text without scanning again.
+  s.send({ id: 3, type: "meaningIndex" })
+  await s.reply(3)
+  const again = await s.until((m) => m.type === "indexDone")
+  expect((again.progress as { scanned: number }).scanned).toBe(0)
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
 test("serve: with no schedule and no live updates, the index changes only when asked", async () => {
   const s = server()
   await s.until((m) => m.type === "ready")

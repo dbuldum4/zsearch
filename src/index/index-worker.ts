@@ -1,6 +1,7 @@
 /** Worker entry that runs one indexing pass and streams progress to the parent. */
-import { type Config, configExists, loadConfig } from "../config.ts"
-import { clearIndex, openDb } from "./db.ts"
+import type { Database } from "bun:sqlite"
+import { type Config, configExists, loadConfig, resolvePath } from "../config.ts"
+import { clearIndex, getMeta, openDb } from "./db.ts"
 import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 import { PowerGate } from "./power.ts"
@@ -63,12 +64,13 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     if (goNow) indexer.goNow()
     // A meaning-only run skips the scan and word content pass: it embeds the text earlier
     // runs already extracted, so testing semantic search never re-reads files for word search.
+    // Folders no full run has read yet have no text to embed: those are read first.
     const startedAt = Date.now()
     let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
-    if (!msg.meaningOnly) result = await indexer.run()
-    // Then semantic search: embed what the run read, under the same cancel, power and priority rules.
     const tool = embedToolPath()
     const blocked = semanticAvailable(msg.config, tool)
+    if (!msg.meaningOnly || (!blocked && unreadRoots(db, msg.config))) result = await indexer.run()
+    // Then semantic search: embed what the run read, under the same cancel, power and priority rules.
     if (msg.meaningOnly && blocked) {
       result.phase = "error"
       result.error = `semantic search cannot run: ${blocked}`
@@ -100,4 +102,10 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
   } finally {
     release()
   }
+}
+
+/** Whether a configured folder has never been read by a finished full run. */
+function unreadRoots(db: Database, config: Config): boolean {
+  const read = new Set<string>(JSON.parse(getMeta(db, "roots") ?? "[]"))
+  return config.roots.some((root) => !read.has(resolvePath(root)))
 }
