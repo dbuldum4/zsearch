@@ -228,6 +228,8 @@ struct PreviewPane: View {
     @Environment(SearchModel.self) private var model
     /// PDFs show their pages unless the reader picked the extracted text instead, here or in Settings.
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
+    /// Word documents show their formatting unless the reader picked the extracted text instead.
+    @AppStorage(AppSettings.documentShowsText) private var documentShowsText = false
     /// Images show themselves unless the reader picked the text OCR read from them.
     @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
 
@@ -239,8 +241,9 @@ struct PreviewPane: View {
         // files swaps the content in place instead of flashing an empty pane.
         if let p = model.preview, !model.hits.isEmpty {
             let pdf = p.kind == "pdf" && p.contentAllowed != false ? PDFDocuments.shared.document(for: p) : nil
+            let word = pdf == nil ? WordDocuments.shared.document(for: p) : nil
             // Images, video and audio, and other files without text: Quick Look shows them.
-            let visual = p.contentAllowed != false && pdf == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
+            let visual = p.contentAllowed != false && pdf == nil && word == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -264,6 +267,16 @@ struct PreviewPane: View {
                         .controlSize(.small)
                         .fixedSize()
                         .help("Show the PDF's pages, or the text zsearch read from it")
+                    } else if word != nil, p.message == nil {
+                        Picker("Show", selection: $documentShowsText) {
+                            Text("Document").tag(false)
+                            Text("Text").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Show the formatted document, or the text zsearch read from it")
                     } else if visual, p.message == nil {
                         Picker("Show", selection: $imageShowsText) {
                             Text(p.kind == "image" ? "Image" : "File").tag(false)
@@ -281,6 +294,8 @@ struct PreviewPane: View {
                 // A PDF without indexed text (a scan, say) still shows its pages.
                 if let pdf, !pdfShowsText || p.message != nil {
                     PDFPreviewView(preview: p, document: pdf)
+                } else if let word, !documentShowsText || p.message != nil {
+                    DocumentPreviewView(preview: p, document: word)
                 } else if visual, !imageShowsText || p.message != nil {
                     QuickLookView(url: URL(fileURLWithPath: p.path))
                 } else if let message = p.message {

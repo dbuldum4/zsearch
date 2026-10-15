@@ -43,6 +43,25 @@ public enum PageMap {
         return sorted(terms)
     }
 
+    /// Where `terms` occur in `text`, ignoring case and accents, in reading order and at most
+    /// `limit` of them. Terms are tried in the order given (`matchedTerms` puts the longest first),
+    /// so a shorter term inside a longer match is not marked twice.
+    public static func occurrences(of terms: [String], in text: String, limit: Int = 2000) -> [NSRange] {
+        let text = text as NSString
+        var out: [NSRange] = []
+        for term in terms {
+            var from = 0
+            while from < text.length, out.count < limit {
+                let found = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: text.length - from))
+                guard found.location != NSNotFound, found.length > 0 else { break }
+                from = found.location + found.length
+                if out.contains(where: { NSIntersectionRange($0, found).length > 0 }) { continue }
+                out.append(found)
+            }
+        }
+        return out.sorted { $0.location < $1.location }
+    }
+
     private static func sorted(_ terms: [String]) -> [String] {
         terms.enumerated().sorted { ($0.element.count, -$0.offset) > ($1.element.count, -$1.offset) }.map(\.element)
     }

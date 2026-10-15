@@ -31,6 +31,16 @@ final class PageMapTests: XCTestCase {
         XCTAssertEqual(PageMap.matchedTerms(p, limit: 1), ["Budget"])
     }
 
+    func testOccurrences() {
+        let text = "Budget: the budget-to-budgets ratio. BUDGET"
+        let ranges = PageMap.occurrences(of: ["budgets", "budget"], in: text)
+        XCTAssertEqual(ranges.map { (text as NSString).substring(with: $0) }, ["Budget", "budget", "budgets", "BUDGET"])
+        XCTAssertEqual(ranges.map(\.location), [0, 12, 22, 37])
+        XCTAssertEqual(PageMap.occurrences(of: ["budget"], in: text, limit: 2).count, 2)
+        XCTAssertEqual(PageMap.occurrences(of: ["missing", ""], in: text), [])
+        XCTAssertEqual(PageMap.occurrences(of: ["budget"], in: ""), [])
+    }
+
     private func preview(focus: Int, lines: [(Int, String, [[Int]])]) throws -> FilePreview {
         let encoded = lines.map { ["n": $0.0, "text": $0.1, "ranges": $0.2] as [String: Any] }
         let object: [String: Any] = [
