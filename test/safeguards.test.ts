@@ -105,8 +105,14 @@ describe("keys and password files", () => {
       const read = readIndexed(engine, join(corpus.home, rel), "", "find", { lines: 100, maxChars: 10_000 })
       expect([rel, read?.lines.some((l) => l.text.includes("zebrakeymaterial"))]).toEqual([rel, false])
     }
-    expect(engine.preview(row(db, "projects/api/deploy_key")!.id, "", "find").message).toBe("key or password file: indexed by name only")
-    expect(engine.preview(row(db, "notes/pasted.txt")!.id, "", "find").lines.map((l) => l.text)).toContain("[private key removed]")
+    const deployKey = engine.preview(row(db, "projects/api/deploy_key")!.id, "", "find")
+    expect(deployKey.message).toBe("key or password file: indexed by name only")
+    // The Mac app renders files from disk (PDF pages, Word documents, Quick Look) unless told not to.
+    expect(deployKey.contentAllowed).toBe(false)
+    const pasted = engine.preview(row(db, "notes/pasted.txt")!.id, "", "find")
+    expect(pasted.lines.map((l) => l.text)).toContain("[private key removed]")
+    expect(pasted.contentAllowed).toBeUndefined()
+    expect(engine.preview(987_654_321, "", "find").contentAllowed).toBe(false)
     db.close()
   })
 
