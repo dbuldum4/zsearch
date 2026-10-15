@@ -241,7 +241,9 @@ struct PreviewPane: View {
         // files swaps the content in place instead of flashing an empty pane.
         if let p = model.preview, !model.hits.isEmpty {
             let pdf = p.kind == "pdf" && p.contentAllowed != false ? PDFDocuments.shared.document(for: p) : nil
-            let word = pdf == nil ? WordDocuments.shared.document(for: p) : nil
+            // Reading a Word file happens on the main thread, so it waits until the document will show.
+            let wordFile = pdf == nil && WordDocuments.handles(p)
+            let word = wordFile && (!documentShowsText || p.message != nil) ? WordDocuments.shared.document(for: p) : nil
             // Images, video and audio, and other files without text: Quick Look shows them.
             let visual = p.contentAllowed != false && pdf == nil && word == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
             VStack(alignment: .leading, spacing: 0) {
@@ -267,7 +269,7 @@ struct PreviewPane: View {
                         .controlSize(.small)
                         .fixedSize()
                         .help("Show the PDF's pages, or the text zsearch read from it")
-                    } else if word != nil, p.message == nil {
+                    } else if wordFile, p.message == nil, documentShowsText || word != nil {
                         Picker("Show", selection: $documentShowsText) {
                             Text("Document").tag(false)
                             Text("Text").tag(true)
@@ -294,7 +296,7 @@ struct PreviewPane: View {
                 // A PDF without indexed text (a scan, say) still shows its pages.
                 if let pdf, !pdfShowsText || p.message != nil {
                     PDFPreviewView(preview: p, document: pdf)
-                } else if let word, !documentShowsText || p.message != nil {
+                } else if let word {
                     DocumentPreviewView(preview: p, document: word)
                 } else if visual, !imageShowsText || p.message != nil {
                     QuickLookView(url: URL(fileURLWithPath: p.path))

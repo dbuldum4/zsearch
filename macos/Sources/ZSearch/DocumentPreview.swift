@@ -9,8 +9,8 @@ import ZSearchKit
 final class WordDocuments {
     static let shared = WordDocuments()
 
-    /// The Office Open XML word-processing formats AppKit's reader opens.
-    static let extensions: Set<String> = ["docx", "docm", "dotx", "dotm"]
+    /// The Office Open XML word-processing formats AppKit's reader opens and the engine indexes.
+    static let extensions: Set<String> = ["docx", "docm", "dotx"]
     /// The reader runs on the main thread and drops pictures, which make up most of a big file.
     private static let maxBytes = 32 << 20
 
@@ -26,11 +26,16 @@ final class WordDocuments {
     private var failed: Set<Key> = []
     private let limit = 4
 
+    /// Whether a preview is of a Word file this reader would try, without reading it.
+    static func handles(_ p: FilePreview) -> Bool {
+        !p.isDir && p.contentAllowed != false && p.size <= maxBytes
+            && extensions.contains((p.path as NSString).pathExtension.lowercased())
+    }
+
     /// The document for a preview, or nil if it isn't a Word file or can't be read (gone, damaged,
     /// password-protected, too big, or with no text).
     func document(for p: FilePreview) -> NSAttributedString? {
-        guard !p.isDir, p.contentAllowed != false, p.size <= Self.maxBytes,
-              Self.extensions.contains((p.path as NSString).pathExtension.lowercased()) else { return nil }
+        guard Self.handles(p) else { return nil }
         let key = Key(path: p.path, size: p.size, mtime: p.mtime)
         if let doc = cache[key] {
             order.removeAll { $0 == key }
@@ -125,7 +130,7 @@ struct DocumentPreviewView: NSViewRepresentable {
 
         // A refresh of the same file keeps the reader's place; anything else goes to the match.
         if sameFile, previous?.id == preview.id, previous?.focusLine == preview.focusLine { return }
-        let focus = PageMap.locate(focusOf: preview, in: text) ?? highlights.first
+        let focus = PageMap.locate(focusOf: preview, in: text) ?? PageMap.nearest(highlights, toFocusOf: preview, length: storage.length)
         Self.reveal(focus, in: textView, scroll: scroll)
         // Layout may not be final on the first pass (a newly shown pane has no size yet).
         DispatchQueue.main.async { Self.reveal(focus, in: textView, scroll: scroll) }

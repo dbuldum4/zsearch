@@ -70,6 +70,33 @@ final class PageMapTests: XCTestCase {
         XCTAssertEqual(range.length, 1)
     }
 
+    func testLocateFindsALineTheEngineCut() throws {
+        // A paragraph over 2000 characters comes as its first 2000 and "…", which the document doesn't have.
+        let paragraph = "intro budget " + String(repeating: "lorem ", count: 400)
+        let cut = String(paragraph.prefix(2000)) + "…"
+        let p = try preview(focus: 2, lines: [(1, "Title", []), (2, cut, [[6, 12]]), (3, "End", [])])
+        let document = "Title\n" + paragraph + "\nEnd"
+        XCTAssertEqual(PageMap.locate(focusOf: p, in: document), NSRange(location: 12, length: 6))
+    }
+
+    func testUntruncated() {
+        let long = String(repeating: "a", count: 2000)
+        XCTAssertEqual(PageMap.untruncated(long + "…"), long)
+        XCTAssertEqual(PageMap.untruncated("short…"), "short…")
+        XCTAssertEqual(PageMap.untruncated(String(long.dropLast()) + "…"), String(long.dropLast()) + "…")
+        // The engine cut between the two halves of "😀"; the lone half decodes as U+FFFD.
+        XCTAssertEqual(PageMap.untruncated(String(repeating: "a", count: 1999) + "\u{FFFD}…"), String(repeating: "a", count: 1999))
+    }
+
+    func testNearestFollowsTheFocusLine() throws {
+        let ranges = [NSRange(location: 0, length: 3), NSRange(location: 50, length: 3), NSRange(location: 90, length: 3)]
+        let lines = (1...10).map { ($0, "line \($0)", [[Int]]()) }
+        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 9, lines: lines), length: 100)?.location, 90)
+        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 6, lines: lines), length: 100)?.location, 50)
+        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 1, lines: lines), length: 100)?.location, 0)
+        XCTAssertNil(PageMap.nearest([], toFocusOf: try preview(focus: 1, lines: lines), length: 100))
+    }
+
     func testLocateWholeLineWithoutRangesAndMissingLine() throws {
         let p = try preview(focus: 1, lines: [(1, "Café au lait", [])])
         XCTAssertEqual(PageMap.locate(focusOf: p, in: "x\ncafé  au\nlait"), NSRange(location: 2, length: 13))

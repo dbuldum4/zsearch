@@ -76,15 +76,16 @@ public enum PageMap {
     public static func locate(focusOf preview: FilePreview, in pageText: String) -> NSRange? {
         guard let index = preview.lines.firstIndex(where: { $0.n == preview.focusLine }) else { return nil }
         let line = preview.lines[index]
-        let before = index > 0 ? preview.lines[index - 1].text : ""
-        let after = index + 1 < preview.lines.count ? preview.lines[index + 1].text : ""
+        let text = untruncated(line.text)
+        let before = index > 0 ? untruncated(preview.lines[index - 1].text) : ""
+        let after = index + 1 < preview.lines.count ? untruncated(preview.lines[index + 1].text) : ""
         let match = line.ranges.filter { $0.count == 2 && $0[0] < $0[1] }.min { $0[0] < $1[0] }
         let page = Squeezed(pageText)
-        let target = Squeezed(line.text)
+        let target = Squeezed(text)
         guard !target.units.isEmpty else { return nil }
 
         let attempts: [(Squeezed, Int)] = [
-            (Squeezed(before + "\n" + line.text + "\n" + after), Squeezed(before).units.count),
+            (Squeezed(before + "\n" + text + "\n" + after), Squeezed(before).units.count),
             (target, 0),
         ]
         for (needle, lineStart) in attempts {
@@ -102,6 +103,27 @@ public enum PageMap {
             return NSRange(location: start, length: end - start)
         }
         return nil
+    }
+
+    /// A preview line without the "…" the engine adds when it cuts a line after 2000 UTF-16 units,
+    /// so the start of a long paragraph can still be found in the document.
+    static func untruncated(_ line: String) -> String {
+        let text = line as NSString
+        guard text.length == 2001, text.hasSuffix("…") else { return line }
+        // A surrogate pair the cut split arrives as U+FFFD, which the document doesn't have.
+        let cut = text.character(at: 1999) == 0xFFFD ? 1999 : 2000
+        return text.substring(to: cut)
+    }
+
+    /// The range in `ranges` (in reading order) nearest where the preview's focus line would be
+    /// in a document of `length` UTF-16 units, if every line were as long. The fallback when
+    /// `locate` can't place the line, as for a header or footnote the document view leaves out
+    /// (the engine's text has those after the body), so the next match doesn't go back to the first.
+    public static func nearest(_ ranges: [NSRange], toFocusOf preview: FilePreview, length: Int) -> NSRange? {
+        guard !ranges.isEmpty else { return nil }
+        let fraction = Double(max(0, preview.focusLine - 1)) / Double(max(1, preview.totalLines))
+        let guess = Int(fraction * Double(length))
+        return ranges.min { abs($0.location - guess) < abs($1.location - guess) }
     }
 
     /// Text with whitespace removed and case folded, remembering where each unit came from.
