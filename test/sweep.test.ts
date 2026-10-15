@@ -62,6 +62,22 @@ describe("sweep regressions", () => {
     } finally { chmodSync(sub, 0o700) }
   }, { "sub/kept.txt": "keep me", "gone.txt": "delete me" }))
 
+  test("new content settings with a folder unreadable apply once, not again on every run", async () => fixture(async (dir, c, e) => {
+    const sub = join(dir, "sub")
+    const found = (word: string) => (e.db.query("SELECT count(*) AS n FROM fts WHERE fts MATCH ?").get(word) as { n: number }).n
+    expect(found("zeppelin")).toBe(1)
+    chmodSync(sub, 0)
+    try {
+      c.content = { ...c.content, maxChars: c.content.maxChars - 1 }
+      expect((await new Indexer(e.db, c, { inProcess: true }).run()).contentTotal).toBe(1)
+      // Read under the old settings and out of reach now: dropped, not kept as if current.
+      expect(found("zeppelin")).toBe(0)
+      expect((await new Indexer(e.db, c, { inProcess: true }).run()).contentTotal).toBe(0)
+    } finally { chmodSync(sub, 0o700) }
+    expect((await new Indexer(e.db, c, { inProcess: true }).run()).contentTotal).toBe(1)
+    expect(found("zeppelin")).toBe(1)
+  }, { "sub/plan.txt": "zeppelin route", "top.txt": "airship" }))
+
   test("symlinks obey containment and target content/exclusion policy", async () => fixture(async (dir, c, e) => {
     const outside = join(dir, "..", "secret.txt")
     writeFileSync(outside, "OUTSIDEZEBRA")
@@ -262,3 +278,16 @@ test("read_file regexes share the worker watchdog and requests recover afterward
     expect((await client.stats())?.stats.files).toBe(1)
   } finally { client.close() }
 }, { "a.txt": "a".repeat(35) + "!" }))
+
+test("an index that can't be opened is reported at once, not after a timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zsearch-noindex-"))
+  const blocker = join(dir, "not-a-folder")
+  writeFileSync(blocker, "")
+  const client = new SearchClient(join(blocker, "index.db"), defaultConfig())
+  try {
+    await client.waitReady()
+    const started = Date.now()
+    expect((await client.search("anything", "find"))?.error).toContain("could not open the index")
+    expect(Date.now() - started).toBeLessThan(1000)
+  } finally { client.close(); rmSync(dir, { recursive: true, force: true }) }
+})

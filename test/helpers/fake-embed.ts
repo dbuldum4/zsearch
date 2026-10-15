@@ -78,26 +78,6 @@ for await (const chunk of Bun.stdin.stream()) {
         continue
       }
       send([Buffer.from([0]), u32(n), u32(DIM), u32(n * 10), ...texts.map((t) => floats(vectorOf(t)))])
-    } else if (op === "m") {
-      const budget = msg.readUInt32LE(1)
-      const n = msg.readUInt32LE(5)
-      let pos = 9
-      const parts: Buffer[] = [Buffer.from([0]), u32(n), u32(DIM)]
-      const paths: string[] = []
-      for (let i = 0; i < n; i++) {
-        const l = msg.readUInt32LE(pos)
-        const path = msg.subarray(pos + 4, pos + 4 + l).toString("utf8")
-        paths.push(path)
-        pos += 4 + l
-        // An image "shows" the words of its file name.
-        const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "").replace(/[-_]/g, " ")
-        if (name.includes("broken")) {
-          const e = Buffer.from("could not read the image")
-          parts.push(Buffer.from([0]), u32(e.length), e)
-        } else parts.push(Buffer.from([1]), floats(vectorOf(`| text: ${name}`)))
-      }
-      note({ op: "m", budget, n, paths })
-      send(parts)
     }
   }
 }

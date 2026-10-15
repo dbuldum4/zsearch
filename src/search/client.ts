@@ -21,6 +21,12 @@ export class SearchClient {
   private pending = new Map<number, { resolve: (v: unknown) => void; kind: string; started: number }>()
   private ready!: Promise<void>
   private readyResolve!: () => void
+  /** Resolves when the worker is ready or could not open the index. */
+  private settled!: Promise<void>
+  private settle!: () => void
+  private started = false
+  /** Why the worker could not open the index, and when: requests get this error, not a timeout. */
+  private failed: { error: string; at: number } | null = null
   private watchdog: ReturnType<typeof setInterval>
   onRefreshed?: (files: number, changed: boolean) => void
   onRestart?: (reason: string) => void
@@ -36,7 +42,10 @@ export class SearchClient {
   }
 
   private spawn() {
+    this.started = false
+    this.failed = null
     this.ready = new Promise((r) => (this.readyResolve = r))
+    this.settled = new Promise((r) => (this.settle = r))
     this.worker = new Worker(workerUrl("search/search-worker.ts"))
     this.worker.onmessage = (ev: MessageEvent<SearchOut>) => this.handle(ev.data)
     this.worker.onerror = (ev) => {
@@ -48,13 +57,16 @@ export class SearchClient {
 
   private restart(reason: string) {
     this.worker.terminate()
-    for (const [qid, p] of this.pending) {
-      if (p.kind === "search") p.resolve({ error: reason } as never)
-      else p.resolve(null)
-      this.pending.delete(qid)
-    }
+    this.failPending(reason)
     this.onRestart?.(reason)
     this.spawn()
+  }
+
+  private failPending(reason: string) {
+    for (const [qid, p] of this.pending) {
+      p.resolve(p.kind === "search" ? ({ error: reason } as never) : null)
+      this.pending.delete(qid)
+    }
   }
 
   private checkStuck() {
@@ -74,7 +86,9 @@ export class SearchClient {
   private handle(m: SearchOut) {
     switch (m.type) {
       case "ready":
+        this.started = true
         this.readyResolve()
+        this.settle()
         break
       case "results":
       case "preview":
@@ -91,7 +105,16 @@ export class SearchClient {
         this.onRefreshed?.(m.files, m.changed)
         break
       case "error": {
-        if (m.qid === undefined) break
+        if (m.qid === undefined) {
+          // Only "init" has no qid: the worker could not open the index.
+          if (!this.started) {
+            this.failed = { error: `could not open the index: ${m.error}`, at: Date.now() }
+            this.worker.terminate()
+            this.failPending(this.failed.error)
+            this.settle()
+          }
+          break
+        }
         const p = this.pending.get(m.qid)
         if (!p) break
         this.pending.delete(m.qid)
@@ -102,6 +125,11 @@ export class SearchClient {
   }
 
   private request<T>(kind: string, build: (qid: number) => SearchIn): Promise<T | null> {
+    if (this.failed) {
+      // Try opening it again now and then (it may have been rebuilt), not on every keystroke.
+      if (Date.now() - this.failed.at < 2000) return Promise.resolve(kind === "search" ? ({ error: this.failed.error } as T) : null)
+      this.spawn()
+    }
     const qid = ++this.qid
     // Supersede older requests of the same kind.
     for (const [id, p] of this.pending) {
@@ -116,8 +144,9 @@ export class SearchClient {
     })
   }
 
+  /** Until the worker is ready, or could not open the index (requests then say why). */
   async waitReady() {
-    await this.ready
+    await this.settled
   }
 
   search(query: string, mode: Mode, limit = 200): Promise<SearchResponse | null> {

@@ -102,14 +102,18 @@ export function semanticAvailable(config: Config, tool: string | null): string |
   return null
 }
 
-/** The helper's VECTOR_VERSION, from `zsearch-embed --version`, which loads nothing. */
-export function helperVectorVersion(tool: string): number {
+/**
+ * The helper's VECTOR_VERSION, from `zsearch-embed --version`, which loads nothing. Null when it
+ * can't be read (a timeout while macOS checks a new binary, say), never a guess: a wrong version
+ * would throw away every stored vector.
+ */
+export function helperVectorVersion(tool: string): number | null {
   try {
     const r = Bun.spawnSync([tool, "--version"], { stdout: "pipe", stderr: "ignore", timeout: 5000 })
     const m = /vectors (\d+)/.exec(r.stdout.toString())
-    return m ? Number(m[1]) : 0
+    return m ? Number(m[1]) : null
   } catch {
-    return 0
+    return null
   }
 }
 
@@ -287,7 +291,8 @@ export class SemanticIndexer {
   }
 
   private async runWith(store: Database, summary: SemanticSummary): Promise<SemanticSummary> {
-    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : 0)
+    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : null)
+    if (version === null) throw new Error("could not read the embedding helper's version (zsearch-embed --version)")
     const fingerprint = semanticFingerprint(version)
     if (getMeta(store, "fingerprint") !== fingerprint) {
       // Vectors of another model or helper can't be compared with new ones.

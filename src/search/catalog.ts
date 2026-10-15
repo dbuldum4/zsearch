@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite"
 import { home } from "../config.ts"
 import type { Kind } from "../kinds.ts"
 import { editDistance } from "../util/text.ts"
+import { TopK } from "../util/top-k.ts"
 import { charMask, matchPath, parseFuzzyTerms, type FuzzyTerm } from "./fuzzy.ts"
 import type { Filters } from "./query.ts"
 
@@ -44,7 +45,8 @@ export class Catalog {
   maxSeq = 0
   /** Last row of the `removed` log applied: files removed since then are dropped. */
   removedSeen = 0
-  private cache: { key: string; matches: Int32Array } | null = null
+  private cache: { terms: FuzzyTerm[]; matches: Int32Array } | null = null
+  private parsedTags = new Map<number, { from: string; tags: Set<string> }>()
 
   indexOf(id: number): number | undefined {
     const p = id < this.pos.length ? this.pos[id]! : 0
@@ -85,6 +87,7 @@ export class Catalog {
     this.mtimes = new Float64Array(0)
     this.created = new Float64Array(0)
     this.metadata.clear()
+    this.parsedTags.clear()
     this.sourcePaths.clear()
     this.masks = new Int32Array(0)
     this.pos = new Int32Array(0)
@@ -131,6 +134,16 @@ export class Catalog {
     this.append(
       db.query(`SELECT ${COLUMNS} FROM files WHERE id <= ? AND id IN (SELECT id FROM removed WHERE n > ?) ORDER BY id`).values(this.maxId, removed[0]![0] - 1) as Row[],
     )
+  }
+
+  /** A file's tags in lower case, parsed once per version of its metadata. */
+  private tagsOf(id: number): Set<string> {
+    const metadata = this.metadata.get(id) ?? ""
+    const known = this.parsedTags.get(id)
+    if (known?.from === metadata) return known.tags
+    const tags = new Set(metadata ? String(JSON.parse(metadata).tags ?? "").split("\n").map((s) => s.toLowerCase()) : [])
+    this.parsedTags.set(id, { from: metadata, tags })
+    return tags
   }
 
   private intern(s: string): string {
@@ -222,6 +235,7 @@ export class Catalog {
   private removeAt(i: number) {
     const last = this.size - 1
     this.metadata.delete(this.ids[i]!)
+    this.parsedTags.delete(this.ids[i]!)
     this.sourcePaths.delete(this.ids[i]!)
     this.pos[this.ids[i]!] = 0
     if (i !== last) {
@@ -275,7 +289,12 @@ export class Catalog {
 
   /** Whether entry `i` passes the filters. */
   passes(i: number, f: Filters): boolean {
-    if (f.names?.some(({ source, flags }) => !new RegExp(source, flags).test(this.paths[i]!.slice(this.paths[i]!.lastIndexOf("/") + 1)))) return false
+    if (f.names) {
+      let compiled = nameRegexes.get(f.names)
+      if (!compiled) nameRegexes.set(f.names, (compiled = f.names.map(({ source, flags }) => new RegExp(source, flags.replace(/[gy]/g, "")))))
+      const name = this.paths[i]!.slice(this.paths[i]!.lastIndexOf("/") + 1)
+      if (compiled.some((re) => !re.test(name))) return false
+    }
     if (f.not?.some((n) => this.passes(i, n))) return false
     if (f.kinds && !f.kinds.has(this.kinds[i]!)) return false
     if (f.notKinds && f.notKinds.has(this.kinds[i]!)) return false
@@ -284,10 +303,10 @@ export class Catalog {
     if (f.sizeMax !== undefined && this.sizes[i]! > f.sizeMax) return false
     if (f.createdMin !== undefined && this.created[i]! < f.createdMin) return false
     if (f.createdMax !== undefined && this.created[i]! >= f.createdMax) return false
-    if (f.tags?.some((tag) => {
-      const metadata = this.metadata.get(this.ids[i]!); if (!metadata) return true
-      return !String(JSON.parse(metadata).tags ?? "").split("\n").some((s) => s.toLowerCase() === tag.toLowerCase())
-    })) return false
+    if (f.tags?.length) {
+      const tags = this.tagsOf(this.ids[i]!)
+      if (f.tags.some((tag) => !tags.has(tag.toLowerCase()))) return false
+    }
     if (f.mtimeMin !== undefined && this.mtimes[i]! < f.mtimeMin) return false
     if (f.mtimeMax !== undefined && this.mtimes[i]! >= f.mtimeMax) return false
     if (f.inPaths.length) {
@@ -312,20 +331,19 @@ export class Catalog {
     let qmask = 0
     for (const t of positive) qmask |= charMask(t.text)
     // Narrow from the previous result set while the user keeps typing.
-    const key = JSON.stringify([terms.map((t) => [t.text, t.kind, t.negate])])
     let candidates: Int32Array | null = null
     if (this.cache && positive.length === terms.length && terms.every((t) => t.kind === "fuzzy")) {
-      const prevQ = JSON.parse(this.cache.key) as [[string, string, boolean][]]
-      const prevTerms = prevQ[0]
+      const prevTerms = this.cache.terms
       if (
         prevTerms.length === terms.length &&
-        prevTerms.every((p, i) => p[1] === "fuzzy" && !p[2] && isSubsequence(p[0], terms[i]!.text))
+        prevTerms.every((p, i) => p.kind === "fuzzy" && !p.negate && isSubsequence(p.text, terms[i]!.text))
       ) {
         candidates = this.cache.matches
       }
     }
     const matched: number[] = []
-    const top = new TopK(limit)
+    // Equal scores keep catalog order, as both scans go through it in order.
+    const top = new TopK<{ idx: number; score: number }>(limit, (m) => m.score, (a, b) => a.score - b.score || b.idx - a.idx)
     const masks = this.masks
     const consider = (i: number) => {
       if ((masks[i]! & qmask) !== qmask) return
@@ -334,18 +352,13 @@ export class Catalog {
       matched.push(i)
       if (!this.passes(i, filters)) return
       // Tie-break: shorter paths first.
-      top.push(i, m.score + (bias ? bias(i) : 0) - this.display[i]!.length / 1000)
+      top.add({ idx: i, score: m.score + (bias ? bias(i) : 0) - this.display[i]!.length / 1000 })
     }
     if (candidates) for (const i of candidates) consider(i)
     else for (let i = 0; i < this.size; i++) consider(i)
-    this.cache = { key, matches: Int32Array.from(matched) }
+    this.cache = { terms, matches: Int32Array.from(matched) }
     // Positions (for highlighting) only for the winners.
-    return top.sorted().map(({ idx, score }) => ({ idx, score, positions: matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? [] }))
-  }
-
-  /** Total entries that matched the last fuzzy query (before filters/limit). */
-  get lastMatchCount(): number {
-    return this.cache?.matches.length ?? 0
+    return top.values().map(({ idx, score }) => ({ idx, score, positions: matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? [] }))
   }
 
   /**
@@ -367,11 +380,10 @@ export class Catalog {
         let best = max + 1
         let bestAt = -1
         let bestLen = 0
-        const re = /[\p{L}\p{N}]+/gu
+        const re = WORD
         re.lastIndex = start
-        const name = lower
         let m: RegExpExecArray | null
-        while ((m = re.exec(name))) {
+        while ((m = re.exec(lower))) {
           const w = m[0]
           if (Math.abs(w.length - t.text.length) > max) continue
           const d = editDistance(t.text, w, max)
@@ -417,35 +429,9 @@ export class Catalog {
   }
 }
 
-/** Keeps the `k` best (highest score) items seen so far. */
-class TopK {
-  private idx: number[] = []
-  private score: number[] = []
-  private min = -Infinity
-  constructor(private k: number) {}
-
-  push(idx: number, score: number) {
-    if (this.idx.length >= this.k * 2) {
-      if (score <= this.min) return
-    }
-    this.idx.push(idx)
-    this.score.push(score)
-    if (this.idx.length >= this.k * 4) this.compact()
-  }
-
-  private compact() {
-    const order = this.idx.map((_, i) => i).sort((a, b) => this.score[b]! - this.score[a]!)
-    const keep = order.slice(0, this.k * 2)
-    this.idx = keep.map((i) => this.idx[i]!)
-    this.score = keep.map((i) => this.score[i]!)
-    this.min = this.score[this.score.length - 1] ?? -Infinity
-  }
-
-  sorted(): { idx: number; score: number }[] {
-    const order = this.idx.map((_, i) => i).sort((a, b) => this.score[b]! - this.score[a]!)
-    return order.slice(0, this.k).map((i) => ({ idx: this.idx[i]!, score: this.score[i]! }))
-  }
-}
+const WORD = /[\p{L}\p{N}]+/gu
+/** Compiled `name:` and glob filters, per parsed query: `passes` runs once per catalog entry. */
+const nameRegexes = new WeakMap<NonNullable<Filters["names"]>, RegExp[]>()
 
 function isSubsequence(a: string, b: string): boolean {
   // Previous results are a superset when the new term contains the old as a subsequence.

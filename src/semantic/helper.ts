@@ -39,8 +39,6 @@ export interface EmbedderOptions {
   model: string
   /** How the model's outputs make one vector: its own setting, unless given. */
   pooling?: "mean" | "cls"
-  /** The image encoder: images are embedded only with it. */
-  mmproj?: string | null
   threads?: number
   batchTokens?: number
   maxSeqs?: number
@@ -48,11 +46,6 @@ export interface EmbedderOptions {
   low?: boolean
   /** More arguments, for benchmarks. */
   extra?: string[]
-}
-
-export interface ImageVectors {
-  vectors: (Float32Array | null)[]
-  errors: (string | null)[]
 }
 
 const encoder = new TextEncoder()
@@ -70,7 +63,6 @@ export class Embedder implements TextEmbedder {
 
   constructor(readonly opts: EmbedderOptions) {
     const args = [opts.tool, "--model", opts.model]
-    if (opts.mmproj) args.push("--mmproj", opts.mmproj)
     if (opts.pooling) args.push("--pooling", opts.pooling)
     if (opts.threads) args.push("--threads", String(opts.threads))
     if (opts.batchTokens) args.push("--batch-tokens", String(opts.batchTokens))
@@ -170,35 +162,6 @@ export class Embedder implements TextEmbedder {
       const tokens = view.getUint32(9, true)
       if (n !== texts.length) throw new Error("the embedding helper answered for other inputs")
       return { vectors: new Float32Array(msg.slice(13, 13 + n * dim * 4).buffer), dim, tokens }
-    })
-  }
-
-  /** One vector per image, or why it has none (`budget`: the encoder's tokens, 70 to 1120). */
-  embedImages(paths: string[], budget: number): Promise<ImageVectors> {
-    const parts: Uint8Array[] = [new Uint8Array([109]), u32(budget), u32(paths.length)]
-    for (const p of paths) {
-      const b = encoder.encode(p)
-      parts.push(u32(b.length), b)
-    }
-    return this.request(parts, (msg, view) => {
-      const n = view.getUint32(1, true)
-      const dim = view.getUint32(5, true)
-      const vectors: (Float32Array | null)[] = []
-      const errors: (string | null)[] = []
-      let pos = 9
-      for (let i = 0; i < n; i++) {
-        if (msg[pos++] === 1) {
-          vectors.push(new Float32Array(msg.slice(pos, pos + dim * 4).buffer))
-          errors.push(null)
-          pos += dim * 4
-        } else {
-          const len = view.getUint32(pos, true)
-          errors.push(decoder.decode(msg.subarray(pos + 4, pos + 4 + len)))
-          vectors.push(null)
-          pos += 4 + len
-        }
-      }
-      return { vectors, errors }
     })
   }
 

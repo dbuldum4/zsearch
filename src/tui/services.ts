@@ -1,7 +1,7 @@
 import { type ClipboardService, type CliRenderer, createClipboard, createHostClipboard, createRendererClipboardAdapter } from "@opentui/core"
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { type Config, configExists, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
+import { type Config, configExists, configStamp, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
 import { IndexRun, type IndexOutcome, type IndexRunHandlers } from "../index/client.ts"
 import { estimateInBackground, type FolderEstimate } from "../index/estimate.ts"
 import { RootWatcher } from "../index/watch.ts"
@@ -67,7 +67,16 @@ export function realServices(config: Config): Services {
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)
-  const reload = () => { if (configExists()) { const current = loadConfig(); client.setConfig(current); watcher.update(current) } }
+  // Settings saved by another zsearch (the CLI, the Mac app) apply to the next search. The file
+  // is read again only when it changed, not on every keystroke.
+  let seen = configStamp()
+  const reload = () => {
+    const now = configStamp()
+    if (now === seen) return
+    seen = now
+    if (!now) return
+    const current = loadConfig(); client.setConfig(current); watcher.update(current)
+  }
   const originalSearch = client.search.bind(client), originalPreview = client.preview.bind(client)
   client.search = (...args) => { reload(); return originalSearch(...args) }
   client.preview = (...args) => { reload(); return originalPreview(...args) }
@@ -80,7 +89,7 @@ export function realServices(config: Config): Services {
       let merged = loadConfig()
       const value = (c: Config, key: string) => key.split(".").reduce((v: any, k) => v[k], c)
       for (const key of configKeys()) if (JSON.stringify(value(next, key)) !== JSON.stringify(value(baseline, key))) merged = withConfigSetting(merged, key, value(next, key))
-      saveConfig(merged); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
+      saveConfig(merged); seen = configStamp(); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
     },
     startIndex: (cfg, handlers, background) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background),
     indexLockedBy: () => lockHolder(p.lock),

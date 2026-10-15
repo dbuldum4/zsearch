@@ -1,6 +1,5 @@
 import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
-import { readdirSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
@@ -15,6 +14,7 @@ import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts
 import { clipLine, diacriticPattern, findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
+import { listFolder, noTextReason, pageStartsOf } from "./read.ts"
 import { TopK } from "../util/top-k.ts"
 import { retryClock, type RetryClock } from "../util/clock.ts"
 import { availableParallelism } from "node:os"
@@ -95,6 +95,10 @@ interface SearchOptions {
 const FETCH_BATCH = 64
 /** How many full-text candidates are ranked by their text (the rest by name, folders and date). */
 const RANK_POOL = 128
+/** Results each branch of a grouped query (`(a OR b) type:pdf`) may bring to the merge. */
+const BRANCH_LIMIT = 5000
+/** Hits beyond this many get no snippet lines (fuzzy and semantic): lines cost a text read each. */
+const SNIPPET_HITS = 60
 
 /**
  * Decoded texts by file id, least recently used first. Searching while typing reads the same
@@ -146,8 +150,8 @@ class TextCache {
   }
 }
 
-/** A query word or phrase: its FTS5 expression, and the terms that count as it when ranking. */
 /**
+ * A query word or phrase: its FTS5 expression, and the terms that count as it when ranking.
  * `check`: the expression also matches files without the word (see `ftsPrefixExpr`), which must
  * have a match for this in their path or text.
  */
@@ -257,13 +261,14 @@ export class SearchEngine {
 
   private done(res: SearchResponse, t0: number): SearchResponse {
     const policyOpts = policyFor(crawlOptionsFor(this.config))
+    const metadataQuery = usesMetadata(parseQuery(res.query).filters)
     const returned = res.hits.length
     res.hits = res.hits.filter((hit) => {
       const policy = policyOpts(hit.path)
       if (!policy.allowed) return false
       const i = this.catalog.indexOf(hit.id)
       const contentAllowed = i !== undefined && this.contentAuthorized(i, policyOpts)
-      if (usesMetadata(parseQuery(res.query).filters) && (!this.config.content.metadata || !contentAllowed)) return false
+      if (metadataQuery && (!this.config.content.metadata || !contentAllowed)) return false
       if (!contentAllowed) {
         hit.sources = hit.sources.filter((s) => s !== "content")
         hit.lines = []; hit.matchCount = 0
@@ -307,18 +312,32 @@ export class SearchEngine {
     const deadline = performance.now() + (opts.budgetMs ?? 2500)
     const revision = this.revision, config = this.config
     const parts: SearchResponse[] = []
-    for (const part of expr.parts) parts.push(await this.searchExpression(part, query, mode, { ...opts, limit: 5000, budgetMs: Math.max(1, deadline - performance.now()) }, started))
+    for (const part of expr.parts) parts.push(await this.searchExpression(part, query, mode, { ...opts, limit: BRANCH_LIMIT, budgetMs: Math.max(1, deadline - performance.now()) }, started))
     if (this.revision !== revision || this.config !== config) return this.done({ query, mode, resolved: mode, strategy: "grouped search interrupted", hits: [], total: 0, elapsedMs: 0, partial: true }, started)
     const merged = new Map<number, SearchHit>()
+    const mergedLines = new Map<number, Set<number>>()
     for (const [n, part] of parts.entries()) for (const h of part.hits) {
       const old = merged.get(h.id)
-      if (!old && (expr.op === "or" || n === 0)) merged.set(h.id, structuredClone(h))
-      else if (old) { old.score += h.score; old.sources = [...new Set([...old.sources, ...h.sources])]; old.lines.push(...h.lines.filter((l) => !old.lines.some((o) => o.line === l.line))) }
+      if (!old && (expr.op === "or" || n === 0)) {
+        merged.set(h.id, structuredClone(h))
+        mergedLines.set(h.id, new Set(h.lines.map((l) => l.line)))
+      } else if (old) {
+        const seen = mergedLines.get(h.id)!
+        old.score += h.score
+        old.sources = [...new Set([...old.sources, ...h.sources])]
+        for (const l of h.lines) if (!seen.has(l.line)) { seen.add(l.line); old.lines.push(l) }
+      }
     }
-    if (expr.op === "and") for (const id of merged.keys()) if (parts.some((p) => !p.hits.some((h) => h.id === id))) merged.delete(id)
+    if (expr.op === "and") {
+      const inEvery = parts.map((p) => new Set(p.hits.map((h) => h.id)))
+      for (const id of merged.keys()) if (inEvery.some((ids) => !ids.has(id))) merged.delete(id)
+    }
     const sort = parseQuery(query).filters.sort
     const hits = [...merged.values()].sort((a, b) => sort ? this.compareIds(a.id, b.id, sort) : b.score - a.score)
-    return this.done({ query, mode, resolved: mode, strategy: "grouped search", total: hits.length, hits: hits.slice(0, opts.limit ?? 100), elapsedMs: 0, partial: parts.some((p) => p.partial || p.total > p.hits.length), error: parts.find((p) => p.error)?.error }, started)
+    // A branch that filled its limit (a filter alone lists only the newest files) may have left out
+    // matches that the other branches would have kept.
+    const partial = parts.some((p) => p.partial || p.total > p.hits.length || p.hits.length >= BRANCH_LIMIT)
+    return this.done({ query, mode, resolved: mode, strategy: "grouped search", total: hits.length, hits: hits.slice(0, opts.limit ?? 100), elapsedMs: 0, partial, error: parts.find((p) => p.error)?.error }, started)
   }
 
   /* ---------------------------------------------------------- strategy -- */
@@ -514,7 +533,7 @@ export class SearchEngine {
       if (r.row !== null || bodyMatch.has(r.file)) sources.push("content")
       if (nameMatch.has(r.file)) sources.push("name")
       const h = this.hit(r.file, r.score, sources.length ? sources : ["content"])
-      if (n >= 60) return h
+      if (n >= SNIPPET_HITS) return h
       // A saved-name lookup needs the document's heading, not an arbitrary semantic passage
       // deep inside it (e.g. a conduct paragraph for "handbook"). Keep content authorization.
       if (terms.length && (named.get(r.file) ?? 0) >= 1 - 1e-9) {
@@ -661,10 +680,6 @@ export class SearchEngine {
       return p.expr
     })
     return { expr: quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`, broad }
-  }
-
-  keywordExpr(q: ParsedQuery, prefixLast: boolean, typos = false, any = false): string | null {
-    return this.groupsExpr(q, this.keywordGroups(q, prefixLast, typos), any)
   }
 
   private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false): Ranked[] {
@@ -1023,13 +1038,15 @@ export class SearchEngine {
       })
       .sort((a, b) => q.filters.sort ? this.compareIds(a.id, b.id, q.filters.sort) : b.score - a.score)
     const policyOpts = policyFor(crawlOptionsFor(this.config))
+    const metadataQuery = usesMetadata(q.filters)
     const top = ranked.filter(({ id, e }) => {
       const i = this.catalog.indexOf(id)
       if (i === undefined) return false
       const policy = policyOpts(this.catalog.paths[i]!)
       if (!policy.allowed) return false
-      if (usesMetadata(q.filters) && (!this.config.content.metadata || !this.contentAuthorized(i, policyOpts))) return false
-      if (!this.contentAuthorized(i, policyOpts)) { e.sources.delete("content"); e.lines = undefined; e.count = 0 }
+      const contentAllowed = this.contentAuthorized(i, policyOpts)
+      if (metadataQuery && (!this.config.content.metadata || !contentAllowed)) return false
+      if (!contentAllowed) { e.sources.delete("content"); e.lines = undefined; e.count = 0 }
       return e.sources.size > 0
     })
     res.total = Math.max(res.total, top.length)
@@ -1041,7 +1058,7 @@ export class SearchEngine {
       if (e.positions) h.namePositions = e.positions
       h.matchCount = e.count
       if (e.lines) h.lines = e.lines
-      else if (pattern && e.sources.has("content") && n < 60) {
+      else if (pattern && e.sources.has("content") && n < SNIPPET_HITS) {
         const s = this.snippets(id, pattern)
         h.lines = s.lines
         h.matchCount = s.count
@@ -1106,7 +1123,7 @@ export class SearchEngine {
     if (stored !== null) {
       text = stored
       base.source = "index"
-    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1 && row.note !== SECRET_NOTE) {
+    } else if (row.size > 0 && row.size < 2 * 1024 * 1024 && row.content_state !== 1) {
       try {
         const buf = boundedFile(policy.real!, 2 * 1024 * 1024)
         if (!looksBinary(buf)) {
@@ -1119,40 +1136,11 @@ export class SearchEngine {
         // unreadable
       }
     }
-    if (text === null) {
-      const why =
-        row.content_state === 2
-          ? `could not read contents: ${row.note ?? "error"}`
-          : row.content_state === 3
-            ? row.note === "too-large"
-              ? "file is too large to index its contents"
-              : row.note === "binary"
-                ? "binary file"
-                : row.note === "empty"
-                  ? "empty file"
-                  : "contents not indexed"
-            : row.content_state === 4
-              ? "contents not indexed yet"
-              : "no text preview for this kind of file"
-      return { ...base, message: why }
-    }
+    if (text === null) return { ...base, message: noTextReason(row, "no text preview for this kind of file") }
     const all = splitLines(text)
     base.totalLines = all.length
     // Page starts for paged documents (PDF pages, slides, sheets).
-    if (text.includes("\f")) {
-      let page = 1
-      let lineNo = 1
-      base.pageStarts.push(1)
-      for (let k = 0; k < text.length; k++) {
-        const c = text.charCodeAt(k)
-        if (c === 10) lineNo++
-        else if (c === 12) {
-          lineNo++
-          page++
-          base.pageStarts.push(lineNo)
-        }
-      }
-    }
+    base.pageStarts = pageStartsOf(text)
     // Matches for highlighting.
     let pattern: ReturnType<SearchEngine["matchPattern"]> = null
     try {
@@ -1198,10 +1186,7 @@ export class SearchEngine {
   private folderPreview(base: Preview): Preview {
     let names: string[] = []
     try {
-      names = readdirSync(base.path, { withFileTypes: true })
-        .filter((d) => pathPolicy(`${base.path}/${d.name}`, crawlOptionsFor(this.config)).allowed)
-        .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
-        .sort((a, b) => Number(b.endsWith("/")) - Number(a.endsWith("/")) || a.localeCompare(b))
+      names = listFolder(base.path, this.config)
     } catch (err) {
       return { ...base, message: `cannot list folder: ${(err as Error).message}` }
     }

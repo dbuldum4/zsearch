@@ -217,31 +217,30 @@ function piecesText(wd: Uint8Array, clx: Uint8Array, maxCp: number): string {
 
 function cleanWordText(s: string): string {
   let out = ""
-  let fieldDepth = 0
-  let inCode: boolean[] = []
+  // Fields nest: 0x13 starts one (its code, hidden), 0x14 starts its shown result, 0x15 ends it.
+  const inCode: boolean[] = []
+  let codes = 0
   for (const ch of s) {
     const c = ch.charCodeAt(0)
     if (c === 0x13) {
-      fieldDepth++
       inCode.push(true)
+      codes++
       continue
     }
     if (c === 0x14) {
-      if (inCode.length) inCode[inCode.length - 1] = false
+      if (inCode.at(-1)) { inCode[inCode.length - 1] = false; codes-- }
       continue
     }
     if (c === 0x15) {
-      fieldDepth = Math.max(0, fieldDepth - 1)
-      inCode.pop()
+      if (inCode.pop()) codes--
       continue
     }
-    if (inCode.some(Boolean)) continue
-    if (c === 0x0d || c === 0x0b) out += "\n"
+    if (codes) continue
+    if (c === 0x0d || c === 0x0b || c === 0x0c) out += "\n"
     else if (c === 0x07) out += "\t"
-    else if (c === 0x0c) out += "\n"
     else if (c === 0x1e) out += "-"
     else if (c === 0x09 || c === 0x0a) out += ch
-    else if (c < 0x20 || c === 0x1f) continue
+    else if (c < 0x20) continue
     else out += ch
   }
   return tidy(out.replace(/\t\n/g, "\n"))

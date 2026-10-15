@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -263,6 +263,14 @@ export function mergeConfig(base: Config, patch: unknown): Config {
 
 export function configExists(): boolean {
   return existsSync(paths().configFile)
+}
+
+/** Changes whenever the config file does (saves replace the file, so its inode changes too). */
+export function configStamp(): string {
+  try {
+    const s = statSync(paths().configFile)
+    return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`
+  } catch { return "" }
 }
 
 export function loadConfig(): Config {

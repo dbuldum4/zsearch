@@ -28,6 +28,8 @@ test("name globs, name-only regex and all supported sort keys", async () => corp
   expect((await e.search("IMG_????.jpg")).hits.map((h) => h.display)).toHaveLength(1)
   expect((await e.search("*.txt")).hits).toHaveLength(5)
   expect((await e.search("name:/^[ab]\\./i")).hits).toHaveLength(2)
+  // A g or y flag must not make a reused regex skip names.
+  for (let i = 0; i < 3; i++) expect((await e.search("name:/^[ab]\\./gi")).hits).toHaveLength(2)
   expect((await e.search("name:alpha")).hits).toHaveLength(0)
   expect((await e.search("name:*.txt sort:-size", "find", { limit: 1 })).hits[0]?.path.endsWith("long.txt")).toBe(true)
   const paths = (await e.search("*.txt sort:name")).hits.map((h) => h.path)
@@ -68,6 +70,11 @@ test("creation dates, tags and folded previews", async () => corpus(async (e) =>
   e.config.namesOnly = [e.catalog.paths[e.catalog.indexOf(row.id)!]!]
   expect((await e.search("tag:urgent")).hits).toHaveLength(0)
   e.config.namesOnly = []
+  // Tags changed by an index update are read again, not served from before.
+  e.db.query("UPDATE files SET metadata = ? WHERE id = ?").run(JSON.stringify({ tags: "Research" }), row.id)
+  e.refresh(true)
+  expect((await e.search("tag:urgent")).hits).toHaveLength(0)
+  expect((await e.search("tag:research")).hits).toHaveLength(1)
   const folded = e.preview(row.id, "needle fold:on", "find")
   expect(folded.totalLines).toBe(100)
   expect(folded.lines.map((l) => l.n)).toEqual([49, 50, 51, 52, 53])

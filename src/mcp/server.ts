@@ -9,11 +9,11 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import { progressLine } from "../util/progress.ts"
-import { type Config, configKeys, withConfigSetting, configExists, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
+import { type Config, configKeys, withConfigSetting, configExists, configStamp, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
 import { type IndexStats, openDb } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
-import { pathPolicy, crawlOptionsFor } from "../index/policy.ts"
+import { policyFor, crawlOptionsFor } from "../index/policy.ts"
 import { excludingPath } from "../index/exclude.ts"
 import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
@@ -116,10 +116,14 @@ class Host {
 
   /** Pick up settings changed elsewhere (the app, the terminal UI, `zsearch config`). */
   reloadConfig(): Config {
+    const stamp = configStamp()
+    if (stamp === this.configSeen) return this.config
+    this.configSeen = stamp
     const next = loadConfig()
     if (JSON.stringify(next) !== JSON.stringify(this.config)) this.applyConfig(next)
     return this.config
   }
+  private configSeen = configStamp()
 
   applyConfig(config: Config) {
     this.config = config
@@ -155,12 +159,13 @@ class Host {
     const key = `${mode}\0${query}`
     const cached = this.pools.get(key)
     if (!firstPage && cached && Date.now() - cached.at < POOL_TTL_MS && cached.res.hits.length) {
-      const opts = crawlOptionsFor(this.config)
+      const check = policyFor(crawlOptionsFor(this.config))
+      const lookup = this.database().query("SELECT path, source_path FROM files WHERE id = ?")
+      const metadataQuery = /(?:^|\s)-?tag:/.test(query)
       if (cached.res.hits.every((h) => {
-        const policy = pathPolicy(h.path, opts)
-        const row = this.database().query("SELECT path, source_path FROM files WHERE id = ?").get(h.id) as { path: string; source_path: string } | null
+        const policy = check(h.path)
+        const row = lookup.get(h.id) as { path: string; source_path: string } | null
         const contentAllowed = this.config.content.enabled && policy.content && row !== null && row.path === h.path && (!row.source_path || row.source_path === policy.real)
-        const metadataQuery = /(?:^|\s)-?tag:/.test(query)
         return policy.allowed && (!h.sources.includes("content") || contentAllowed) && (!metadataQuery || (this.config.content.metadata && contentAllowed))
       })) return { ...cached.res, total: cached.res.hits.length, partial: cached.res.partial || cached.res.total > cached.res.hits.length }
     }
@@ -661,7 +666,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
     async run(args) {
       host.reloadConfig()
       let raw = String(args.query ?? "").trim()
-      if (raw && args.regex === true && !/^\/.+\/[a-z]*$/.test(raw)) raw = `re:${raw}`
+      if (raw && args.regex === true && !/^\/.+\/[dgimsuvy]*$/.test(raw)) raw = `re:${raw}`
       const mode = args.mode as Mode
       const matchesOnly = args.matches_only === true
       if (matchesOnly && !raw) throw new ToolError("matches_only needs a query")

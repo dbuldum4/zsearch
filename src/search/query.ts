@@ -164,7 +164,7 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
       break
     }
   }
-  if (/^\/[\s\S]*\/[a-z]*(?:\s|$)/.test(lead)) { forcedMode = "find"; regex = true }
+  if (/^\/[\s\S]*\/[dgimsuvy]*(?:\s|$)/.test(lead)) { forcedMode = "find"; regex = true }
   // Remove filter tokens, keep the rest of the text verbatim (regexes care about spacing).
   const tokens = tokenize(s)
   const cut: [number, number][] = []
@@ -207,8 +207,8 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   const typing = !/\s$/.test(raw)
   text = text.replace(/\s{2,}/g, (w) => (regex ? w : " ")).trim()
 
-  // Keep flags, including invalid ones: buildRegex reports them explicitly.
-  const delimited = /^\/([\s\S]+)\/([a-z]*)$/.exec(text)
+  // Only regex flag letters count as flags, so an absolute path such as /etc/hosts stays text.
+  const delimited = /^\/([\s\S]+)\/([dgimsuvy]*)$/.exec(text)
   if (delimited && (!forcedMode || regex)) {
     forcedMode = "find"; regex = true; text = delimited[1]!; regexFlags = delimited[2]!
   }
@@ -244,7 +244,7 @@ function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: 
     case "tag":
       ;(f.tags ??= []).push(value); return true
     case "name": {
-      const regex = /^\/([\s\S]*)\/([a-z]*)$/.exec(value)
+      const regex = /^\/([\s\S]*)\/([dgimsuvy]*)$/.exec(value)
       const source = regex ? regex[1]! : /[?*]/.test(value) ? globPattern(value) : escapeRegExp(value)
       const flags = regex ? regex[2]! : "i"
       try { new RegExp(source, flags) } catch { warnings.push(`invalid name regex: ${value}`); return true }
@@ -320,15 +320,18 @@ function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: 
       if (key === "before") op = "<"
       const dur = parseDuration(v)
       if (dur !== null) {
-        // mtime:<7d = changed within the last 7 days; mtime:>1y = older than a year
-        if (op === ">" || op === ">=") f.mtimeMax = now - dur
+        // An age compares the other way round from a date: mtime:<7d is newer than 7 days ago and
+        // mtime:>1y older than a year ago, while after:7d / since:7d and before:7d name the moment.
+        const older = key === "after" || key === "since" ? false : key === "before" ? true : op === ">" || op === ">="
+        if (older) f.mtimeMax = now - dur
         else f.mtimeMin = now - dur
         return true
       }
       const when = parseWhen(v, now)
       if (!when) break
       if (op === ">" || op === ">=") f.mtimeMin = when[0]
-      else if (op === "<" || op === "<=") f.mtimeMax = op === "<=" && when[1] !== Infinity ? when[1] : when[0]
+      else if (op === "<=") { if (when[1] !== Infinity) f.mtimeMax = when[1] }
+      else if (op === "<") f.mtimeMax = when[0]
       else {
         f.mtimeMin = when[0]
         if (when[1] !== Infinity) f.mtimeMax = when[1]

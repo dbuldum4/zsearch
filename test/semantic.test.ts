@@ -12,7 +12,7 @@ import { SearchEngine } from "../src/search/engine.ts"
 import { parseQuery } from "../src/search/query.ts"
 import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk.ts"
 import { Embedder } from "../src/semantic/helper.ts"
-import { runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
+import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
 import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
@@ -310,6 +310,22 @@ describe("semantic index and search", () => {
     expect(r.status).toBe("done")
     expect(r.embedded).toBe(0)
     expect(requests()).toHaveLength(0)
+  })
+
+  test("a helper whose version can't be read fails the pass and keeps the stored vectors", async () => {
+    const mute = join(work, "mute-embed")
+    writeFileSync(mute, "#!/bin/sh\nexit 1\n")
+    chmodSync(mute, 0o755)
+    expect(helperVectorVersion(tool)).toBe(1)
+    expect(helperVectorVersion(mute)).toBeNull()
+    const files = () => { const s = store(); try { return semanticStats(s).files } finally { s.close() } }
+    const before = files()
+    expect(before).toBeGreaterThan(5)
+    const r = await new SemanticIndexer(db, config, mute, { embedder: fakeEmbedder }).run()
+    expect(r.status).toBe("error")
+    expect(r.error).toContain("version")
+    expect(files()).toBe(before)
+    expect((await semantic()).embedded).toBe(0)
   })
 
   test("copies, edits and a rebuilt index reuse the vectors they can", async () => {

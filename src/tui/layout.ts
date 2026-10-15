@@ -88,15 +88,8 @@ export function resultRows(hits: SearchHit[], selected: number, top: number, col
     if (h.lines.length && out.length < rows) {
       const l = h.lines[0]!
       const label = `${locationLabel(h, l)}${h.matchCount > 1 ? ` (+${h.matchCount - 1})` : ""}  `
-      const text = l.text.replace(/\s+/g, " ")
-      const leftTrim = text.length - text.trimStart().length
-      const body = highlight(
-        text.trimStart(),
-        { fg: theme.muted },
-        { fg: theme.match, bg: theme.matchBg, bold: true },
-        undefined,
-        l.ranges.map(([a, b]) => [a - leftTrim, b - leftTrim]),
-      )
+      const squeezed = squeezeSpaces(l.text, l.ranges)
+      const body = highlight(squeezed.text, { fg: theme.muted }, { fg: theme.match, bg: theme.matchBg, bold: true }, undefined, squeezed.ranges)
       const segs: Seg[] = [{ text: "      " }, { text: label, fg: theme.subtle }, ...body]
       out.push({ key: `${h.id}:1`, segs: fitSegs(segs, cols), bg, hit: i })
     }
@@ -179,6 +172,21 @@ export function previewLayout(p: Preview, cols: number, theme: Theme, wrap: bool
   }
   if (p.lines.length && lastN < p.totalLines) body.push({ key: "tail", segs: [{ text: `  … ${p.totalLines - lastN} more lines`, fg: theme.subtle }], hit: -1 })
   return { header, body, focusRow }
+}
+
+const SPACE = /\s/
+
+/** A line on one row: leading whitespace dropped, other runs of it as one space, ranges moved to match. */
+export function squeezeSpaces(text: string, ranges: [number, number][]): { text: string; ranges: [number, number][] } {
+  const at: number[] = []
+  let out = ""
+  for (let i = 0; i < text.length; i++) {
+    at.push(out.length)
+    if (!SPACE.test(text[i]!)) out += text[i]
+    else if (out && !out.endsWith(" ")) out += " "
+  }
+  at.push(out.length)
+  return { text: out, ranges: ranges.map(([a, b]) => [at[a] ?? out.length, at[b] ?? out.length]) }
 }
 
 function expandTabRanges(text: string, ranges: [number, number][]): [number, number][] {

@@ -98,6 +98,22 @@ describe("first run", () => {
       t.close()
     }
   })
+
+  test("a setup error stays up until the next key", async () => {
+    const t = testServices({ ...defaultConfig(), roots: [] }, { firstRun: true })
+    const s = await testRender(() => <App services={t.services} />, { width: 120, height: 32 })
+    try {
+      await until(s, (f) => f.includes("Welcome to zsearch"))
+      s.mockInput.pressKey("s")
+      await until(s, (f) => f.includes("Enter at least one folder"))
+      expect(t.calls.saved).toHaveLength(0)
+      s.mockInput.pressArrow("up")
+      await until(s, (f) => !f.includes("Enter at least one folder"))
+    } finally {
+      s.renderer.destroy()
+      t.close()
+    }
+  })
 })
 
 describe("search screen", () => {

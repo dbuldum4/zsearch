@@ -5,8 +5,9 @@ import { boundedFile } from "../util/files.ts"
  * (long lines included) and says exactly where to continue, so a caller can read every byte.
  */
 import { readdirSync } from "node:fs"
+import type { Config } from "../config.ts"
 import { decompressText } from "../index/db.ts"
-import { credentialPath, crawlOptionsFor, pathPolicy } from "../index/policy.ts"
+import { credentialPath, crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { decodeText, looksBinary } from "../index/extract/text.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import type { Kind } from "../kinds.ts"
@@ -66,7 +67,7 @@ const MAX_MATCH_LINES = 100_000
 const MATCH_BUDGET_MS = 2000
 
 /** The line each page starts at, for text with form feeds between pages (empty otherwise). */
-function pageStartsOf(text: string): number[] {
+export function pageStartsOf(text: string): number[] {
   if (!text.includes("\f")) return []
   const starts = [1]
   let line = 1
@@ -157,7 +158,8 @@ export function readIndexed(engine: SearchEngine, path: string, query: string, m
   })()
 }
 
-function noTextReason(row: Row): string {
+/** Why a file has no text to show, from its content state and note. */
+export function noTextReason(row: { content_state: number; note: string | null }, otherwise = "no text for this kind of file"): string {
   if (row.content_state === 2) return `could not read contents: ${row.note ?? "error"}`
   if (row.content_state === 3) {
     if (row.note === "too-large") return "file is too large to index its contents"
@@ -167,7 +169,16 @@ function noTextReason(row: Row): string {
     return "contents not indexed"
   }
   if (row.content_state === 4) return "contents not indexed yet"
-  return "no text for this kind of file"
+  return otherwise
+}
+
+/** A folder's entries that the privacy settings allow, folders first ("name/"). Throws if unreadable. */
+export function listFolder(path: string, config: Config): string[] {
+  const check = policyFor(crawlOptionsFor(config))
+  return readdirSync(path, { withFileTypes: true })
+    .filter((d) => check(`${path}/${d.name}`).allowed)
+    .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
+    .sort((a, b) => Number(b.endsWith("/")) - Number(a.endsWith("/")) || a.localeCompare(b))
 }
 
 /** Adds lines to a result within the character budget, and records where reading stopped. */
@@ -237,10 +248,7 @@ function takeMatches(out: ReadResult, all: string[], ranges: Map<number, [number
 function readFolder(out: ReadResult, engine: SearchEngine, opts: ReadOptions): ReadResult {
   let names: string[]
   try {
-    names = readdirSync(out.path, { withFileTypes: true })
-      .filter((d) => pathPolicy(`${out.path}/${d.name}`, crawlOptionsFor(engine.config)).allowed)
-      .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
-      .sort((a, b) => Number(b.endsWith("/")) - Number(a.endsWith("/")) || a.localeCompare(b))
+    names = listFolder(out.path, engine.config)
   } catch (err) {
     return { ...out, message: `cannot list folder: ${(err as Error).message}` }
   }

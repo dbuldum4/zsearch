@@ -1,5 +1,5 @@
-# zsearch-embed: the helper that turns text (and, on macOS, images) into EmbeddingGemma 2 vectors
-# for semantic search. Built by scripts/build-embed.sh, which fetches llama.cpp at a pinned tag.
+# zsearch-embed: the helper that turns text into Granite embedding vectors for semantic search
+# (its image path, written for EmbeddingGemma 2, is no longer used by zsearch). Built by scripts/build-embed.sh, which fetches llama.cpp at a pinned tag.
 cmake_minimum_required(VERSION 3.16)
 project(zsearch_embed C CXX)
 

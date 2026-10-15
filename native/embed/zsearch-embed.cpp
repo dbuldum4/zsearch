@@ -329,7 +329,7 @@ class Embedder {
         place(llama_batch_ext_add_embd(batch, sequences - 1, e));
     }
 
-    // Runs the batch; writes each sequence's mean-pooled, L2-normalized vector to out[members[seq]].
+    // Runs the batch; writes each sequence's pooled, L2-normalized vector to out[members[seq]].
     void run(const std::vector<size_t> & members, std::vector<float> & out) {
         int status = llama_process(ctx, LLAMA_PROCESS_TYPE_ENCODE, batch);
         int n = sequences;

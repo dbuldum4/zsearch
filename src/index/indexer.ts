@@ -2,12 +2,6 @@ import type { Database, Statement } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
 import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
-
-/** A text that may have long words (see `shortWord`); a few that do not are re-indexed for nothing. */
-const LONG_WORD_IN_TEXT = /(?<![A-Za-z0-9])[A-Za-z0-9]{32,64}(?![A-Za-z0-9])/
-
-/** Packages with a preview inside, which OCR reads when it is a picture. */
-const IWORK_EXTS = new Set(["pages", "numbers", "key"])
 import { ocrToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
@@ -20,6 +14,14 @@ import type { ExtractReply } from "./extract-job.ts"
 import { backgroundDisk, CpuBudget, defaultWorkers, loadShare } from "./load.ts"
 import { ExtractPool } from "./pool.ts"
 import { type ContentItem, type ContentSink, InlineSink, ThreadSink } from "./writer.ts"
+import { crawlOptionsFor, under } from "./policy.ts"
+export { crawlOptionsFor } from "./policy.ts"
+
+/** A text that may have long words (see `shortWord`); a few that do not are re-indexed for nothing. */
+const LONG_WORD_IN_TEXT = /(?<![A-Za-z0-9])[A-Za-z0-9]{32,64}(?![A-Za-z0-9])/
+
+/** Packages with a preview inside, which OCR reads when it is a picture. */
+const IWORK_EXTS = new Set(["pages", "numbers", "key"])
 
 // "meaning": the semantic pass after the main run (src/semantic/indexer.ts, run by index-worker.ts).
 type IndexPhase = "starting" | "scan" | "content" | "cleanup" | "meaning" | "done" | "cancelled" | "error"
@@ -100,13 +102,6 @@ interface Existing {
   inFts: number
   sourcePath: string
 }
-
-function under(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(prefix === "/" ? "/" : prefix + "/")
-}
-
-import { crawlOptionsFor } from "./policy.ts"
-export { crawlOptionsFor } from "./policy.ts"
 
 export class Indexer {
   private progress: IndexProgress
@@ -349,12 +344,21 @@ export class Indexer {
     }>) {
       existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
     }
-    const identities = new Map<string, { path: string; entry: Existing }[]>()
-    for (const [path, entry] of existing) {
-      if (!entry.isDir && entry.ino && !existsSync(path)) {
-        const key = `${entry.dev}:${entry.ino}:${entry.size}:${entry.mtime}`
-        const same = identities.get(key) ?? []; same.push({ path, entry }); identities.set(key, same)
+    // Built when the first new file turns up: most updates find none, and checking every known
+    // file for a move up front costs as many stat calls as the crawl itself.
+    let byIno: Map<number, string[]> | null = null
+    const movedFrom = (e: { dev?: number; ino?: number; size: number; mtime: number }) => {
+      if (!byIno) {
+        byIno = new Map()
+        for (const [path, entry] of existing) {
+          if (entry.isDir || !entry.ino) continue
+          const same = byIno.get(entry.ino)
+          if (same) same.push(path); else byIno.set(entry.ino, [path])
+        }
       }
+      return (byIno.get(e.ino!) ?? [])
+        .map((path) => ({ path, entry: existing.get(path)! }))
+        .filter(({ path, entry }) => entry.dev === e.dev && entry.size === e.size && entry.mtime === e.mtime && !existsSync(path))
     }
     const visited = new Set<number>()
     const contentPolicy = JSON.stringify([this.config.content, this.config.cloudContent, this.ocrTool])
@@ -402,7 +406,7 @@ export class Indexer {
       const wants = !e.isDir && contentOn && !secret && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata)
       const idle = secret ? ContentState.Skipped : ContentState.None
       const idleNote = secret ? SECRET_NOTE : null
-      const moved = !existing.has(e.path) && e.ino ? identities.get(`${e.dev}:${e.ino}:${e.size}:${e.mtime}`) : undefined
+      const moved = !existing.has(e.path) && e.ino && existing.size ? movedFrom(e) : undefined
       if (moved?.length === 1 && !visited.has(moved[0]!.entry.id) && moved[0]!.entry.kind === kind && moved[0]!.entry.state === ContentState.Indexed && wants && !policyChanged) {
         const old = moved[0]!; visited.add(old.entry.id); this.progress.updated++
         batch.push(() => {
@@ -456,13 +460,23 @@ export class Indexer {
     const missingRoots = [...crawlOpts.roots.filter((r) => !existsSync(r)), ...(stats.unreadable ?? [])]
     this.progress.unreadableFolders = stats.unreadable?.length ?? 0
     setMeta(this.db, "unreadable_folders", JSON.stringify(stats.unreadable ?? []))
-    if (!stats.errors) setMeta(this.db, "content_policy", contentPolicy)
     const removed: number[] = []
+    /** Text read under the old content settings, in folders this run could not reach. */
+    const stale: { id: number; path: string }[] = []
     for (const [path, ex] of existing) {
       if (visited.has(ex.id)) continue
-      if (missingRoots.some((r) => under(path, r))) continue
+      if (missingRoots.some((r) => under(path, r))) {
+        if (policyChanged && ex.state === ContentState.Indexed) stale.push({ id: ex.id, path })
+        continue
+      }
       removed.push(ex.id)
     }
+    // Saving the new settings even when some folders were unreadable: their old text goes,
+    // and is read again when they come back. (Otherwise every later run reads everything again.)
+    this.db.transaction(() => {
+      for (const s of stale) this.dropContent(s.id, s.path, ContentState.None, null)
+      setMeta(this.db, "content_policy", contentPolicy)
+    }).immediate()
     this.progress.removed = removed.length
     return removed
   }
@@ -592,20 +606,17 @@ export class Indexer {
     // taken in rowid order: FTS5 writes out what it has gathered whenever a rowid is lower than
     // the last one, and many small segments cost more to write and then to merge.
     const started = all.filter((p) => this.early.has(p.id)).sort((a, b) => a.id - b.id)
-    const pending = all.filter((p) => !this.early.has(p.id))
-    for (let i = 0; i < pending.length; i += WRITE_RUN) {
-      const run = pending.slice(i, i + WRITE_RUN).sort((a, b) => a.id - b.id)
-      for (let k = 0; k < run.length; k++) pending[i + k] = run[k]!
+    const later = all.filter((p) => !this.early.has(p.id))
+    for (let i = 0; i < later.length; i += WRITE_RUN) {
+      const run = later.slice(i, i + WRITE_RUN).sort((a, b) => a.id - b.id)
+      for (let k = 0; k < run.length; k++) later[i + k] = run[k]!
     }
-    pending.unshift(...started)
+    // concat, not push(...): spreading hundreds of thousands of files overflows the stack.
+    let pending = started.concat(later)
     // Images take OCR, a fraction of a second each: everything else goes first.
     if (this.ocrTool) {
-      const images = pending.filter((p) => OCR_EXTS.has(p.ext) && p.kind === "image")
-      if (images.length) {
-        const rest = pending.filter((p) => !(OCR_EXTS.has(p.ext) && p.kind === "image"))
-        pending.length = 0
-        pending.push(...rest, ...images)
-      }
+      const isImage = (p: Pending) => OCR_EXTS.has(p.ext) && p.kind === "image"
+      pending = pending.filter((p) => !isImage(p)).concat(pending.filter(isImage))
     }
     const pool = this.poolFor(pending.length)
 
