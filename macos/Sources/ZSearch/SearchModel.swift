@@ -19,7 +19,7 @@ final class IndexActivity {
 final class SearchModel {
     var query = "" {
         // Semantic search runs the model on the query: wait for a pause in typing.
-        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
+        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.1 : 0.016) } }
     }
     var mode: Mode = Edition.semanticOnly ? .semantic : .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }

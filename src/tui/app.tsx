@@ -116,7 +116,7 @@ export function App(props: AppProps) {
   createEffect(
     on([query, mode], () => {
       // Semantic search runs the model on the query: wait for a pause in typing.
-      if (screen() === "search") scheduleSearch(mode() === "semantic" ? 200 : 25)
+      if (screen() === "search") scheduleSearch(mode() === "semantic" ? 100 : 25)
     }),
   )
 

@@ -440,11 +440,6 @@ export class SearchEngine {
    */
   private async runSemantic(q: ParsedQuery, limit: number, res: SearchResponse, opts: SearchOptions) {
     const notices: string[] = []
-    // While typing, wait a moment: the next key press would make this query's vector wasted work.
-    if (q.typing && opts.cancelled) {
-      await Bun.sleep(150)
-      if (opts.cancelled()) { res.partial = true; res.strategy = "semantic"; return }
-    }
     const text = [...q.words, ...q.phrases].join(" ")
     const cat = this.catalog
     const check = policyFor(crawlOptionsFor(this.config))
