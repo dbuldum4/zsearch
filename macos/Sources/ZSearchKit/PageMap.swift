@@ -46,20 +46,71 @@ public enum PageMap {
     /// Where `terms` occur in `text`, ignoring case and accents, in reading order and at most
     /// `limit` of them. Terms are tried in the order given (`matchedTerms` puts the longest first),
     /// so a shorter term inside a longer match is not marked twice.
-    public static func occurrences(of terms: [String], in text: String, limit: Int = 2000) -> [NSRange] {
+    public static func occurrences(of terms: [String], in text: String, limit: Int = 100_000) -> [NSRange] {
         let text = text as NSString
         var out: [NSRange] = []
-        for term in terms {
+        for term in terms where out.count < limit {
+            var found: [NSRange] = []
             var from = 0
-            while from < text.length, out.count < limit {
-                let found = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: text.length - from))
-                guard found.location != NSNotFound, found.length > 0 else { break }
-                from = found.location + found.length
-                if out.contains(where: { NSIntersectionRange($0, found).length > 0 }) { continue }
-                out.append(found)
+            while from < text.length, out.count + found.count < limit {
+                let range = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: text.length - from))
+                guard range.location != NSNotFound, range.length > 0 else { break }
+                from = NSMaxRange(range)
+                found.append(range)
+            }
+            // Both lists are in reading order without overlaps, so one pass merges them.
+            var merged: [NSRange] = []
+            merged.reserveCapacity(out.count + found.count)
+            var i = 0
+            for range in found {
+                while i < out.count, NSMaxRange(out[i]) <= range.location {
+                    merged.append(out[i])
+                    i += 1
+                }
+                if i < out.count, out[i].location < NSMaxRange(range) { continue }
+                merged.append(range)
+            }
+            merged.append(contentsOf: out[i...])
+            out = merged
+        }
+        return out
+    }
+
+    /// The `count` ranges of `ranges` (in reading order) nearest `location`, in reading order.
+    public static func window(_ ranges: [NSRange], around location: Int, count: Int) -> [NSRange] {
+        guard ranges.count > count else { return ranges }
+        guard count > 0 else { return [] }
+        var lo = 0, hi = ranges.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if ranges[mid].location < location { lo = mid + 1 } else { hi = mid }
+        }
+        // Grow [lo, hi) from the first range at or after `location`, toward the closer side.
+        hi = lo
+        while hi - lo < count {
+            if lo == 0 {
+                hi += 1
+            } else if hi == ranges.count || location - ranges[lo - 1].location <= ranges[hi].location - location {
+                lo -= 1
+            } else {
+                hi += 1
             }
         }
-        return out.sorted { $0.location < $1.location }
+        return Array(ranges[lo..<hi])
+    }
+
+    /// The range of `ranges` (in reading order) nearest `location`.
+    public static func nearest(_ ranges: [NSRange], to location: Int) -> NSRange? {
+        window(ranges, around: location, count: 1).first
+    }
+
+    /// Where the preview's focus line would be in a document of `length` UTF-16 units if every
+    /// line were as long: the guess for a line that can't be placed (a header or footnote the
+    /// document view leaves out; the engine's text has those after the body) or that appears more
+    /// than once.
+    public static func expectedLocation(ofFocusOf preview: FilePreview, length: Int) -> Int {
+        let fraction = Double(max(0, preview.focusLine - 1)) / Double(max(1, preview.totalLines))
+        return Int(fraction * Double(length))
     }
 
     private static func sorted(_ terms: [String]) -> [String] {
@@ -69,27 +120,39 @@ public enum PageMap {
     /// Find the preview's focus line on a page of the rendered document, and within it the
     /// focused match: the UTF-16 range in `pageText` to scroll to, or nil if the line isn't there.
     ///
-    /// The page's own text (from PDFKit) breaks lines and spaces words differently from the
-    /// indexed text, so both are compared with whitespace removed and case folded. The lines
+    /// The page's own text (from PDFKit or AppKit) breaks lines and spaces words differently from
+    /// the indexed text, so both are compared with whitespace removed and case folded. The lines
     /// around the focus line are tried with it first, so a short line ("and", "2") is found
-    /// where it really is rather than wherever those characters first appear.
+    /// where it really is rather than wherever those characters first appear; then one of them
+    /// at a time, for a neighbour with text the index doesn't have (a list's bullet or number).
     public static func locate(focusOf preview: FilePreview, in pageText: String) -> NSRange? {
+        locate(focusOf: preview, in: PreparedText(pageText))
+    }
+
+    /// `locate` in text prepared once for several calls. Where the text sought appears more than
+    /// once, the place nearest the UTF-16 offset `near` is taken, or else the first.
+    public static func locate(focusOf preview: FilePreview, in prepared: PreparedText, near: Int? = nil) -> NSRange? {
         guard let index = preview.lines.firstIndex(where: { $0.n == preview.focusLine }) else { return nil }
         let line = preview.lines[index]
         let text = untruncated(line.text)
         let before = index > 0 ? untruncated(preview.lines[index - 1].text) : ""
         let after = index + 1 < preview.lines.count ? untruncated(preview.lines[index + 1].text) : ""
         let match = line.ranges.filter { $0.count == 2 && $0[0] < $0[1] }.min { $0[0] < $1[0] }
-        let page = Squeezed(pageText)
+        let page = prepared.squeezed
         let target = Squeezed(text)
         guard !target.units.isEmpty else { return nil }
 
-        let attempts: [(Squeezed, Int)] = [
-            (Squeezed(before + "\n" + text + "\n" + after), Squeezed(before).units.count),
-            (target, 0),
+        let beforeUnits = Squeezed(before).units.count
+        let attempts: [(String, Int)] = [
+            (before + "\n" + text + "\n" + after, beforeUnits),
+            (before + "\n" + text, beforeUnits),
+            (text + "\n" + after, 0),
+            (text, 0),
         ]
-        for (needle, lineStart) in attempts {
-            guard let at = page.find(needle.units) else { continue }
+        var tried = Set<[UInt16]>()
+        for (needleText, lineStart) in attempts {
+            let needle = Squeezed(needleText).units
+            guard tried.insert(needle).inserted, let at = page.find(needle, near: near) else { continue }
             // The focused match inside the line, or the whole line if it has no match ranges.
             var first = 0, last = target.units.count - 1
             if let match {
@@ -115,15 +178,14 @@ public enum PageMap {
         return text.substring(to: cut)
     }
 
-    /// The range in `ranges` (in reading order) nearest where the preview's focus line would be
-    /// in a document of `length` UTF-16 units, if every line were as long. The fallback when
-    /// `locate` can't place the line, as for a header or footnote the document view leaves out
-    /// (the engine's text has those after the body), so the next match doesn't go back to the first.
-    public static func nearest(_ ranges: [NSRange], toFocusOf preview: FilePreview, length: Int) -> NSRange? {
-        guard !ranges.isEmpty else { return nil }
-        let fraction = Double(max(0, preview.focusLine - 1)) / Double(max(1, preview.totalLines))
-        let guess = Int(fraction * Double(length))
-        return ranges.min { abs($0.location - guess) < abs($1.location - guess) }
+    /// A document's text made ready for `locate` once, so moving between its matches doesn't
+    /// redo that for the whole document each time.
+    public struct PreparedText {
+        let squeezed: Squeezed
+
+        public init(_ text: String) {
+            squeezed = Squeezed(text)
+        }
     }
 
     /// Text with whitespace removed and case folded, remembering where each unit came from.
@@ -145,15 +207,28 @@ public enum PageMap {
             }
         }
 
-        func find(_ needle: [UInt16]) -> Int? {
+        /// Where `needle` starts: the first place, or the one whose text starts nearest the
+        /// UTF-16 offset `near`.
+        func find(_ needle: [UInt16], near: Int? = nil) -> Int? {
             guard !needle.isEmpty, needle.count <= units.count else { return nil }
             let first = needle[0]
+            var best: Int?
             var i = 0
             while i <= units.count - needle.count {
-                if units[i] == first, units[i..<(i + needle.count)].elementsEqual(needle) { return i }
+                if units[i] == first, units[i..<(i + needle.count)].elementsEqual(needle) {
+                    guard let near else { return i }
+                    guard let b = best else {
+                        best = i
+                        i += 1
+                        continue
+                    }
+                    // Places come in order, so once one is no nearer, none after it is.
+                    guard abs(origins[i].start - near) < abs(origins[b].start - near) else { return b }
+                    best = i
+                }
                 i += 1
             }
-            return nil
+            return best
         }
     }
 }

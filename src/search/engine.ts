@@ -1093,11 +1093,14 @@ export class SearchEngine {
       note: row?.note ?? null,
       source: "none",
     }
-    if (!row) return { ...base, message: "file is no longer in the index" }
+    if (!row) return { ...base, contentAllowed: false, message: "file is no longer in the index" }
     const policy = pathPolicy(row.path, crawlOptionsFor(this.config))
     if (!policy.allowed) return { ...base, contentAllowed: false, message: policy.reason }
     if (row.is_dir) return this.folderPreview(base)
     if (!this.config.content.enabled || !policy.content || (row.source_path && row.source_path !== policy.real)) return { ...base, contentAllowed: false, message: policy.reason ?? "file contents are disabled in settings" }
+    // Found to hold only keys when it was read: names-only like a key file's path, so no app
+    // renders it from disk either.
+    if (row.note === SECRET_NOTE) return { ...base, contentAllowed: false, message: "key or password file: indexed by name only" }
     let text: string | null = null
     const stored = this.storedText(id)
     if (stored !== null) {
@@ -1127,9 +1130,7 @@ export class SearchEngine {
                 ? "binary file"
                 : row.note === "empty"
                   ? "empty file"
-                  : row.note === SECRET_NOTE
-                    ? "key or password file: indexed by name only"
-                    : "contents not indexed"
+                  : "contents not indexed"
             : row.content_state === 4
               ? "contents not indexed yet"
               : "no text preview for this kind of file"

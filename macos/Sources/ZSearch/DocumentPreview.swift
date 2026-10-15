@@ -22,8 +22,10 @@ final class WordDocuments {
 
     private var cache: [Key: NSAttributedString] = [:]
     private var order: [Key] = []
-    /// Files the reader could not open, so the preview doesn't try again on every redraw.
-    private var failed: Set<Key> = []
+    /// Files the reader could not open, and when. The preview doesn't try again on every redraw,
+    /// but does once `retryAfter` has passed, as the file may have been read halfway through a save.
+    private var failed: [Key: Date] = [:]
+    private static let retryAfter: TimeInterval = 30
     private let limit = 4
 
     /// Whether a preview is of a Word file this reader would try, without reading it.
@@ -42,14 +44,15 @@ final class WordDocuments {
             order.append(key)
             return doc
         }
-        guard !failed.contains(key) else { return nil }
+        if let at = failed[key], Date().timeIntervalSince(at) < Self.retryAfter { return nil }
         let url = URL(fileURLWithPath: p.path)
         guard let doc = try? NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil),
               doc.length > 0 else {
             if failed.count > 64 { failed.removeAll() }
-            failed.insert(key)
+            failed[key] = Date()
             return nil
         }
+        failed[key] = nil
         cache[key] = doc
         order.append(key)
         while order.count > limit { cache[order.removeFirst()] = nil }
@@ -63,9 +66,18 @@ struct DocumentPreviewView: NSViewRepresentable {
     let preview: FilePreview
     let document: NSAttributedString
 
+    /// At most this many matches are highlighted at once: the ones nearest the focus.
+    static let highlightLimit = 2000
+
     final class Coordinator {
         var shown: FilePreview?
         var document: NSAttributedString?
+        /// Kept while the same document shows, so moving between its matches doesn't go through
+        /// the whole document again: its text prepared for `PageMap.locate`, and every match.
+        var prepared: PageMap.PreparedText?
+        var terms: [String] = []
+        var matches: [NSRange] = []
+        var highlighted: [NSRange] = []
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -119,18 +131,28 @@ struct DocumentPreviewView: NSViewRepresentable {
         if !sameFile {
             storage.setAttributedString(document)
             coordinator.document = document
+            coordinator.prepared = PageMap.PreparedText(storage.string)
+        }
+        let terms = PageMap.matchedTerms(preview)
+        if !sameFile || terms != coordinator.terms {
+            coordinator.terms = terms
+            coordinator.matches = PageMap.occurrences(of: terms, in: storage.string)
         }
 
-        let text = storage.string
-        let highlights = PageMap.occurrences(of: PageMap.matchedTerms(preview), in: text)
-        // Temporary attributes leave the cached document as it was read.
-        layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: storage.length))
-        let color = NSColor.systemYellow.withAlphaComponent(0.5)
-        for range in highlights { layout.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range) }
+        let expected = PageMap.expectedLocation(ofFocusOf: preview, length: storage.length)
+        let focus = coordinator.prepared.flatMap { PageMap.locate(focusOf: preview, in: $0, near: expected) }
+            ?? PageMap.nearest(coordinator.matches, to: expected)
+        let highlights = PageMap.window(coordinator.matches, around: focus?.location ?? expected, count: Self.highlightLimit)
+        if !sameFile || highlights != coordinator.highlighted {
+            coordinator.highlighted = highlights
+            // Temporary attributes leave the cached document as it was read.
+            layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: storage.length))
+            let color = NSColor.systemYellow.withAlphaComponent(0.5)
+            for range in highlights { layout.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range) }
+        }
 
         // A refresh of the same file keeps the reader's place; anything else goes to the match.
         if sameFile, previous?.id == preview.id, previous?.focusLine == preview.focusLine { return }
-        let focus = PageMap.locate(focusOf: preview, in: text) ?? PageMap.nearest(highlights, toFocusOf: preview, length: storage.length)
         Self.reveal(focus, in: textView, scroll: scroll)
         // Layout may not be final on the first pass (a newly shown pane has no size yet).
         DispatchQueue.main.async { Self.reveal(focus, in: textView, scroll: scroll) }

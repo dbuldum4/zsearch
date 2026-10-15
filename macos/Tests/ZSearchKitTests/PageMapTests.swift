@@ -88,13 +88,53 @@ final class PageMapTests: XCTestCase {
         XCTAssertEqual(PageMap.untruncated(String(repeating: "a", count: 1999) + "\u{FFFD}…"), String(repeating: "a", count: 1999))
     }
 
-    func testNearestFollowsTheFocusLine() throws {
-        let ranges = [NSRange(location: 0, length: 3), NSRange(location: 50, length: 3), NSRange(location: 90, length: 3)]
+    func testExpectedLocationAndNearest() throws {
         let lines = (1...10).map { ($0, "line \($0)", [[Int]]()) }
-        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 9, lines: lines), length: 100)?.location, 90)
-        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 6, lines: lines), length: 100)?.location, 50)
-        XCTAssertEqual(PageMap.nearest(ranges, toFocusOf: try preview(focus: 1, lines: lines), length: 100)?.location, 0)
-        XCTAssertNil(PageMap.nearest([], toFocusOf: try preview(focus: 1, lines: lines), length: 100))
+        XCTAssertEqual(PageMap.expectedLocation(ofFocusOf: try preview(focus: 1, lines: lines), length: 100), 0)
+        XCTAssertEqual(PageMap.expectedLocation(ofFocusOf: try preview(focus: 9, lines: lines), length: 100), 80)
+        let ranges = [NSRange(location: 0, length: 3), NSRange(location: 50, length: 3), NSRange(location: 90, length: 3)]
+        XCTAssertEqual(PageMap.nearest(ranges, to: 80)?.location, 90)
+        XCTAssertEqual(PageMap.nearest(ranges, to: 60)?.location, 50)
+        XCTAssertEqual(PageMap.nearest(ranges, to: 0)?.location, 0)
+        XCTAssertEqual(PageMap.nearest(ranges, to: 500)?.location, 90)
+        XCTAssertNil(PageMap.nearest([], to: 10))
+    }
+
+    func testWindowKeepsTheMatchesNearestTheFocus() {
+        let ranges = (0..<100).map { NSRange(location: $0 * 10, length: 2) }
+        XCTAssertEqual(PageMap.window(ranges, around: 503, count: 4).map(\.location), [490, 500, 510, 520])
+        XCTAssertEqual(PageMap.window(ranges, around: 0, count: 3).map(\.location), [0, 10, 20])
+        XCTAssertEqual(PageMap.window(ranges, around: 5000, count: 3).map(\.location), [970, 980, 990])
+        XCTAssertEqual(PageMap.window(ranges, around: 5, count: 200).count, 100)
+        XCTAssertEqual(PageMap.window(ranges, around: 5, count: 0), [])
+    }
+
+    func testOccurrencesOfACommonWordReachTheEnd() {
+        // Thousands of matches of one term, and a longer term that takes some of them.
+        let text = String(repeating: "ab ", count: 5000) + "abc"
+        let all = PageMap.occurrences(of: ["abc", "ab"], in: text)
+        XCTAssertEqual(all.count, 5001)
+        XCTAssertEqual(all.last, NSRange(location: 15000, length: 3))
+        XCTAssertEqual(PageMap.window(all, around: 15000, count: 2000).last, NSRange(location: 15000, length: 3))
+    }
+
+    func testLocateNextToAListBullet() throws {
+        // The document view shows a list's bullets; the indexed text doesn't have them.
+        let p = try preview(focus: 2, lines: [(1, "Revenue", []), (2, "Total", [[0, 5]]), (3, "Costs", [])])
+        let document = "Total of all pages\n• Revenue\nTotal\n• Costs" as NSString
+        let range = try XCTUnwrap(PageMap.locate(focusOf: p, in: document as String))
+        XCTAssertEqual(range, NSRange(location: document.range(of: "Total", options: .backwards).location, length: 5))
+        XCTAssertEqual(range.location, 29)
+    }
+
+    func testLocateNearPicksTheClosestRepeat() throws {
+        // The same short line twice, and neighbours the document doesn't have next to it.
+        let p = try preview(focus: 2, lines: [(1, "x", []), (2, "Total", [[0, 5]]), (3, "y", [])])
+        let document = "Total\n" + String(repeating: "filler ", count: 20) + "\nTotal"
+        let prepared = PageMap.PreparedText(document)
+        XCTAssertEqual(PageMap.locate(focusOf: p, in: prepared)?.location, 0)
+        XCTAssertEqual(PageMap.locate(focusOf: p, in: prepared, near: (document as NSString).length)?.location, (document as NSString).length - 5)
+        XCTAssertEqual(PageMap.locate(focusOf: p, in: prepared, near: 10)?.location, 0)
     }
 
     func testLocateWholeLineWithoutRangesAndMissingLine() throws {
