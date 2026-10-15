@@ -9,7 +9,7 @@
  * - It reads the text the main index already extracted, rather than opening the files again.
  * - Passages from many files go to the helper together; the helper sorts them by length and packs
  *   them into as few model calls as fit, and the next group is prepared while one runs.
- * - Files are cut into passages on worker threads (`workers.ts`): this
+ * - Files are cut into passages on a worker thread (`workers.ts`): this
  *   thread only checks which passages are new and stores them.
  * - A passage is embedded once, wherever it appears: by a hash of the exact text the model reads,
  *   so copies of a file, boilerplate shared between files, and files that were renamed, moved or
@@ -39,7 +39,7 @@ import { CHUNK_CHARS, CHUNKER_VERSION } from "./chunk.ts"
 import type { Cut, CutJob } from "./cut.ts"
 import { Embedder, type TextEmbedder } from "./helper.ts"
 import { GRANITE, installedModel, modelFingerprint } from "./model.ts"
-import { SemanticWorkers } from "./workers.ts"
+import { CutWorker } from "./workers.ts"
 import { clearAll, clearPassages, getMeta, openSemanticDb, packVector, semanticDbPath, setMeta } from "./store.ts"
 
 /** Kinds whose text is embedded (images: the text OCR read in them). Code and data files only with `semantic.code`. */
@@ -102,14 +102,18 @@ export function semanticAvailable(config: Config, tool: string | null): string |
   return null
 }
 
-/** The helper's VECTOR_VERSION, from `zsearch-embed --version`, which loads nothing. */
-export function helperVectorVersion(tool: string): number {
+/**
+ * The helper's VECTOR_VERSION, from `zsearch-embed --version`, which loads nothing. Null when it
+ * can't be read (a timeout while macOS checks a new binary, say), never a guess: a wrong version
+ * would throw away every stored vector.
+ */
+export function helperVectorVersion(tool: string): number | null {
   try {
     const r = Bun.spawnSync([tool, "--version"], { stdout: "pipe", stderr: "ignore", timeout: 5000 })
     const m = /vectors (\d+)/.exec(r.stdout.toString())
-    return m ? Number(m[1]) : 0
+    return m ? Number(m[1]) : null
   } catch {
-    return 0
+    return null
   }
 }
 
@@ -179,7 +183,7 @@ export class SemanticIndexer {
   private lastEmit = 0
   private embedder: TextEmbedder | null = null
   /** The worker that cuts files into passages while the helper embeds. */
-  private workers: SemanticWorkers | null = null
+  private workers: CutWorker | null = null
   private tokens = 0
 
   constructor(
@@ -251,10 +255,8 @@ export class SemanticIndexer {
     return Math.max(1, Math.round(availableParallelism() * loadShare(this.config.indexLoad)))
   }
 
-  private startWorkers(): SemanticWorkers {
-    if (this.workers) return this.workers
-    // The helper takes the cores: cutting is a small part of the pass.
-    this.workers = new SemanticWorkers(1)
+  private startWorkers(): CutWorker {
+    this.workers ??= new CutWorker()
     return this.workers
   }
 
@@ -287,7 +289,8 @@ export class SemanticIndexer {
   }
 
   private async runWith(store: Database, summary: SemanticSummary): Promise<SemanticSummary> {
-    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : 0)
+    const version = this.opts.vectorVersion ?? (this.tool ? helperVectorVersion(this.tool) : null)
+    if (version === null) throw new Error("could not read the embedding helper's version (zsearch-embed --version)")
     const fingerprint = semanticFingerprint(version)
     if (getMeta(store, "fingerprint") !== fingerprint) {
       // Vectors of another model or helper can't be compared with new ones.
@@ -473,7 +476,7 @@ export class SemanticIndexer {
           this.storeFile(store, p)
           stats.files.add(p.file.id)
           waitingFiles.splice(i, 1)
-          if (p.to >= p.total || cap !== Infinity) this.progress.done += p.to >= p.total ? 1 : 0
+          if (p.to >= p.total) this.progress.done++
         }
       })()
       for (const key of done) inFlight.delete(key)

@@ -7,7 +7,7 @@
  * The server exits when stdin closes.
  */
 import { createInterface } from "node:readline"
-import { type Config, configExists, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
+import { type Config, configExists, configStamp, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
 import type { IndexStats } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import { combine, describeEstimate, ESTIMATE_CANCELLED, estimateInBackground, type FolderEstimate } from "./index/estimate.ts"
@@ -61,6 +61,8 @@ export async function serve(version: string): Promise<number> {
   const p = ensureDirs()
   const firstRun = !configExists()
   let config = loadConfig()
+  // Requests come per keystroke: the config file is read again only when it changed.
+  let seen = configStamp()
   const client = new SearchClient(p.db, config)
   let index: IndexRun | null = null
   /** The estimate being counted: a newer request supersedes it. */
@@ -135,9 +137,13 @@ export async function serve(version: string): Promise<number> {
 
   const handle = async (msg: ServeIn) => {
     const id = typeof msg.id === "number" ? msg.id : undefined
-    const latest = loadConfig()
-    if (JSON.stringify(latest) !== JSON.stringify(config)) {
-      config = latest; client.setConfig(config); watcher.update(config)
+    const stamp = configStamp()
+    if (stamp !== seen) {
+      seen = stamp
+      const latest = loadConfig()
+      if (JSON.stringify(latest) !== JSON.stringify(config)) {
+        config = latest; client.setConfig(config); watcher.update(config)
+      }
     }
     switch (msg.type) {
       case "search": {
@@ -280,6 +286,5 @@ export async function serve(version: string): Promise<number> {
     run.kill()
   }
   client.close()
-  watcher.close()
   return 0
 }

@@ -19,7 +19,7 @@ final class IndexActivity {
 final class SearchModel {
     var query = "" {
         // Semantic search runs the model on the query: wait for a pause in typing.
-        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.2 : 0.016) } }
+        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.1 : 0.016) } }
     }
     var mode: Mode = Edition.semanticOnly ? .semantic : .find {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
@@ -102,11 +102,14 @@ final class SearchModel {
         Edition.semanticOnly ? QueryFilters.semanticOnly(query) : query
     }
 
-    /// The engine binary: $ZSEARCH_ENGINE when set (development), else the one inside the app bundle.
+    /// The engine binary: in debug builds $ZSEARCH_ENGINE when set (`swift run`), else the one
+    /// inside the app bundle. A released app never runs a binary named by its environment.
     static func engineURL() -> URL? {
+        #if DEBUG
         if let path = ProcessInfo.processInfo.environment["ZSEARCH_ENGINE"], !path.isEmpty {
             return URL(fileURLWithPath: path)
         }
+        #endif
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/zsearch")
         return FileManager.default.isExecutableFile(atPath: bundled.path) ? bundled : nil
     }
@@ -574,18 +577,18 @@ final class SearchModel {
         if let hit = selectedHit { reveal(hit) }
     }
 
+    // One assignment to `query`: each one schedules a search of its own.
     func sortResults(_ key: String) {
-        let token = "sort:" + key
-        let descending = query.contains(token)
+        let descending = query.contains("sort:" + key)
         query = query.replacingOccurrences(of: #"\s*\bsort:[^\s]+"#, with: "", options: .regularExpression)
-        query += " sort:" + (descending ? "-" : "") + key
+            + " sort:" + (descending ? "-" : "") + key
         scheduleSearch(delay: 0)
     }
     func toggleFoldedPreview() {
         let on = !query.contains("fold:on")
-        query = query.replacingOccurrences(of: #"\s*\bfold:[^\s]+"#, with: "", options: .regularExpression)
-        query += " fold:" + (on ? "on" : "off")
         clearPreviewCache()
+        query = query.replacingOccurrences(of: #"\s*\bfold:[^\s]+"#, with: "", options: .regularExpression)
+            + " fold:" + (on ? "on" : "off")
         scheduleSearch(delay: 0)
     }
     func copyAllPaths() {
@@ -598,6 +601,8 @@ final class SearchModel {
         response?.hits.removeAll { $0.path == hit.path || $0.path.hasPrefix(hit.path + "/") }
         if let count = response?.hits.count { response?.total = count }
         clearPreviewCache()
+        // The excluded file's preview must not stay on screen.
+        if selectedHit == nil { selection = hits.first?.id }
     }
 
     func copyPath(_ hit: SearchHit) {

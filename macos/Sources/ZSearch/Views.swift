@@ -386,18 +386,14 @@ struct IndexProgressView: View {
     private var text: String {
         guard let p = activity.progress else { return "Starting…" }
         if p.phase == "content", let waiting = p.waiting { return "Word index · waiting: \(waiting) · resumes on its own" }
-        if p.phase == "meaning", let waiting = p.waiting { return "Semantic index (\(meaningModel(p))) · waiting: \(waiting) · resumes on its own" }
+        if p.phase == "meaning", let waiting = p.waiting { return "Semantic index (Granite) · waiting: \(waiting) · resumes on its own" }
         switch p.phase {
         case "scan", "starting": return "Scanning… \(p.scanned.formatted()) items"
         case "content": return "Word index: reading contents \(p.contentDone.formatted()) of \(p.contentTotal.formatted())"
         case "cleanup": return "Cleaning up…"
-        case "meaning": return "Semantic index (\(meaningModel(p))): \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
+        case "meaning": return "Semantic index (Granite): \((p.meaning?.done ?? 0).formatted()) of \((p.meaning?.total ?? 0).formatted())"
         default: return "Indexing…"
         }
-    }
-
-    private func meaningModel(_ p: IndexProgress) -> String {
-        "Granite"
     }
 }
 

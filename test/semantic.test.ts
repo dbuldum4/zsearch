@@ -12,12 +12,12 @@ import { SearchEngine } from "../src/search/engine.ts"
 import { parseQuery } from "../src/search/query.ts"
 import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk.ts"
 import { Embedder } from "../src/semantic/helper.ts"
-import { runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
+import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
 import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
-import { SemanticWorkers } from "../src/semantic/workers.ts"
+import { CutWorker } from "../src/semantic/workers.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
 describe("passages", () => {
@@ -215,9 +215,9 @@ describe("DigUp's ranking", () => {
   })
 })
 
-describe("Granite passage workers", () => {
-  test("cut batches just like the indexer, without an embedding model", async () => {
-    const workers = new SemanticWorkers(2)
+describe("Granite passage worker", () => {
+  test("cuts batches just like the indexer, without an embedding model", async () => {
+    const workers = new CutWorker()
     try {
       const text = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} is about the cat and the dog. `.repeat(8)).join("\n\n")
       const data = new Uint8Array([0, ...new TextEncoder().encode(text)])
@@ -310,6 +310,22 @@ describe("semantic index and search", () => {
     expect(r.status).toBe("done")
     expect(r.embedded).toBe(0)
     expect(requests()).toHaveLength(0)
+  })
+
+  test("a helper whose version can't be read fails the pass and keeps the stored vectors", async () => {
+    const mute = join(work, "mute-embed")
+    writeFileSync(mute, "#!/bin/sh\nexit 1\n")
+    chmodSync(mute, 0o755)
+    expect(helperVectorVersion(tool)).toBe(1)
+    expect(helperVectorVersion(mute)).toBeNull()
+    const files = () => { const s = store(); try { return semanticStats(s).files } finally { s.close() } }
+    const before = files()
+    expect(before).toBeGreaterThan(5)
+    const r = await new SemanticIndexer(db, config, mute, { embedder: fakeEmbedder }).run()
+    expect(r.status).toBe("error")
+    expect(r.error).toContain("version")
+    expect(files()).toBe(before)
+    expect((await semantic()).embedded).toBe(0)
   })
 
   test("copies, edits and a rebuilt index reuse the vectors they can", async () => {

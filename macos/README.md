@@ -86,6 +86,8 @@ bun run build
 ZSEARCH_ENGINE=$PWD/dist/zsearch swift run --package-path macos ZSearch
 ```
 
+Only debug builds read `ZSEARCH_ENGINE`; release builds always run the engine inside the app bundle.
+
 `swift build --package-path macos` checks that everything compiles. `swift test` may not work with the Command Line Tools alone (they may not include XCTest); CI runs the tests.
 
 ## Protocol

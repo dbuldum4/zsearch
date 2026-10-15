@@ -116,7 +116,7 @@ export function App(props: AppProps) {
   createEffect(
     on([query, mode], () => {
       // Semantic search runs the model on the query: wait for a pause in typing.
-      if (screen() === "search") scheduleSearch(mode() === "semantic" ? 200 : 25)
+      if (screen() === "search") scheduleSearch(mode() === "semantic" ? 100 : 25)
     }),
   )
 
@@ -136,8 +136,11 @@ export function App(props: AppProps) {
   svc.search.onRestart = (reason) => notify(reason, "warn", 6000)
 
   /* ---------------------------------------------------------- preview -- */
+  // Results of a new query always bring new hit objects, so `current` alone follows typing; the
+  // query and mode are read when the request goes out.
+  let previewAsked = ""
   createEffect(
-    on([current, previewVisible, query, mode], () => {
+    on([current, previewVisible], () => {
       clearTimeout(previewTimer)
       const h = current()
       if (!h || !previewVisible()) {
@@ -146,16 +149,29 @@ export function App(props: AppProps) {
       }
       const focus = h.lines[0]?.line
       previewTimer = setTimeout(async () => {
+        const asked = `${mode()}\0${query()}`
         const p = await svc.search.preview(h.id, query(), mode(), focus)
         if (!p || current()?.id !== h.id) return
-        setPreview(p)
-        const lay = previewLayout(p, previewWidth(), theme(), wrapPreview(p))
-        setPreviewTop(Math.max(0, lay.focusRow - Math.floor(previewBodyHeight() / 4)))
+        const shown = preview()
+        // A live refresh of what is already shown keeps the reader's place.
+        const refresh = shown?.id === p.id && shown.focusLine === p.focusLine && previewAsked === asked
+        previewAsked = asked
+        if (refresh) setPreview(p)
+        else showPreviewAtFocus(p)
       }, 30)
     }),
   )
   const wrapPreview = (p: Preview) => !["code", "data", "web"].includes(p.kind)
   const previewBodyHeight = () => bodyHeight() - 3
+  const shownLayout = createMemo(() => {
+    const p = preview()
+    return p && previewVisible() ? previewLayout(p, previewWidth(), theme(), wrapPreview(p)) : null
+  })
+  const showPreviewAtFocus = (p: Preview) => {
+    setPreview(p)
+    const lay = shownLayout()
+    setPreviewTop(lay ? Math.max(0, lay.focusRow - Math.floor(previewBodyHeight() / 4)) : 0)
+  }
 
   /* --------------------------------------------------------- indexing -- */
   const refreshStats = async () => {
@@ -289,12 +305,15 @@ export function App(props: AppProps) {
     const h = current()
     if (h) applySettings({ ...config(), exclude: [...new Set([...config().exclude, h.path])] }, true)
   }
+  /** Replace a `key:value` option in the query, in the search box too. */
+  const setQueryOption = (key: string, value: string) => {
+    setQuery(`${query().replace(new RegExp(`\\s*\\b${key}:\\S+`, "g"), "").trim()} ${key}:${value}`.trim())
+    if (input) input.value = query()
+  }
   const cycleSort = () => {
     const sorts = ["name", "size", "-date", "path"]
     const previous = /\bsort:(\S+)/.exec(query())?.[1] ?? "path"
-    const next = sorts[(sorts.indexOf(previous) + 1) % sorts.length]!
-    setQuery(`${query().replace(/\s*\bsort:\S+/g, "").trim()} sort:${next}`)
-    if (input) input.value = query()
+    setQueryOption("sort", sorts[(sorts.indexOf(previous) + 1) % sorts.length]!)
   }
 
   const move = (delta: number) => {
@@ -302,8 +321,10 @@ export function App(props: AppProps) {
     if (!n) return
     const next = Math.max(0, Math.min(n - 1, selected() + delta))
     lastMove = Date.now()
-    setSelected(next)
-    setTop(clampScroll(hits(), next, top(), bodyHeight()))
+    batch(() => {
+      setSelected(next)
+      setTop(clampScroll(hits(), next, top(), bodyHeight()))
+    })
   }
 
   /* ------------------------------------------------------------ mouse -- */
@@ -334,9 +355,9 @@ export function App(props: AppProps) {
   }
 
   const scrollPreview = (delta: number) => {
-    const p = preview()
-    if (!p) return
-    const total = previewLayout(p, previewWidth(), theme(), wrapPreview(p)).body.length
+    const lay = shownLayout()
+    if (!lay) return
+    const total = lay.body.length
     setPreviewTop((t) => Math.max(0, Math.min(Math.max(0, total - previewBodyHeight()), t + delta)))
   }
 
@@ -349,9 +370,7 @@ export function App(props: AppProps) {
     const next = dir > 0 ? (sorted.find((l) => l > cur) ?? sorted[0]!) : ([...sorted].reverse().find((l) => l < cur) ?? sorted[sorted.length - 1]!)
     void svc.search.preview(h.id, query(), mode(), next).then((np) => {
       if (!np || current()?.id !== h.id) return
-      setPreview(np)
-      const lay = previewLayout(np, previewWidth(), theme(), wrapPreview(np))
-      setPreviewTop(Math.max(0, lay.focusRow - Math.floor(previewBodyHeight() / 4)))
+      showPreviewAtFocus(np)
     })
   }
 
@@ -363,9 +382,11 @@ export function App(props: AppProps) {
     setScreen("search")
     scheduleSearch(0)
     if (reindex) {
-      if (indexing()) {
-        indexHandle?.cancel()
-        setTimeout(() => startIndex("setup"), 300)
+      const running = indexHandle
+      // The new run starts once the old one has stopped, however long that takes.
+      if (running) {
+        running.cancel()
+        void running.done.then(() => { if (!exiting) startIndex("setup") })
       } else startIndex("setup")
     }
     void refreshStats()
@@ -398,7 +419,7 @@ export function App(props: AppProps) {
     if (k === "tab") return handled(() => cycleMode(key.shift ? -1 : 1))
     if (k === "f1" || (key.ctrl && (k === "/" || k === "_"))) return handled(() => setOverlay("help"))
     if (key.ctrl) {
-      if (key.shift && k === "t") return handled(() => { setQuery(query().replace(/\s*\bfold:[^\s]+/g, "") + (query().includes("fold:on") ? " fold:off" : " fold:on")); scheduleSearch(0) })
+      if (key.shift && k === "t") return handled(() => setQueryOption("fold", query().includes("fold:on") ? "off" : "on"))
       if (key.shift && k === "y") return handled(copyAll)
       if (key.shift && k === "x") return handled(excludeSelected)
       if (key.shift && k === "o") return handled(cycleSort)
@@ -485,18 +506,22 @@ export function App(props: AppProps) {
 
   const previewRows = createMemo(() => {
     const p = preview()
+    const lay = shownLayout()
     // Never show a preview that belongs to a different result than the highlighted one.
-    if (!p || !previewVisible() || p.id !== current()?.id) return null
-    const lay = previewLayout(p, previewWidth(), t(), wrapPreview(p))
+    if (!p || !lay || p.id !== current()?.id) return null
     const h = previewBodyHeight()
     const topRow = Math.min(previewTop(), Math.max(0, lay.body.length - h))
     return { header: lay.header, body: lay.body.slice(topRow, topRow + h) }
   })
 
   const statusLine = createMemo((): Seg[] => {
-    tick()
     const p = progress()
     const tt = toast()
+    // A message (an error, "Copied", "Stopping indexer…") shows for its few seconds even while indexing.
+    if (tt) {
+      const color = tt.kind === "ok" ? t().ok : tt.kind === "warn" ? t().warn : tt.kind === "error" ? t().error : t().text
+      return [{ text: ` ${tt.kind === "ok" ? "✓" : tt.kind === "error" ? "✗" : tt.kind === "warn" ? "!" : "•"} ${tt.text}`, fg: color }]
+    }
     if (indexing()) {
       const spin = SPINNER[tick() % SPINNER.length]!
       const segs: Seg[] = [{ text: ` ${spin} `, fg: t().accent }]
@@ -522,10 +547,6 @@ export function App(props: AppProps) {
         }
       } else segs.push({ text: "Finishing up…", fg: t().muted })
       return segs
-    }
-    if (tt) {
-      const color = tt.kind === "ok" ? t().ok : tt.kind === "warn" ? t().warn : tt.kind === "error" ? t().error : t().text
-      return [{ text: ` ${tt.kind === "ok" ? "✓" : tt.kind === "error" ? "✗" : tt.kind === "warn" ? "!" : "•"} ${tt.text}`, fg: color }]
     }
     const s = stats()
     if (!s) return [{ text: " Loading index…", fg: t().subtle }]

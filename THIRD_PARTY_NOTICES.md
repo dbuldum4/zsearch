@@ -12,8 +12,8 @@ https://github.com/ARahim3/DigUp, at commit 6faa29e. Adapted in zsearch:
 - `src/semantic/chunk.ts`: passage size, the prompts and `hasWords` from `DocExtractor` and
   `SearchText`.
 - `src/semantic/model.ts`: the model files, revision and checksums of `ModelFiles.swift`.
-- `native/embed/zsearch-embed.cpp`: framing, pooling and image handling from
-  `Sources/LlamaRuntime/LlamaEmbedder.swift` and `ImageSizing.swift`.
+- `native/embed/zsearch-embed.cpp`: framing and pooling from
+  `Sources/LlamaRuntime/LlamaEmbedder.swift`.
 - `native/embed/llama.cpp-no-logits.patch`: DigUp's patch, unchanged.
 
 ```text

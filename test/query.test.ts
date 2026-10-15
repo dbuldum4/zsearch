@@ -70,6 +70,20 @@ describe("query parsing", () => {
     expect(today.mtimeMin).toBe(new Date("2024-06-15T00:00:00").getTime())
   })
 
+  test("since:, after: and before: with an age name the moment that long ago", () => {
+    const week = now - 7 * 86_400_000
+    for (const key of ["since", "after"]) {
+      const f = parseQuery(`${key}:7d`, now).filters
+      expect([f.mtimeMin, f.mtimeMax]).toEqual([week, undefined])
+    }
+    const before = parseQuery("before:7d", now).filters
+    expect([before.mtimeMin, before.mtimeMax]).toEqual([undefined, week])
+    // Up to and including today has no upper bound, not one at midnight.
+    const upToToday = parseQuery("mtime:<=today", now).filters
+    expect([upToToday.mtimeMin, upToToday.mtimeMax]).toEqual([undefined, undefined])
+    expect(parseQuery("mtime:<=2023", now).filters.mtimeMax).toBe(new Date(2024, 0, 1).getTime())
+  })
+
   test("unknown or malformed filters become warnings and stay as text", () => {
     const q = parseQuery("size:huge http://example.com", now)
     expect(q.warnings.length).toBe(1)
@@ -90,6 +104,15 @@ describe("query parsing", () => {
     expect(parseQuery("f:srvr").forcedMode).toBe("fuzzy")
     const grep = parseQuery("grep:TODO")
     expect([grep.forcedMode, grep.regex]).toEqual(["find", false])
+  })
+
+  test("an absolute path is text, while /…/ with regex flags is a regex", () => {
+    for (const path of ["/etc/hosts", "/usr/local/bin"]) {
+      const q = parseQuery(path)
+      expect([q.forcedMode, q.regex, q.text]).toEqual([null, false, path])
+    }
+    const flagged = parseQuery("/a+b/i")
+    expect([flagged.forcedMode, flagged.regex]).toEqual(["find", true])
   })
 
   test("sizes and durations", () => {
@@ -409,6 +432,15 @@ describe("result list layout", () => {
     expect(clampScroll(hits, 7, 5, 10)).toBe(0)
     expect(resultRows(hits, 7, 0, 60, 10, DARK)).toHaveLength(2)
     expect(clampScroll([], 3, 2, 10)).toBe(0)
+  })
+
+  test("highlights stay on the match in an indented line", async () => {
+    const { squeezeSpaces } = await import("../src/tui/layout.ts")
+    const text = "    if  (\tready) return  total"
+    const start = text.indexOf("total")
+    const squeezed = squeezeSpaces(text, [[start, start + 5], [text.indexOf("ready"), text.indexOf("ready") + 5]])
+    expect(squeezed.text).toBe("if ( ready) return total")
+    expect(squeezed.ranges.map(([a, b]) => squeezed.text.slice(a, b))).toEqual(["total", "ready"])
   })
 })
 

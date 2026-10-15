@@ -1,7 +1,7 @@
 import { type ClipboardService, type CliRenderer, createClipboard, createHostClipboard, createRendererClipboardAdapter } from "@opentui/core"
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { type Config, configExists, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
+import { closeSync, existsSync, openSync } from "node:fs"
+import { type Config, configExists, configStamp, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
 import { IndexRun, type IndexOutcome, type IndexRunHandlers } from "../index/client.ts"
 import { estimateInBackground, type FolderEstimate } from "../index/estimate.ts"
 import { RootWatcher } from "../index/watch.ts"
@@ -53,21 +53,39 @@ export interface Services {
   dispose?(): Promise<void>
 }
 
+const STOP_WAIT_MS = 15_000
+
 export function realServices(config: Config): Services {
   const p = paths()
   let clipboard: ClipboardService | null = null
   const client = new SearchClient(p.db, config)
   let baseline = structuredClone(config)
   let live: IndexRun | null = null
+  // Every run this UI started, so quitting can stop them and let them kill their helpers.
+  const runs = new Set<IndexRun>()
+  const track = (run: IndexRun) => {
+    runs.add(run)
+    void run.done.finally(() => runs.delete(run))
+    return run
+  }
   const watcher = new RootWatcher(() => {
     if (live || lockHolder(p.lock) !== null) return false
     if (!configExists()) return
     const current = loadConfig(); client.setConfig(current)
-    live = new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true)
+    live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true))
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)
-  const reload = () => { if (configExists()) { const current = loadConfig(); client.setConfig(current); watcher.update(current) } }
+  // Settings saved by another zsearch (the CLI, the Mac app) apply to the next search. The file
+  // is read again only when it changed, not on every keystroke.
+  let seen = configStamp()
+  const reload = () => {
+    const now = configStamp()
+    if (now === seen) return
+    seen = now
+    if (!now) return
+    const current = loadConfig(); client.setConfig(current); watcher.update(current)
+  }
   const originalSearch = client.search.bind(client), originalPreview = client.preview.bind(client)
   client.search = (...args) => { reload(); return originalSearch(...args) }
   client.preview = (...args) => { reload(); return originalPreview(...args) }
@@ -80,9 +98,9 @@ export function realServices(config: Config): Services {
       let merged = loadConfig()
       const value = (c: Config, key: string) => key.split(".").reduce((v: any, k) => v[k], c)
       for (const key of configKeys()) if (JSON.stringify(value(next, key)) !== JSON.stringify(value(baseline, key))) merged = withConfigSetting(merged, key, value(next, key))
-      saveConfig(merged); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
+      saveConfig(merged); seen = configStamp(); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
     },
-    startIndex: (cfg, handlers, background) => new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background),
+    startIndex: (cfg, handlers, background) => track(new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background)),
     indexLockedBy: () => lockHolder(p.lock),
     estimate: estimateInBackground,
     open: openWithDefault,
@@ -101,8 +119,15 @@ export function realServices(config: Config): Services {
     },
     async dispose() {
       watcher.close()
-      live?.cancel()
-      if (live) await live.done
+      for (const run of runs) run.cancel()
+      // A cancelled run stops between files; one stuck inside a single file is cut off.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stopped = await Promise.race([
+        Promise.all([...runs].map((run) => run.done)).then(() => true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), STOP_WAIT_MS) }),
+      ])
+      clearTimeout(timer)
+      if (!stopped) for (const run of runs) run.kill()
       await clipboard?.dispose().catch(() => {})
       clipboard = null
     },
@@ -111,10 +136,17 @@ export function realServices(config: Config): Services {
       try { cmd = editorCommand(loadConfig().editor, path, line) } catch (err) { return (err as Error).message }
       if (isTerminalEditor(cmd)) {
         await suspend()
+        // In print mode stdout is a pipe (`vim "$(zsearch -p)"`): the editor needs the terminal.
+        const opened: number[] = []
+        const terminal = (stream: { isTTY?: boolean }, flags: "r" | "w"): "inherit" | number => {
+          if (stream.isTTY) return "inherit"
+          try { const fd = openSync("/dev/tty", flags); opened.push(fd); return fd } catch { return "inherit" }
+        }
         try {
-          const r = spawnSync(cmd[0]!, cmd.slice(1), { stdio: "inherit" })
+          const r = spawnSync(cmd[0]!, cmd.slice(1), { stdio: [terminal(process.stdin, "r"), terminal(process.stdout, "w"), terminal(process.stderr, "w")] })
           if (r.error) return r.error.message
         } finally {
+          for (const fd of opened) closeSync(fd)
           await resume()
         }
         return null

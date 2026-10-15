@@ -152,6 +152,8 @@ export function Setup(props: SetupProps) {
     key.preventDefault()
     if (key.ctrl && k === "c") return props.onCancel()
     if (k === "escape") return props.onCancel()
+    // Before the key acts, so an error that key reports stays up.
+    setError(null)
     if (k === "up" || (key.shift && k === "tab") || (key.ctrl && k === "p") || k === "k") setCursor((c) => (c + ITEMS.length - 1) % ITEMS.length)
     else if (k === "down" || k === "tab" || (key.ctrl && k === "n") || k === "j") setCursor((c) => (c + 1) % ITEMS.length)
     else if (k === "space") activate()
@@ -160,7 +162,6 @@ export function Setup(props: SetupProps) {
       activate()
     } else if (k === "s" && !key.ctrl) finish()
     else if (k === "e" && !key.ctrl && props.estimate) setWantsEstimate(true)
-    setError(null)
   })
 
   const w = () => Math.min(78, props.width - 2)

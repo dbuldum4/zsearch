@@ -3,7 +3,7 @@ import { type Dirent, lstatSync, readdirSync, readFileSync, realpathSync, statSy
 import { join, relative } from "node:path"
 import { extOf } from "../kinds.ts"
 import { isMac, PACKAGE_EXTS, SKIP_DIR_NAMES } from "../platform.ts"
-import { pathPolicy } from "./policy.ts"
+import { pathPolicy, under } from "./policy.ts"
 
 export interface CrawlOptions {
   roots: string[]
@@ -55,10 +55,6 @@ const IGNORE_FILES = [".gitignore", ".ignore", ".zsearchignore"]
 interface IgnoreLevel {
   base: string
   ig: Ignore
-}
-
-function under(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : prefix + "/")
 }
 
 /**

@@ -103,10 +103,6 @@ export class Vocab {
     return out
   }
 
-  has(term: string): boolean {
-    return this.joined.includes(`\n${term}\n`)
-  }
-
   /** Terms within edit distance (1 for 4-7 letters, 2 for 8+). */
   similar(term: string, limit = 24): string[] {
     const max = term.length >= 8 ? 2 : term.length >= 4 ? 1 : 0
