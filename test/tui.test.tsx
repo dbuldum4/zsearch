@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
+import { lockHolder } from "../src/index/lock.ts"
 import { App } from "../src/tui/app.tsx"
+import { realServices } from "../src/tui/services.ts"
 import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
 import { testServices } from "./helpers/services.ts"
 
@@ -307,5 +310,47 @@ describe("print mode", () => {
       s.renderer.destroy()
       t.close()
     }
+  })
+})
+
+describe("terminal editor", () => {
+  test.skipIf(!Bun.which("script"))("gets the terminal when stdout is piped (print mode)", async () => {
+    const bin = join(corpus.home, "fake-bin")
+    const marker = join(corpus.home, "editor-saw")
+    mkdirSync(bin, { recursive: true })
+    // Named like a terminal editor; records whether it was given the terminal.
+    writeFileSync(join(bin, "nano"), `#!/bin/sh\nif [ -t 0 ] && [ -t 1 ]; then saw=tty; else saw=pipe; fi\necho "$saw" > "${marker}"\n`, { mode: 0o755 })
+    const child = join(corpus.home, "edit-child.ts")
+    writeFileSync(child, `
+      const { realServices } = await import(${JSON.stringify(join(import.meta.dir, "../src/tui/services.ts"))})
+      const { defaultConfig } = await import(${JSON.stringify(join(import.meta.dir, "../src/config.ts"))})
+      const s = realServices({ ...defaultConfig(), roots: [] })
+      const err = await s.edit(${JSON.stringify(child)}, undefined, async () => {}, async () => {})
+      s.search.close(); await s.dispose()
+      if (err) console.error(err)
+      process.exit(0)
+    `)
+    const cmd = `${JSON.stringify(process.execPath)} ${JSON.stringify(child)} | cat >/dev/null`
+    const args = process.platform === "darwin" ? ["script", "-q", "/dev/null", "sh", "-c", cmd] : ["script", "-qec", cmd, "/dev/null"]
+    const p = Bun.spawn(args, { env: { ...process.env, EDITOR: join(bin, "nano"), VISUAL: "" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+    const timer = setTimeout(() => p.kill(), 20_000)
+    await p.exited
+    clearTimeout(timer)
+    expect(readFileSync(marker, "utf8").trim()).toBe("tty")
+  }, 30_000)
+})
+
+describe("quitting", () => {
+  test("waits for the index run it started to stop", async () => {
+    // Index workers see the real HOME, not the one these tests set: name the folder outright.
+    const config = { ...defaultConfig(), roots: [corpus.home] }
+    const services = realServices(config)
+    let stopped = false
+    const run = services.startIndex(config, {})
+    void run.done.then(() => { stopped = true })
+    services.search.close()
+    await services.dispose!()
+    expect(stopped).toBe(true)
+    expect(lockHolder(services.paths.lock)).toBeNull()
   })
 })

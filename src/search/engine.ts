@@ -90,12 +90,23 @@ interface SearchOptions {
   cancelled?: () => boolean
   /** Time budget for regex/exact content scans. */
   budgetMs?: number
+  /** Only these files (a part of a grouped query, narrowed by another part). */
+  onlyIds?: Set<number>
+}
+
+/** One part of a grouped query: its hits, and whether they are all of its matches. */
+interface GroupPart {
+  hits: Map<number, SearchHit>
+  complete: boolean
+  total: number
+  notices: string[]
+  error?: string
 }
 
 const FETCH_BATCH = 64
 /** How many full-text candidates are ranked by their text (the rest by name, folders and date). */
 const RANK_POOL = 128
-/** Results each branch of a grouped query (`(a OR b) type:pdf`) may bring to the merge. */
+/** Results each part of a grouped query (`(a OR b) type:pdf`) brings, at most. */
 const BRANCH_LIMIT = 5000
 /** Hits beyond this many get no snippet lines (fuzzy and semantic): lines cost a text read each. */
 const SNIPPET_HITS = 60
@@ -224,6 +235,7 @@ export class SearchEngine {
     const t0 = performance.now()
     this.refresh()
     const q = parseQuery(rawQuery)
+    if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
     const limit = q.filters.limit ?? opts.limit ?? 100
@@ -311,33 +323,67 @@ export class SearchEngine {
     if (expr.op === "leaf") { const res = await this.search(expr.text, mode, opts); res.query = query; return res }
     const deadline = performance.now() + (opts.budgetMs ?? 2500)
     const revision = this.revision, config = this.config
-    const parts: SearchResponse[] = []
-    for (const part of expr.parts) parts.push(await this.searchExpression(part, query, mode, { ...opts, limit: BRANCH_LIMIT, budgetMs: Math.max(1, deadline - performance.now()) }, started))
+    const result = await this.evaluateGroup(expr, mode, opts, deadline)
     if (this.revision !== revision || this.config !== config) return this.done({ query, mode, resolved: mode, strategy: "grouped search interrupted", hits: [], total: 0, elapsedMs: 0, partial: true }, started)
-    const merged = new Map<number, SearchHit>()
-    const mergedLines = new Map<number, Set<number>>()
-    for (const [n, part] of parts.entries()) for (const h of part.hits) {
-      const old = merged.get(h.id)
-      if (!old && (expr.op === "or" || n === 0)) {
-        merged.set(h.id, structuredClone(h))
-        mergedLines.set(h.id, new Set(h.lines.map((l) => l.line)))
-      } else if (old) {
-        const seen = mergedLines.get(h.id)!
-        old.score += h.score
-        old.sources = [...new Set([...old.sources, ...h.sources])]
-        for (const l of h.lines) if (!seen.has(l.line)) { seen.add(l.line); old.lines.push(l) }
+    const filters = parseQuery(query).filters
+    const hits = [...result.hits.values()].sort((a, b) => filters.sort ? this.compareIds(a.id, b.id, filters.sort) : b.score - a.score)
+    const notice = [...new Set(result.notices)].join("; ")
+    return this.done({
+      query, mode, resolved: mode, strategy: "grouped search",
+      total: result.total,
+      hits: hits.slice(0, filters.limit ?? opts.limit ?? 100),
+      elapsedMs: 0,
+      partial: !result.complete,
+      error: result.error,
+      ...(notice ? { notice } : {}),
+    }, started)
+  }
+
+  /**
+   * Each part of a group keeps at most BRANCH_LIMIT hits, so intersecting them as they come
+   * would lose files (`type:pdf` alone lists only the newest PDFs). The parts of an AND are
+   * narrowed instead to the smallest one that has all its matches, and run again within it.
+   */
+  private async evaluateGroup(expr: QueryExpression, mode: Mode, opts: SearchOptions, deadline: number): Promise<GroupPart> {
+    if (expr.op === "leaf") {
+      const r = await this.search(expr.text, mode, { ...opts, limit: BRANCH_LIMIT, budgetMs: Math.max(1, deadline - performance.now()) })
+      return {
+        hits: new Map(r.hits.map((h) => [h.id, h])),
+        complete: !r.partial && !r.error && r.total <= r.hits.length && r.hits.length < BRANCH_LIMIT,
+        total: r.total,
+        notices: r.notice ? [r.notice] : [],
+        error: r.error,
       }
     }
+    const parts: GroupPart[] = []
+    for (const part of expr.parts) parts.push(await this.evaluateGroup(part, mode, opts, deadline))
     if (expr.op === "and") {
-      const inEvery = parts.map((p) => new Set(p.hits.map((h) => h.id)))
-      for (const id of merged.keys()) if (inEvery.some((ids) => !ids.has(id))) merged.delete(id)
+      const seed = parts.filter((p) => p.complete).sort((a, b) => a.hits.size - b.hits.size)[0]
+      if (seed) {
+        const within = new Set(seed.hits.keys())
+        for (const [k, p] of parts.entries()) {
+          if (p.complete) continue
+          parts[k] = within.size ? await this.evaluateGroup(expr.parts[k]!, mode, { ...opts, onlyIds: within }, deadline) : { hits: new Map(), complete: true, total: 0, notices: [] }
+        }
+      }
     }
-    const sort = parseQuery(query).filters.sort
-    const hits = [...merged.values()].sort((a, b) => sort ? this.compareIds(a.id, b.id, sort) : b.score - a.score)
-    // A branch that filled its limit (a filter alone lists only the newest files) may have left out
-    // matches that the other branches would have kept.
-    const partial = parts.some((p) => p.partial || p.total > p.hits.length || p.hits.length >= BRANCH_LIMIT)
-    return this.done({ query, mode, resolved: mode, strategy: "grouped search", total: hits.length, hits: hits.slice(0, opts.limit ?? 100), elapsedMs: 0, partial, error: parts.find((p) => p.error)?.error }, started)
+    const notices = parts.flatMap((p) => p.notices)
+    const error = parts.find((p) => p.error)?.error
+    const complete = parts.every((p) => p.complete)
+    const hits = new Map<number, SearchHit>()
+    for (const [n, part] of parts.entries()) {
+      for (const h of part.hits.values()) {
+        const old = hits.get(h.id)
+        if (!old) { if (expr.op === "or" || n === 0) hits.set(h.id, structuredClone(h)); continue }
+        // Matched by several parts: it matches more of the query.
+        old.score += h.score
+        old.sources = [...new Set([...old.sources, ...h.sources])]
+        for (const l of h.lines) if (!old.lines.some((o) => o.line === l.line)) old.lines.push(l)
+      }
+    }
+    if (expr.op === "and") for (const id of hits.keys()) if (parts.some((p) => !p.hits.has(id))) hits.delete(id)
+    const total = complete || expr.op === "and" ? hits.size : Math.max(hits.size, ...parts.map((p) => p.total))
+    return { hits, complete, total, notices, error }
   }
 
   /* ---------------------------------------------------------- strategy -- */

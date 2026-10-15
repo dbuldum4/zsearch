@@ -289,6 +289,7 @@ export class Catalog {
 
   /** Whether entry `i` passes the filters. */
   passes(i: number, f: Filters): boolean {
+    if (f.ids && !f.ids.has(this.ids[i]!)) return false
     if (f.names) {
       let compiled = nameRegexes.get(f.names)
       if (!compiled) nameRegexes.set(f.names, (compiled = f.names.map(({ source, flags }) => new RegExp(source, flags.replace(/[gy]/g, "")))))

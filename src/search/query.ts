@@ -10,6 +10,8 @@ export type Mode = "find" | "fuzzy" | "semantic"
 export const MODES: Mode[] = ["find", "fuzzy", "semantic"]
 
 export interface Filters {
+  /** Only these file ids: set by the engine for a part of a grouped query, never by query text. */
+  ids?: Set<number>
   not?: Filters[]
   createdMin?: number
   createdMax?: number
@@ -63,7 +65,7 @@ function emptyFilters(): Filters {
 }
 
 export function hasFilters(f: Filters): boolean {
-  return !!(f.createdMin !== undefined || f.createdMax !== undefined || f.tags?.length || f.sort || f.names?.length || f.not?.length || f.exts || f.kinds || f.notKinds || f.inPaths.length || f.pathContains.length || f.sizeMin !== undefined || f.sizeMax !== undefined || f.mtimeMin !== undefined || f.mtimeMax !== undefined)
+  return !!(f.ids || f.createdMin !== undefined || f.createdMax !== undefined || f.tags?.length || f.sort || f.names?.length || f.not?.length || f.exts || f.kinds || f.notKinds || f.inPaths.length || f.pathContains.length || f.sizeMin !== undefined || f.sizeMax !== undefined || f.mtimeMin !== undefined || f.mtimeMax !== undefined)
 }
 
 const SIZE_UNITS: Record<string, number> = { b: 1, k: 1024, kb: 1024, m: 1024 ** 2, mb: 1024 ** 2, g: 1024 ** 3, gb: 1024 ** 3, t: 1024 ** 4, tb: 1024 ** 4 }

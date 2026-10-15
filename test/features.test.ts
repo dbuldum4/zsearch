@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { tmpdir } from "node:os"
 import { deflateRawSync } from "node:zlib"
 import { defaultConfig } from "../src/config.ts"
@@ -41,6 +41,8 @@ test("name globs, name-only regex and all supported sort keys", async () => corp
 test("OR, grouped queries, all words, proximity and explicit match controls", async () => corpus(async (e) => {
   expect((await e.search("alpha OR gamma")).hits).toHaveLength(4)
   expect((await e.search("(alpha OR beta) report")).hits).toHaveLength(2)
+  expect((await e.search("(alpha OR gamma) ext:md")).hits.map((h) => basename(h.path))).toEqual(["b.md"])
+  expect((await e.search("(alpha OR gamma) (budget OR report) ext:txt")).hits.map((h) => basename(h.path)).sort()).toEqual(["a.txt", "c.txt", "copy.txt"])
   expect((await e.search("all:alpha report")).hits).toHaveLength(2)
   expect((await e.search("alpha report near:2")).hits).toHaveLength(1)
   expect((await e.search("alpha NEAR/2 report")).hits).toHaveLength(1)
@@ -51,6 +53,24 @@ test("OR, grouped queries, all words, proximity and explicit match controls", as
   expect((await e.search("/alpha.*report/i")).hits).toHaveLength(1)
   expect((await e.search("/alpha .* report/i")).hits).toHaveLength(1)
 }))
+
+test("a grouped query finds an old match among more files than a branch keeps", async () => {
+  const root = mkdtempSync(join(tmpdir(), "zsearch-grouped-")), docs = join(root, "docs")
+  mkdirSync(docs)
+  for (let i = 0; i < 5100; i++) writeFileSync(join(docs, `f${i}.txt`), "x")
+  const old = join(docs, "old-note.txt")
+  writeFileSync(old, "zeppelin route")
+  utimesSync(old, new Date(2001, 0, 1), new Date(2001, 0, 1))
+  const config = { ...defaultConfig(), roots: [docs], indexLoad: 100 }, db = openDb(join(root, "index.db"))
+  try {
+    await new Indexer(db, config, { inProcess: true }).run()
+    const e = new SearchEngine(db, config)
+    // ext:txt alone lists only the newest 5000 files: the old note must still be found.
+    const res = await e.search("(zeppelin OR quokka) ext:txt")
+    expect(res.hits.map((h) => basename(h.path))).toEqual(["old-note.txt"])
+    expect(res.partial).toBe(false)
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
+}, 120_000)
 
 test("duplicates compare hashes and obey names-only policy", async () => corpus(async (e, root) => {
   const found = await duplicateFiles(e.db, e.config)

@@ -58,7 +58,7 @@ for await (const chunk of Bun.stdin.stream()) {
     const op = String.fromCharCode(msg[0]!)
     if (op === "q") process.exit(0)
     if (op === "i") {
-      const json = Buffer.from(JSON.stringify({ dim: DIM, images: true, vectorVersion: 1, batchTokens: 2048, maxSeqs: 64, maxInput: 2048 }))
+      const json = Buffer.from(JSON.stringify({ dim: DIM, vectorVersion: 1, batchTokens: 2048, maxSeqs: 64, maxInput: 2048 }))
       send([Buffer.from([0]), u32(json.length), json])
     } else if (op === "t") {
       const n = msg.readUInt32LE(1)

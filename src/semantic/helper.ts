@@ -20,7 +20,6 @@ export function embedToolPath(): string | null {
 
 export interface EmbedderInfo {
   dim: number
-  images: boolean
   vectorVersion: number
   batchTokens: number
   maxSeqs: number

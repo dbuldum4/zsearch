@@ -6,6 +6,7 @@ import type { Config } from "../src/config.ts"
 import { clearIndex, ContentState, decompressText, indexStats, loadVocabTerms, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
 import { crawl } from "../src/index/crawler.ts"
 import { crawlOptionsFor, Indexer, type IndexProgress } from "../src/index/indexer.ts"
+import { IndexRun } from "../src/index/client.ts"
 import { acquireLock, lockHolder } from "../src/index/lock.ts"
 import { FIXTURES, makeCorpus, homeConfig } from "./helpers/corpus.ts"
 import { ExtractPool } from "../src/index/pool.ts"
@@ -248,6 +249,28 @@ describe("threaded indexing (extraction workers, writer thread, extraction durin
     threaded.close()
   })
 
+  test("a run on its own thread stops during a long scan when cancelled", async () => {
+    const root = join(corpus.home, "many")
+    const total = 30_000
+    for (let d = 0; d < total / 500; d++) {
+      mkdirSync(join(root, `d${d}`), { recursive: true })
+      for (let f = 0; f < 500; f++) writeFileSync(join(root, `d${d}`, `f${f}.bin`), "")
+    }
+    try {
+      const data = join(corpus.home, ".zsearch-data")
+      const config = { ...homeConfig(), roots: [root] }
+      let run: IndexRun | null = null
+      run = new IndexRun(config, join(data, "cancel-scan.db"), join(data, "cancel-scan.lock"), {
+        onProgress: (p) => { if (p.phase === "scan") run?.cancel() },
+      })
+      const outcome = await run.done
+      expect(outcome.status).toBe("cancelled")
+      if (outcome.status === "cancelled") expect(outcome.progress.scanned).toBeLessThan(total)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   test("a run cancelled while storing contents is completed by the next one", async () => {
     const clean = fresh("clean.db")
     await index(clean)
@@ -393,6 +416,29 @@ describe("storage helpers", () => {
     writeFileSync(lock, "999999")
     const again = acquireLock(lock)
     expect(again).toBeFunction()
+    // held before the holder has written its pid
+    writeFileSync(lock, "")
+    expect(lockHolder(lock)).toBe(-1)
     again!()
+    expect(lockHolder(lock)).toBeNull()
+  })
+
+  test("probing the index lock never makes a writer fail", async () => {
+    const lock = join(corpus.home, ".zsearch-data", "probe.lock")
+    acquireLock(lock)!()
+    const probers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, "-e", `
+      const { lockHolder } = await import(${JSON.stringify(join(import.meta.dir, "../src/index/lock.ts"))})
+      const end = Date.now() + 1500
+      while (Date.now() < end) lockHolder(${JSON.stringify(lock)})
+    `], { stdout: "ignore", stderr: "inherit" }))
+    await Bun.sleep(300)
+    let failed = 0
+    for (let i = 0; i < 2000; i++) {
+      const release = acquireLock(lock)
+      if (release) release()
+      else failed++
+    }
+    await Promise.all(probers.map(p => p.exited))
+    expect(failed).toBe(0)
   })
 })

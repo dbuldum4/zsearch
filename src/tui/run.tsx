@@ -56,6 +56,8 @@ export async function runTui(opts: RunOptions): Promise<string | null> {
   )
   await closed
   services.search.close()
+  const slow = setTimeout(() => process.stderr.write("zsearch: waiting for the indexer to stop…\n"), 500)
   await services.dispose?.()
+  clearTimeout(slow)
   return selection
 }

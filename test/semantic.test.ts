@@ -17,7 +17,7 @@ import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/mod
 import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
-import { SemanticWorkers } from "../src/semantic/workers.ts"
+import { CutWorker } from "../src/semantic/workers.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
 
 describe("passages", () => {
@@ -215,9 +215,9 @@ describe("DigUp's ranking", () => {
   })
 })
 
-describe("Granite passage workers", () => {
-  test("cut batches just like the indexer, without an embedding model", async () => {
-    const workers = new SemanticWorkers(2)
+describe("Granite passage worker", () => {
+  test("cuts batches just like the indexer, without an embedding model", async () => {
+    const workers = new CutWorker()
     try {
       const text = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} is about the cat and the dog. `.repeat(8)).join("\n\n")
       const data = new Uint8Array([0, ...new TextEncoder().encode(text)])

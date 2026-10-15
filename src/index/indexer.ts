@@ -250,7 +250,7 @@ export class Indexer {
     try {
       setMeta(this.db, "indexing_started_at", String(this.progress.startedAt))
       this.sweepSecrets()
-      const removed = this.scan()
+      const removed = await this.scan()
       this.removed = new Set(removed)
       if (this.aborted) return this.finish("cancelled")
       await this.content()
@@ -325,7 +325,7 @@ export class Indexer {
   }
 
   /** Walk the roots, record new/changed files. Returns ids that disappeared. */
-  private scan(): number[] {
+  private async scan(): Promise<number[]> {
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
@@ -386,7 +386,13 @@ export class Indexer {
       this.startEarly(waiting)
       waiting = []
     }
+    let lastYield = Date.now()
     for (const e of crawl(crawlOpts, stats)) {
+      // The walk is synchronous: let a cancel message or a signal handler in now and then.
+      if (Date.now() - lastYield > 50) {
+        await new Promise((resolve) => setImmediate(resolve))
+        lastYield = Date.now()
+      }
       if (this.aborted) break
       this.progress.scanned++
       if ((this.progress.scanned & 255) === 0) {

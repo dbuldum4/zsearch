@@ -102,11 +102,14 @@ final class SearchModel {
         Edition.semanticOnly ? QueryFilters.semanticOnly(query) : query
     }
 
-    /// The engine binary: $ZSEARCH_ENGINE when set (development), else the one inside the app bundle.
+    /// The engine binary: in debug builds $ZSEARCH_ENGINE when set (`swift run`), else the one
+    /// inside the app bundle. A released app never runs a binary named by its environment.
     static func engineURL() -> URL? {
+        #if DEBUG
         if let path = ProcessInfo.processInfo.environment["ZSEARCH_ENGINE"], !path.isEmpty {
             return URL(fileURLWithPath: path)
         }
+        #endif
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/zsearch")
         return FileManager.default.isExecutableFile(atPath: bundled.path) ? bundled : nil
     }
