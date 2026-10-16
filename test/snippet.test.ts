@@ -40,18 +40,24 @@ describe("folded keyword search", () => {
   test("finds the same lines, highlights and counts as the accented pattern", () => {
     const rnd = random(20261015)
     const pick = <T>(xs: T[]) => xs[Math.floor(rnd() * xs.length)]!
+    // Half the texts have no combining marks.
+    const marked = /\p{M}/u
+    const plainWords = WORDS.filter((w) => !marked.test(w))
+    const plainGlue = GLUE.filter((g) => !marked.test(g) && !/[\ud800-\udfff]/.test(g))
     let fast = 0
+    let words = 0
     for (let round = 0; round < 800; round++) {
       const parts: string[] = []
       const n = 1 + Math.floor(rnd() * 120)
-      for (let k = 0; k < n; k++) parts.push(pick(WORDS), pick(GLUE))
+      const plain = rnd() < 0.5
+      for (let k = 0; k < n; k++) parts.push(pick(plain ? plainWords : WORDS), pick(plain ? plainGlue : GLUE))
       const text = parts.join("")
       const folded = foldText(text)
-      expect(folded.length).toBe(text.length)
+      expect(folded.text.length).toBe(text.length)
       for (let p = 0; p < 6; p++) {
-        const words = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => pick(QUERY))
+        const query = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => pick(QUERY))
         const phrases = rnd() < 0.2 ? [`${pick(QUERY)} ${pick(QUERY)}`] : []
-        const pattern = termsPattern(words, phrases, rnd() < 0.5)
+        const pattern = termsPattern(query, phrases, rnd() < 0.5)
         if (!pattern) continue
         const maxLines = 1 + Math.floor(rnd() * 5)
         const maxMatches = rnd() < 0.3 ? 1 + Math.floor(rnd() * 6) : 10_000
@@ -59,10 +65,28 @@ describe("folded keyword search", () => {
         const want = reference(text, pattern, maxLines, clip, maxMatches)
         const got = keywordLines(text, pattern, maxLines, clip, maxMatches, rnd() < 0.5 ? folded : undefined)
         if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`differs for ${JSON.stringify(pattern)} in ${JSON.stringify(text)}`)
-        if (/^[a-z0-9 ]+$/.test([...words, ...phrases].join(" "))) fast++
+        if (/^[a-z0-9 ]+$/.test([...query, ...phrases].join(" "))) {
+          fast++
+          if (!phrases.length) words++
+        }
       }
     }
     expect(fast).toBeGreaterThan(500)
+    expect(words).toBeGreaterThan(500)
   }, 30_000)
+
+  test("counts words right when a combining mark lets their matches overlap", () => {
+    // "note" matches before the mark in "note\u0308ſun", "notes" through it, and "sun" right after it.
+    const text = "note\u0308ſun x\nnotes\nnote sun\nnote\u0301s\nnotes notes"
+    const folded = foldText(text)
+    for (const [words, prefix] of [[["note", "notes"], true], [["notes", "sun"], true], [["note", "notes"], false], [["sun", "notes"], false]] as const) {
+      const pattern = termsPattern([...words], [], prefix)!
+      for (const maxLines of [1, 2, 10]) {
+        for (const f of [folded, undefined]) {
+          expect(keywordLines(text, pattern, maxLines, true, 10_000, f)).toEqual(reference(text, pattern, maxLines, true, 10_000))
+        }
+      }
+    }
+  })
 
 })

@@ -11,7 +11,7 @@ import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
-import { clipLine, diacriticPattern, findLines, foldText, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
+import { clipLine, diacriticPattern, findLines, type Folded, foldText, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { listFolder, noTextReason, pageStartsOf } from "./read.ts"
@@ -157,32 +157,33 @@ class TextCache {
     const old = this.map.get(id)
     if (old !== undefined) { this.chars -= old.length; this.map.delete(id) }
     const form = this.forms.get(id)
-    if (form !== undefined) { this.formChars -= form.length; this.forms.delete(id) }
+    if (form !== undefined) { this.formChars -= form.text.length; this.forms.delete(id) }
   }
 
   /**
    * Folded forms of texts (see `foldText`), least recently used first: a text's snippets are
-   * found again in its folded form, without folding it again. One byte a character.
+   * found again in its folded form, without folding it again, and its words are counted once.
+   * One byte a character.
    */
-  private forms = new Map<number, string>()
+  private forms = new Map<number, Folded>()
   private formChars = 0
 
-  folded(id: number, text: string): string {
+  folded(id: number, text: string): Folded {
     const cached = this.forms.get(id)
-    if (cached !== undefined && cached.length === text.length) {
+    if (cached !== undefined && cached.text.length === text.length) {
       this.forms.delete(id)
       this.forms.set(id, cached)
       return cached
     }
     const form = foldText(text)
     if (text.length > this.maxChars / 8) return form
-    if (cached !== undefined) { this.formChars -= cached.length; this.forms.delete(id) }
+    if (cached !== undefined) { this.formChars -= cached.text.length; this.forms.delete(id) }
     this.forms.set(id, form)
-    this.formChars += form.length
+    this.formChars += text.length
     for (const [k, v] of this.forms) {
       if (this.formChars <= this.maxChars) break
       this.forms.delete(k)
-      this.formChars -= v.length
+      this.formChars -= v.text.length
     }
     return form
   }
