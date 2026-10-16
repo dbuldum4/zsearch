@@ -53,6 +53,18 @@ export class SearchClient {
       this.restart(`search worker crashed: ${(ev as ErrorEvent).message}`)
     }
     this.post({ type: "init", dbPath: this.dbPath, config: this.config })
+    if (this.semanticKept) this.post({ type: "keepSemantic" })
+  }
+
+  private semanticKept = false
+
+  /**
+   * Have the query model running and the vectors loaded before semantic searches, from a quiet
+   * second after start-up on, rather than start them on the first and stop them when idle.
+   */
+  keepSemanticReady() {
+    this.semanticKept = true
+    this.post({ type: "keepSemantic" })
   }
 
   private restart(reason: string) {

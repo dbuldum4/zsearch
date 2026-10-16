@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
 import type { Kind } from "../kinds.ts"
 import { foldTerm } from "../util/text.ts"
+import { scoreAll } from "./blas.ts"
 import { queryPrompt } from "./chunk.ts"
 import type { TextEmbedder } from "./helper.ts"
 import { SCALE_PASSAGES } from "./indexer.ts"
@@ -155,6 +156,11 @@ export interface Ranked {
   z: number | null
 }
 
+/** The share of a query's words a file must hold to be a candidate by its words. */
+export function coverageGate(R: Ranking, hasMeaning: boolean, terms: number): number {
+  return hasMeaning ? 0.5 : Math.min(0.5, (R.keywordCover ?? Infinity) / Math.max(terms, 1))
+}
+
 /**
  * Score the candidates: files whose best passage stands out (`best`), and files holding at least
  * half of the query's words (`coverage`, 0..1). Finite name evidence helps find saved files
@@ -171,7 +177,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   const namePower = hasMeaning ? (R.namePower ?? 1) : 1
   const everyWord = hasMeaning ? R.everyWord : (R.keywordEveryWord ?? R.everyWord)
   const strength = hasMeaning ? R.strength : (R.keywordStrength ?? R.strength)
-  const gate = hasMeaning ? 0.5 : Math.min(0.5, (R.keywordCover ?? Infinity) / Math.max(opts.terms ?? 1, 1))
+  const gate = coverageGate(R, hasMeaning, opts.terms ?? 1)
   const [meaningWeight, baseWordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
   const wordsWeight = baseWordsWeight * coverageWeight
   const candidates = new Set<number>()
@@ -222,7 +228,8 @@ export class VectorIndex {
   vector = new Int32Array(0)
   modality = new Uint8Array(0)
   setsScale = new Uint8Array(0)
-  private values = new Float16Array(0)
+  /** Stored as 16-bit floats, held as 32-bit ones: twice the memory, scored in about half the time. */
+  private values = new Float32Array(0)
   private distinct = 0
 
   get size(): number {
@@ -265,8 +272,8 @@ export class VectorIndex {
     v.vector = Int32Array.from(rows, (_, i) => i)
     v.modality = new Uint8Array(n)
     v.setsScale = new Uint8Array(n)
-    v.values = new Float16Array(n * v.dim)
-    rows.forEach((r, i) => v.values.set(r.vector, i * v.dim))
+    v.values = new Float32Array(n * v.dim)
+    rows.forEach((r, i) => v.values.set(Float16Array.from(r.vector), i * v.dim))
     v.distinct = n
     return v
   }
@@ -276,7 +283,7 @@ export class VectorIndex {
     const index = new Map<string, number>()
     const vecs = db.query("SELECT hash, vec FROM vectors").values() as [Uint8Array, Uint8Array][]
     v.dim = vecs.length ? vecs[0]![1].length / 2 : 0
-    v.values = new Float16Array(vecs.length * v.dim)
+    v.values = new Float32Array(vecs.length * v.dim)
     let k = 0
     for (const [hash, vec] of vecs) {
       const values = vectorValues(vec, v.dim)
@@ -317,7 +324,7 @@ export class VectorIndex {
     const dim = this.dim
     const distinct = this.distinct
     const byVector = new Float32Array(distinct)
-    if (query.length === dim) {
+    if (query.length === dim && !scoreAll(this.values, distinct, dim, query, byVector)) {
       const values = this.values
       for (let k = 0; k < distinct; k++) {
         let s = 0
@@ -427,7 +434,8 @@ export class QueryEmbedder {
   private idle: ReturnType<typeof setTimeout> | null = null
   private cache = new Map<string, Float32Array>()
 
-  constructor(private start: () => TextEmbedder, private idleMs = 120_000) {}
+  /** `idleMs`: Infinity keeps the model running until `close` (from the next query on). */
+  constructor(private start: () => TextEmbedder, public idleMs = 120_000) {}
 
   async embed(text: string): Promise<Float32Array> {
     const key = text.trim().replace(/\s+/g, " ")
@@ -445,9 +453,32 @@ export class QueryEmbedder {
       this.embedder = null
       throw err
     } finally {
-      this.idle = setTimeout(() => this.close(), this.idleMs)
-      this.idle.unref?.()
+      this.stopWhenIdle()
     }
+  }
+
+  /** Start the model now, if it isn't running, so that the next query need not wait for it to load. */
+  async warm(): Promise<void> {
+    if (this.embedder) return
+    const embedder = (this.embedder = this.start())
+    if (this.idle) clearTimeout(this.idle)
+    try {
+      await embedder.embedTexts([queryPrompt("warm up")])
+    } catch {
+      embedder.kill()
+      if (this.embedder === embedder) this.embedder = null
+    } finally {
+      this.stopWhenIdle()
+    }
+  }
+
+  private stopWhenIdle() {
+    if (this.idle) clearTimeout(this.idle)
+    this.idle = null
+    // setTimeout runs at once for delays past 2^31-1 ms.
+    if (!Number.isFinite(this.idleMs)) return
+    this.idle = setTimeout(() => this.close(), this.idleMs)
+    this.idle.unref?.()
   }
 
 

@@ -56,6 +56,8 @@ export class Embedder implements TextEmbedder {
   private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }> }
   private buf: Uint8Array = new Uint8Array(0)
   private queue: Promise<unknown> = Promise.resolve()
+  /** Requests written or waiting to be. */
+  private busy = 0
   private stderr = ""
   private closed = false
   readonly exited: Promise<number>
@@ -118,6 +120,9 @@ export class Embedder implements TextEmbedder {
 
   private request<T>(parts: Uint8Array[], parse: (msg: Uint8Array, view: DataView) => T): Promise<T> {
     const run = async () => {
+      try { return await send() } finally { this.busy-- }
+    }
+    const send = async () => {
       if (this.closed) throw new Error("the embedding helper was closed")
       let len = 0
       for (const p of parts) len += p.length
@@ -139,7 +144,10 @@ export class Embedder implements TextEmbedder {
       if (msg[0] !== 0) throw new Error(decoder.decode(msg.subarray(5, 5 + view.getUint32(1, true))))
       return parse(msg, view)
     }
-    const next = this.queue.then(run, run)
+    // With nothing in flight, write the request now rather than in a microtask: the helper
+    // starts on it while the caller goes on with other work in the same tick. `busy` drops
+    // before the answer is handed back, so a request made right after it is written at once too.
+    const next = this.busy++ ? this.queue.then(run, run) : run()
     this.queue = next.catch(() => {})
     return next
   }

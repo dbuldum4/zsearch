@@ -11,7 +11,7 @@ import { Catalog } from "./catalog.ts"
 import { parseFuzzyTerms } from "./fuzzy.ts"
 import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } from "./query.ts"
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
-import { clipLine, diacriticPattern, findLines, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
+import { clipLine, diacriticPattern, findLines, type Folded, foldText, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { listFolder, noTextReason, pageStartsOf } from "./read.ts"
@@ -20,7 +20,7 @@ import { retryClock, type RetryClock } from "../util/clock.ts"
 import { availableParallelism } from "node:os"
 import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel } from "../semantic/model.ts"
-import { bestByFile, CODE_WORD_WEIGHT, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT } from "../semantic/search.ts"
+import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { mainGeneration } from "../semantic/indexer.ts"
 
@@ -149,11 +149,43 @@ class TextCache {
   clear() {
     this.map.clear()
     this.chars = 0
+    this.forms.clear()
+    this.formChars = 0
   }
 
   delete(id: number) {
     const old = this.map.get(id)
     if (old !== undefined) { this.chars -= old.length; this.map.delete(id) }
+    const form = this.forms.get(id)
+    if (form !== undefined) { this.formChars -= form.text.length; this.forms.delete(id) }
+  }
+
+  /**
+   * Folded forms of texts (see `foldText`), least recently used first: a text's snippets are
+   * found again in its folded form, without folding it again, and its words are counted once.
+   * One byte a character.
+   */
+  private forms = new Map<number, Folded>()
+  private formChars = 0
+
+  folded(id: number, text: string): Folded {
+    const cached = this.forms.get(id)
+    if (cached !== undefined && cached.text.length === text.length) {
+      this.forms.delete(id)
+      this.forms.set(id, cached)
+      return cached
+    }
+    const form = foldText(text)
+    if (text.length > this.maxChars / 8) return form
+    if (cached !== undefined) { this.formChars -= cached.text.length; this.forms.delete(id) }
+    this.forms.set(id, form)
+    this.formChars += text.length
+    for (const [k, v] of this.forms) {
+      if (this.formChars <= this.maxChars) break
+      this.forms.delete(k)
+      this.formChars -= v.text.length
+    }
+    return form
   }
 
   get full(): boolean {
@@ -418,8 +450,30 @@ export class SearchEngine {
       const files = installedModel(GRANITE)
       if (!tool || !files) return null
       this.queryEmbedder = new QueryEmbedder(() => new Embedder({ tool, model: files[0]!, pooling: "cls", threads: Math.min(4, availableParallelism()), batchTokens: 2048, maxSeqs: 16 }))
+      if (this.keepSemantic) this.queryEmbedder.idleMs = Infinity
     }
     return (text) => this.queryEmbedder!.embed(text)
+  }
+
+  private keepSemantic = false
+
+  /** Keep the query model running while idle (see `warmSemantic`), rather than stop it after two minutes. */
+  keepSemanticReady() {
+    this.keepSemantic = true
+    if (this.queryEmbedder) this.queryEmbedder.idleMs = Infinity
+  }
+
+  /**
+   * Start the query model and load the vectors, if semantic search is on and ready, so that the
+   * next semantic search waits for neither. Loads the vectors again if the semantic index changed.
+   */
+  async warmSemantic(): Promise<void> {
+    if (!this.config.semantic.enabled || !this.config.content.enabled || !this.db.filename) return
+    if (this.embedQuery === undefined && !installedModel(GRANITE)) return
+    const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename)))
+    const index = vectors.get(mainGeneration(this.db), getMeta(this.db, "change_seq") ?? "0")
+    if (!index?.size || this.embedQuery !== undefined || !this.queryVectorFn()) return
+    await this.queryEmbedder!.warm()
   }
 
   /** How semantic results are put together (benchmarks try others). */
@@ -450,6 +504,8 @@ export class SearchEngine {
 
     // Query only a complete, current Granite snapshot. Words remain available during indexing.
     let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+    // The helper embeds the query in its own process while the words below are looked up.
+    let embedding: { vector: Promise<Float32Array>; index: VectorIndex } | null = null
     if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
     else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
     else {
@@ -465,16 +521,10 @@ export class SearchEngine {
         if (text.trim()) notices.push("Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches")
       } else if (text.trim()) {
         const embed = this.queryVectorFn()!
-        try {
-          const vector = await embed(text)
-          if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
-          best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale), (file) => {
-            const i = usable(file)
-            return i !== undefined && this.contentAuthorized(i, check)
-          }, this.ranking)
-        } catch (err) {
-          notices.push(`Semantic search failed (${(err as Error).message}). Showing word matches`)
-        }
+        let vector: Promise<Float32Array>
+        try { vector = embed(text) } catch (err) { vector = Promise.reject(err) }
+        vector.catch(() => {})
+        embedding = { vector, index }
       }
     }
 
@@ -510,30 +560,100 @@ export class SearchEngine {
       if (ok === undefined) contentOk.set(id, (ok = this.contentAuthorized(i, check)))
       return ok
     }
-    const sets: Set<number>[] = []
-    const weighted = new Map<number, number>()
-    terms.forEach((term, t) => {
-      // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
-      const stem = stemOf(term)
-      const prefix = stem !== term || (q.typing && t === terms.length - 1)
-      const has = new Set<number>()
-      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { has.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
-      if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) {
-        if (has.has(id)) continue
-        const i = usable(id)
-        if (i !== undefined && canRead(id, i)) { has.add(id); bodyMatch.add(id) }
-      }
-      sets.push(has)
-    })
-    // Without vectors, rare words count for more of a file's coverage (whether it matches at all still counts words).
-    const idf = sets.map((h) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(h.size, 1)))
-    const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
-    sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
-    // Words after `-` or `!` rule a file out.
-    for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
-      for (const id of matching("{name dirs}", n, false)) { best.delete(id); coverage.delete(id); named.delete(id) }
-      for (const id of matching("body", n, false)) { best.delete(id); coverage.delete(id) }
+    const readable = (id: number) => {
+      const i = cat.indexOf(id)
+      return i !== undefined && canRead(id, i)
     }
+    // Each word's files: by name or folders, and (not yet checked for content authorization) by text alone.
+    const byName: Set<number>[] = []
+    const byText: Set<number>[] = []
+    // Words after `-` or `!` rule a file out.
+    const negatedNames = new Set<number>()
+    const negatedText = new Set<number>()
+    const lookUpWords = () => {
+      byName.length = 0
+      byText.length = 0
+      nameMatch.clear()
+      named.clear()
+      negatedNames.clear()
+      negatedText.clear()
+      terms.forEach((term, t) => {
+        // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
+        const stem = stemOf(term)
+        const prefix = stem !== term || (q.typing && t === terms.length - 1)
+        const names = new Set<number>()
+        for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { names.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
+        const body = new Set<number>()
+        if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) if (!names.has(id) && usable(id) !== undefined) body.add(id)
+        byName.push(names)
+        byText.push(body)
+      })
+      for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
+        for (const id of matching("{name dirs}", n, false)) negatedNames.add(id)
+        for (const id of matching("body", n, false)) negatedText.add(id)
+      }
+    }
+    const revision = this.revision
+    const config = this.config
+    lookUpWords()
+
+    if (embedding) {
+      try {
+        const vector = await embedding.vector
+        if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
+        const index = embedding.index
+        // Content authorization is checked below, only for the files it can change the results of.
+        best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale), (file) => usable(file) !== undefined, this.ranking)
+      } catch (err) {
+        notices.push(`Semantic search failed (${(err as Error).message}). Showing word matches`)
+      }
+      // The worker may have taken in an index update or new settings while the query was
+      // embedded: the words found before it would match files by text they no longer hold.
+      if (this.revision !== revision || this.config !== config) lookUpWords()
+    }
+    for (const id of negatedNames) best.delete(id)
+    for (const id of negatedText) best.delete(id)
+    // A file the user may not read by content has no meaning match. Those that stand out are
+    // checked now; the rest only matter if a word match makes them a candidate, or if no file
+    // would be left to say the query has meaning matches at all.
+    let meaningful = false
+    for (const [file, b] of best) {
+      if (b.z < Z_GATE) continue
+      if (readable(file)) meaningful = true
+      else best.delete(file)
+    }
+    if (!meaningful) for (const file of best.keys()) if (readable(file)) { meaningful = true; break }
+    if (!meaningful) best = new Map()
+
+    const weighted = new Map<number, number>()
+    if (best.size && !(this.ranking.strength > 0)) {
+      // Only candidates' coverage counts: files that stand out by meaning, and files that could
+      // hold enough of the words (counting text matches the user may not read, as an upper bound).
+      const gate = this.ranking.words > 0 ? coverageGate(this.ranking, true, terms.length) : Infinity
+      const share = new Map<number, number>()
+      for (let t = 0; t < terms.length; t++) for (const set of [byName[t]!, byText[t]!]) for (const id of set) share.set(id, (share.get(id) ?? 0) + 1)
+      const candidate = new Set<number>()
+      for (const [id, n] of share) if (n / terms.length >= gate - 1e-9) candidate.add(id)
+      for (const [file, b] of best) if (b.z >= Z_GATE) candidate.add(file)
+      for (let t = 0; t < terms.length; t++) {
+        for (const id of byName[t]!) if (candidate.has(id)) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
+        for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length) }
+      }
+      for (const id of candidate) if (best.has(id) && !readable(id)) best.delete(id)
+    } else {
+      for (const [file] of best) if (!readable(file)) best.delete(file)
+      const sets = terms.map((_, t) => {
+        const has = new Set(byName[t])
+        for (const id of byText[t]!) if (readable(id)) { has.add(id); bodyMatch.add(id) }
+        return has
+      })
+      // Without vectors, rare words count for more of a file's coverage (whether it matches at all still counts words).
+      const idf = sets.map((h) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(h.size, 1)))
+      const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
+      sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
+    }
+    for (const id of negatedNames) { coverage.delete(id); named.delete(id) }
+    for (const id of negatedText) coverage.delete(id)
 
     // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
     const strength = new Map<number, number>()
@@ -1113,7 +1233,7 @@ export class SearchEngine {
     const text = this.storedText(id)
     if (text === null) return { lines: [], count: 0 }
     try {
-      return keywordLines(text, pattern, maxLines)
+      return keywordLines(text, pattern, maxLines, true, 10_000, this.texts.folded(id, text))
     } catch {
       return { lines: [], count: 0 }
     }

@@ -13,6 +13,9 @@ export class Vocab {
   private count = 0
   maxId = 0
   private byLen = new Map<number, string[]>()
+  /** Long words (see `isLongWord`), in vocabulary order, and their positions sorted by word. */
+  private longs: string[] = []
+  private longOrder: number[] | null = null
 
   get size() {
     return this.count
@@ -25,6 +28,8 @@ export class Vocab {
       this.count = 0
       this.maxId = 0
       this.byLen.clear()
+      this.longs = []
+      this.longOrder = null
     }
     const chunks = readVocabChunks(db, this.maxId)
     if (!chunks.length) return
@@ -36,7 +41,7 @@ export class Vocab {
         parts.push(term)
         off += term.length + 1
         // Hashes and the like are never what a typo meant.
-        if (isLongWord(term)) continue
+        if (isLongWord(term)) { this.longs.push(term); this.longOrder = null; continue }
         let bucket = this.byLen.get(term.length)
         if (!bucket) this.byLen.set(term.length, (bucket = []))
         bucket.push(term)
@@ -88,19 +93,25 @@ export class Vocab {
   /** Long words (see `isLongWord`) starting with `prefix`. null when there are more than `limit`. */
   longStartingWith(prefix: string, limit = 64): string[] | null {
     if (!prefix || prefix.includes("\n")) return []
-    const out: string[] = []
-    const needle = `\n${prefix}`
-    let i = this.joined.indexOf(needle)
-    while (i >= 0) {
-      const end = this.joined.indexOf("\n", i + 1)
-      const term = this.joined.slice(i + 1, end)
-      if (isLongWord(term)) {
-        if (out.length >= limit) return null
-        out.push(term)
-      }
-      i = this.joined.indexOf(needle, end)
+    if (!this.longOrder) {
+      const longs = this.longs
+      this.longOrder = longs.map((_, k) => k).sort((a, b) => (longs[a]! < longs[b]! ? -1 : longs[a]! > longs[b]! ? 1 : a - b))
     }
-    return out
+    const order = this.longOrder
+    let lo = 0
+    let hi = order.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (this.longs[order[mid]!]! < prefix) lo = mid + 1
+      else hi = mid
+    }
+    const found: number[] = []
+    for (let k = lo; k < order.length && this.longs[order[k]!]!.startsWith(prefix); k++) {
+      if (found.length >= limit) return null
+      found.push(order[k]!)
+    }
+    // In the order they were indexed in, as a scan of the vocabulary finds them.
+    return found.sort((a, b) => a - b).map((k) => this.longs[k]!)
   }
 
   /** Terms within edit distance (1 for 4-7 letters, 2 for 8+). */

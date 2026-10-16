@@ -59,6 +59,7 @@ export function realServices(config: Config): Services {
   const p = paths()
   let clipboard: ClipboardService | null = null
   const client = new SearchClient(p.db, config)
+  client.keepSemanticReady()
   let baseline = structuredClone(config)
   let live: IndexRun | null = null
   // Every run this UI started, so quitting can stop them and let them kill their helpers.
