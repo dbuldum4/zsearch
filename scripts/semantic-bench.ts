@@ -1,25 +1,38 @@
 #!/usr/bin/env bun
 /**
- * Semantic search on a public retrieval benchmark (BEIR's format), at every stage of indexing and
- * with several ways of putting words and meaning together.
+ * Semantic search on a public retrieval benchmark (BEIR's format), words only and with complete
+ * Granite, under several ways of putting words and meaning together.
  *
- *   bun run scripts/semantic-bench.ts --dataset=~/beir/scifact          # the installed models
- *   bun run scripts/semantic-bench.ts --dataset=DIR --word-vectors=vecs.txt
- *   bun run scripts/semantic-bench.ts --dataset=DIR --queries=200 --docs=20000 --json=out.json
+ *   bun scripts/bench-data.ts scifact                          # fetch a set (see --list there)
+ *   bun scripts/semantic-bench.ts --dataset=~/Library/Caches/zsearch-bench/scifact
+ *   bun scripts/semantic-bench.ts --dataset=DIR --queries=300 --pipelines=current,model --json=out.json
  *
  * A dataset is a folder with `corpus.jsonl` ({_id, title, text}), `queries.jsonl` ({_id, text}) and
- * `qrels/test.tsv` (query-id, corpus-id, score), as BEIR's downloads have them
- * (https://github.com/beir-cellar/beir). Each document becomes a file in a home folder, named by
- * its title (as people name their files), holding its text.
+ * `qrels/test.tsv` (query-id, corpus-id, score), as BEIR's downloads have them, and optionally the
+ * `meta.json` `bench-data.ts` writes (the extension documents are saved with, how they are named,
+ * and MTEB's published score for Granite small). Each document becomes a file in a home folder:
+ * named by its title (`--names=title`, as people name saved papers and mail) or by its id
+ * (`--names=id`, so names say nothing; the default when the set has no titles).
  *
- * Stages: words only (no model) and complete Granite. Granite's stages run with the real Granite when it and
- * zsearch-embed are installed (on a Mac with the app: ZSEARCH_EMBED=/Applications/zsearch.app/
- * Contents/Helpers/zsearch-embed); with `--word-vectors` and no Granite, the stand-in plays Granite
- * (which tests the pipeline, not Granite quality). `--no-granite` skips Granite.
+ * Pipelines (`--pipelines=a,b`, default all):
+ *   current       zsearch's ranking (RANKING)
+ *   model         the model alone: each file's best passage, no gate, discount, words or names;
+ *                 the closest to how MTEB scores the model (it embeds whole documents instead)
+ *   meaning       meaning only, with zsearch's gate and length/shared discounts
+ *   bm25          current + keyword search's BM25 order of the word matches
+ *   no-name       current without the name boost
+ *   no-discount   current without the length and shared-passage discounts
+ *   rrf           reciprocal rank fusion of the word and meaning orders
+ *   digup         DigUp's ranking
+ * and without a model: words, words-plain (no BM25 order or coverage weights), words-no-name.
+ * `--no-granite` runs only the word pipelines.
  *
- * Scores: nDCG@10, MRR@10 and recall@100, over the queries with judged documents.
+ * Scores: nDCG@10, MRR@10 and recall@100 over the queries with judged documents (a document with the
+ * query's own id is skipped, as BEIR's evaluation does), the share of
+ * queries with no results, and milliseconds per query. `--json` also keeps every query's scores,
+ * for `bench-compare.ts`.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
@@ -37,18 +50,29 @@ const dataset = (args.get("dataset") ?? "").replace(/^~/, process.env.HOME ?? "~
 if (!dataset) throw new Error("--dataset=DIR is required")
 const maxQueries = Number(args.get("queries") ?? Infinity)
 const maxDocs = Number(args.get("docs") ?? Infinity)
+const meta = existsSync(join(dataset, "meta.json")) ? JSON.parse(readFileSync(join(dataset, "meta.json"), "utf8")) as { ext?: string; names?: "title" | "id"; reference?: { ndcg: number; recall: number; task: string } | null } : {}
+const ext = meta.ext ?? "txt"
 
-/** The ways of ranking compared at each stage with a model. */
+/** The ways of ranking compared with a model. */
 const PIPELINES: Record<string, Ranking> = {
-  "DigUp (main)": DIGUP_RANKING,
-  "this PR": RANKING,
-  "this PR + BM25 order": { ...RANKING, strength: 0.5 },
-  "this PR, no name boost": { ...RANKING, name: 0 },
-  "this PR, no length/shared discount": { ...RANKING, length: 0, shared: 0 },
-  "meaning and words added (DigUp + discounts, names)": { ...RANKING, everyWord: 0, coverage: 1 },
-  "reciprocal rank fusion": { ...RANKING, fusion: "rrf" },
-  "meaning only": { ...RANKING, words: 0 },
+  current: RANKING,
+  model: { ...RANKING, words: 0, length: 0, shared: 0, zGate: -Infinity },
+  meaning: { ...RANKING, words: 0 },
+  bm25: { ...RANKING, strength: 0.5 },
+  "no-name": { ...RANKING, name: 0 },
+  "no-discount": { ...RANKING, length: 0, shared: 0 },
+  rrf: { ...RANKING, fusion: "rrf" },
+  digup: DIGUP_RANKING,
 }
+/** ...and without one. */
+const WORD_PIPELINES: Record<string, Ranking> = {
+  words: RANKING,
+  "words-plain": { ...RANKING, keywordCoverage: 0, keywordStrength: 0, keywordCover: undefined },
+  "words-no-name": { ...RANKING, keywordName: 0 },
+}
+const selected = args.get("pipelines")?.split(",")
+for (const name of selected ?? []) if (!PIPELINES[name] && !WORD_PIPELINES[name]) throw new Error(`unknown pipeline ${name}`)
+const pick = (all: Record<string, Ranking>) => Object.fromEntries(Object.entries(all).filter(([name]) => !selected || selected.includes(name)))
 
 /* ------------------------------------------------------------ the data -- */
 
@@ -65,14 +89,16 @@ const kept = new Set(docs.map((d) => d._id!))
 const queries = readJsonl(join(dataset, "queries.jsonl"))
   .filter((q) => [...(qrels.get(q._id!)?.keys() ?? [])].some((d) => kept.has(d)))
   .slice(0, maxQueries)
+const names = (args.get("names") ?? meta.names ?? (docs.some((d) => d.title) ? "title" : "id")) as "title" | "id"
+if (names !== "title" && names !== "id") throw new Error("--names must be title or id")
 
-/** A file name of a title: what a person might have saved it as. */
+/** A file name for a document: its title, as a person might have saved it, or its id. */
 const used = new Set<string>()
 function fileName(doc: Record<string, string>): string {
-  let stem = (doc.title || doc._id!).replace(/[/\\:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80).trim() || doc._id!
+  let stem = (names === "title" && doc.title ? doc.title : doc._id!).replace(/[/\\:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80).trim() || doc._id!
   if (used.has(stem.toLowerCase())) stem = `${stem} (${doc._id})`
   used.add(stem.toLowerCase())
-  return `${stem}.txt`
+  return `${stem}.${ext}`
 }
 
 /* ----------------------------------------------------------- the models -- */
@@ -99,7 +125,11 @@ function scores(ranked: string[], rel: Map<string, number>) {
 
 const home = mkdtempSync(join(process.env.ZSEARCH_BENCH_TMP || tmpdir(), "zsearch-bench-"))
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
-const results: { stage: string; pipeline: string; ndcg: number; mrr: number; recall: number; ms: number }[] = []
+type Row = { stage: string; pipeline: string; ndcg: number; mrr: number; recall: number; empty: number; ms: number }
+const results: Row[] = []
+/** Per query, per pipeline: nDCG@10, MRR@10, recall@100. */
+const perQuery: Record<string, Record<string, [number, number, number]>> = {}
+const timing: Record<string, number> = {}
 try {
   process.env.HOME = home
   process.env.ZSEARCH_HOME = join(home, ".zsearch-data")
@@ -118,46 +148,47 @@ try {
   const db = openDb(join(home, ".zsearch-data", "index.db"))
   let t = performance.now()
   await new Indexer(db, config, { inProcess: true }).run()
-  console.error(`indexed ${docs.length} documents in ${((performance.now() - t) / 1000).toFixed(1)} s; ${queries.length} queries`)
+  timing.indexSeconds = (performance.now() - t) / 1000
+  console.error(`${dataset}: ${docs.length} documents as .${ext} named by ${names}, indexed in ${timing.indexSeconds.toFixed(1)} s; ${queries.length} queries`)
 
   const run = async (stage: string, engine: SearchEngine, pipelines: Record<string, Ranking>) => {
     for (const [pipeline, ranking] of Object.entries(pipelines)) {
       engine.ranking = ranking
+      // The query vectors are cached after the first pipeline: time the rest without the model.
       const t0 = performance.now()
-      const sum = { ndcg: 0, mrr: 0, recall: 0 }
+      const sum = { ndcg: 0, mrr: 0, recall: 0, empty: 0 }
       for (const q of queries) {
         const res = await engine.search(q.text!, "semantic", { limit: 100 })
-        const s = scores(res.hits.map((h) => idOf.get(h.display) ?? h.display), qrels.get(q._id!)!)
-        sum.ndcg += s.ndcg; sum.mrr += s.mrr; sum.recall += s.recall
+        if (res.error) throw new Error(`${q._id}: ${res.error}`)
+        // As BEIR's evaluation: a document with the query's own id is the query (ArguAna), not a result.
+        const s = scores(res.hits.map((h) => idOf.get(h.display) ?? h.display).filter((id) => id !== q._id), qrels.get(q._id!)!)
+        sum.ndcg += s.ndcg; sum.mrr += s.mrr; sum.recall += s.recall; sum.empty += res.hits.length ? 0 : 1
+        ;(perQuery[q._id!] ??= {})[pipeline] = [+s.ndcg.toFixed(4), +s.mrr.toFixed(4), +s.recall.toFixed(4)]
       }
       const n = Math.max(queries.length, 1)
-      const row = { stage, pipeline, ndcg: sum.ndcg / n, mrr: sum.mrr / n, recall: sum.recall / n, ms: (performance.now() - t0) / n }
+      const row = { stage, pipeline, ndcg: sum.ndcg / n, mrr: sum.mrr / n, recall: sum.recall / n, empty: sum.empty / n, ms: (performance.now() - t0) / n }
       results.push(row)
-      console.log(`${stage.padEnd(26)} ${pipeline.padEnd(52)} nDCG@10 ${row.ndcg.toFixed(3)}  MRR@10 ${row.mrr.toFixed(3)}  R@100 ${row.recall.toFixed(3)}  ${row.ms.toFixed(0)} ms`)
+      console.log(`${stage.padEnd(8)} ${pipeline.padEnd(14)} nDCG@10 ${row.ndcg.toFixed(3)}  MRR@10 ${row.mrr.toFixed(3)}  R@100 ${row.recall.toFixed(3)}  empty ${(row.empty * 100).toFixed(1)}%  ${row.ms.toFixed(0)} ms`)
     }
   }
-  const engineWith = () => {
-    const e = new SearchEngine(db, config)
-    if (!graniteReal) e.embedQuery = async (text) => (await standIn!.embedTexts([text])).vectors
-    return e
-  }
 
-  // Words only.
   const words = new SearchEngine(db, config)
   words.embedQuery = null
-  await run("words only", words, { "words only": RANKING, "words only, without BM25 order and coverage": { ...RANKING, keywordCoverage: 0, keywordStrength: 0, keywordCover: undefined }, "words only, no name boost": { ...RANKING, keywordName: 0 } })
+  await run("words", words, pick(WORD_PIPELINES))
 
-  if (granite) {
+  if (granite && Object.keys(pick(PIPELINES)).length) {
     t = performance.now()
     const full = await new SemanticIndexer(db, config, graniteReal ? tool : null, graniteReal ? {} : { embedder: () => standIn!, vectorVersion: 2 }).run()
     if (full.status !== "done") throw new Error(`Granite's pass: ${full.status} ${full.error ?? ""}`)
-    console.error(`Granite (${granite}) read them in ${((performance.now() - t) / 1000).toFixed(1)} s`)
-    const label = granite === "real" ? "Granite" : "Granite (stand-in)"
-    const engine = engineWith()
-    try { await run(label, engine, PIPELINES) } finally { engine.closeSemantic() }
-
+    timing.graniteSeconds = (performance.now() - t) / 1000
+    timing.passages = full.embedded + full.reused
+    console.error(`Granite (${granite}) read them in ${timing.graniteSeconds.toFixed(1)} s (${full.embedded} passages embedded, ${full.reused} reused)`)
+    const engine = new SearchEngine(db, config)
+    if (!graniteReal) engine.embedQuery = async (text) => (await standIn!.embedTexts([text])).vectors
+    try { await run(granite === "real" ? "granite" : "stand-in", engine, pick(PIPELINES)) } finally { engine.closeSemantic() }
   }
-  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ dataset, docs: docs.length, queries: queries.length, granite, results }, null, 2))
+  if (meta.reference) console.log(`MTEB, Granite small alone (${meta.reference.task}): nDCG@10 ${meta.reference.ndcg.toFixed(3)}  R@100 ${meta.reference.recall.toFixed(3)}`)
+  if (args.get("json")) writeFileSync(args.get("json")!, JSON.stringify({ dataset, docs: docs.length, queries: queries.length, names, ext, granite, reference: meta.reference ?? null, timing, results, perQuery }, null, 2))
   db.close()
 } finally {
   standIn?.close()

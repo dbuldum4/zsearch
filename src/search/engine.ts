@@ -616,9 +616,10 @@ export class SearchEngine {
     // A file the user may not read by content has no meaning match. Those that stand out are
     // checked now; the rest only matter if a word match makes them a candidate, or if no file
     // would be left to say the query has meaning matches at all.
+    const zGate = this.ranking.zGate ?? Z_GATE
     let meaningful = false
     for (const [file, b] of best) {
-      if (b.z < Z_GATE) continue
+      if (b.z < zGate) continue
       if (readable(file)) meaningful = true
       else best.delete(file)
     }
@@ -634,7 +635,7 @@ export class SearchEngine {
       for (let t = 0; t < terms.length; t++) for (const set of [byName[t]!, byText[t]!]) for (const id of set) share.set(id, (share.get(id) ?? 0) + 1)
       const candidate = new Set<number>()
       for (const [id, n] of share) if (n / terms.length >= gate - 1e-9) candidate.add(id)
-      for (const [file, b] of best) if (b.z >= Z_GATE) candidate.add(file)
+      for (const [file, b] of best) if (b.z >= zGate) candidate.add(file)
       for (let t = 0; t < terms.length; t++) {
         for (const id of byName[t]!) if (candidate.has(id)) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
         for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length) }

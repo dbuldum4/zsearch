@@ -44,6 +44,8 @@ export interface Ranking {
   keywordStrength?: number
   /** Without model vectors, a long query's file is a word match with this many of its words (else half). */
   keywordCover?: number
+  /** How far a best passage must stand out to make its file a candidate (default `Z_GATE`). At -Infinity every file is ranked by its meaning, below-average ones too (benchmarks of the model alone). */
+  zGate?: number
 }
 
 export const RANKING: Ranking = {
@@ -170,7 +172,7 @@ export function coverageGate(R: Ranking, hasMeaning: boolean, terms: number): nu
  */
 export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more, used without vectors. */ weighted?: Map<number, number> }): Ranked[] {
   const R = opts.ranking ?? RANKING
-  const zGate = opts.zGate ?? Z_GATE
+  const zGate = opts.zGate ?? R.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
   const coverageWeight = opts.lookup ? 1 : hasMeaning ? (R.coverage ?? 1) : (R.keywordCoverage ?? 1)
   const nameWeight = hasMeaning ? R.name : (R.keywordName ?? R.name)
@@ -190,7 +192,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
     const z = b?.z ?? 0
     const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
     // No word match automatically outranks a better semantic answer.
-    let score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
+    let score = meaningWeight * (zGate === -Infinity ? z : Math.max(z, 0)) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
