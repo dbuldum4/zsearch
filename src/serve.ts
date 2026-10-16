@@ -64,6 +64,7 @@ export async function serve(version: string): Promise<number> {
   // Requests come per keystroke: the config file is read again only when it changed.
   let seen = configStamp()
   const client = new SearchClient(p.db, config)
+  client.keepSemanticReady()
   let index: IndexRun | null = null
   /** The estimate being counted: a newer request supersedes it. */
   const estimating: { run: { cancel: () => void } | null } = { run: null }

@@ -36,6 +36,7 @@ export function clipLine(text: string, ranges: [number, number][], width = MAX_L
 /**
  * Find lines matching `re` (must have the `g` flag) in `text`.
  * Returns up to `maxLines` lines with highlight ranges, plus the total match count.
+ * `re` runs over `haystack`, a text of the same length whose matches are the text's (see `foldText`).
  */
 export function findLines(
   text: string,
@@ -44,6 +45,7 @@ export function findLines(
   maxMatches = 10_000,
   deadline = Infinity,
   clip = true,
+  haystack = text,
 ): { lines: LineMatch[]; count: number } {
   const lines: LineMatch[] = []
   let count = 0
@@ -64,7 +66,7 @@ export function findLines(
   let currentStart = -1
   re.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = re.exec(text))) {
+  while ((m = re.exec(haystack))) {
     if (m[0].length === 0) {
       re.lastIndex++
       if (re.lastIndex > text.length) break
@@ -80,7 +82,7 @@ export function findLines(
     if (currentStart !== lineStart) {
       if (lines.length >= maxLines) {
         // Every snippet line is taken: from here on only the number of matches is needed.
-        while (count < maxMatches && (m = re.exec(text))) {
+        while (count < maxMatches && (m = re.exec(haystack))) {
           if (m[0].length === 0) {
             re.lastIndex++
             if (re.lastIndex > text.length) break
@@ -166,8 +168,91 @@ export function diacriticPattern(pattern: string): string {
   return out
 }
 
-export function keywordLines(text: string, pattern: string, maxLines = 50, clip = true, maxMatches = 10_000): { lines: LineMatch[]; count: number } {
+/** `folded`: the text's `foldText`, if known. */
+export function keywordLines(text: string, pattern: string, maxLines = 50, clip = true, maxMatches = 10_000, folded?: string): { lines: LineMatch[]; count: number } {
+  const fast = foldedPattern(pattern)
+  if (fast) return findLines(text, fast, maxLines, maxMatches, Infinity, clip, folded ?? foldText(text))
   return findLines(text, new RegExp(diacriticPattern(pattern), "giu"), maxLines, maxMatches, Infinity, clip)
+}
+
+/* ---------------------------------------------- folded keyword search -- */
+
+/*
+ * The patterns `termsPattern` makes, compiled by `diacriticPattern` with the `iu` flags, read
+ * each character as one of: a letter that matches a-z (in any case, with any accent), a combining
+ * mark, another letter or number, or anything else. A text's *folded* form says which, one byte
+ * per UTF-16 unit: a-z, ASCII digits, MARK, LETTER, or the character itself (ASCII) or a space.
+ * Its matches are the same as the text's, at the same places, with the same lengths, and a plain
+ * ASCII regex finds them several times faster than the accented one finds them in the text.
+ */
+const MARK = 1
+const LETTER = 2
+/** The second half of a mark that takes two UTF-16 units: no match may end between them. */
+const MARK_TAIL = 3
+let foldTable: Uint8Array | null = null
+
+function table(): Uint8Array {
+  if (foldTable) return foldTable
+  const t = new Uint8Array(0x10000)
+  const letters = "abcdefghijklmnopqrstuvwxyz"
+  const classes = [...letters].map((x) => new RegExp(`^${diacriticPattern(x).replace("\\p{M}*", "")}$`, "iu"))
+  const any = new RegExp(`^[${[...letters].map((x) => diacriticPattern(x).replace("\\p{M}*", "").slice(1, -1)).join("")}]$`, "iu")
+  const mark = /^\p{M}$/u
+  const word = /^[\p{L}\p{N}]$/u
+  for (let c = 0; c < 0x10000; c++) {
+    if (c >= 0xd800 && c <= 0xdfff) { t[c] = 32; continue }
+    const ch = String.fromCharCode(c)
+    if (any.test(ch)) {
+      const k = classes.findIndex((re) => re.test(ch))
+      t[c] = 97 + k
+    } else if (c < 128) t[c] = c === MARK || c === LETTER || c === MARK_TAIL ? 32 : c
+    else t[c] = mark.test(ch) ? MARK : word.test(ch) ? LETTER : 32
+  }
+  return (foldTable = t)
+}
+
+const latin1 = new TextDecoder("latin1")
+
+/** A text's folded form (see above). */
+export function foldText(text: string): string {
+  const t = table()
+  const out = new Uint8Array(text.length)
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0xd800 || c > 0xdfff) {
+      out[i] = t[c]!
+      continue
+    }
+    // A surrogate pair is one character to the patterns: both halves say what it is.
+    const d = c <= 0xdbff && i + 1 < text.length ? text.charCodeAt(i + 1) : 0
+    if (d >= 0xdc00 && d <= 0xdfff) {
+      const ch = String.fromCharCode(c, d)
+      const f = /^\p{M}$/u.test(ch) ? MARK : /^[\p{L}\p{N}]$/u.test(ch) ? LETTER : 32
+      out[i] = f
+      out[i + 1] = f === MARK ? MARK_TAIL : f
+      i++
+    } else out[i] = 32
+  }
+  return latin1.decode(out)
+}
+
+const foldedPatterns = new Map<string, RegExp | null>()
+const ALT = /^\(\?<!\[\\p\{L\}\\p\{N\}\]\)([a-z0-9]+(?:\[\^\\p\{L\}\\p\{N\}\]\+[a-z0-9]+)*)(\(\?!\[\\p\{L\}\\p\{N\}\]\))?$/
+
+/** A `termsPattern` pattern for folded text; null for any other pattern, or one with words outside a-z and digits. */
+function foldedPattern(pattern: string): RegExp | null {
+  const cached = foldedPatterns.get(pattern)
+  if (cached !== undefined) return cached
+  let out: RegExp | null = null
+  const alts = pattern.split("|").map((a) => ALT.exec(a))
+  if (alts.every((m) => m)) {
+    const word = "a-z0-9\\x02"
+    const letters = (t: string) => t.replace(/[a-z]/g, "$&[\\x01\\x03]*")
+    out = new RegExp(alts.map((m) => `(?<![${word}])${m![1]!.split("[^\\p{L}\\p{N}]+").map(letters).join(`[^${word}]+`)}${m![2] ? `(?![${word}\\x03])` : ""}`).join("|"), "g")
+  }
+  if (foldedPatterns.size >= 128) foldedPatterns.clear()
+  foldedPatterns.set(pattern, out)
+  return out
 }
 
 export function splitLines(text: string): string[] {

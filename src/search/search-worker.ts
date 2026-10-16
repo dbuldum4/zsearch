@@ -17,6 +17,9 @@ const send = (m: SearchOut) => postMessage(m)
 // second, so it never competes with a search.
 let lastRequest = 0
 let warmTimer: ReturnType<typeof setTimeout> | null = null
+/** Start the query model and load the vectors when idle (see `SearchEngine.warmSemantic`). */
+let keepSemantic = false
+let semanticDue = false
 function scheduleWarm(delay: number) {
   if (warmTimer) clearTimeout(warmTimer)
   warmTimer = setTimeout(warmStep, delay)
@@ -26,6 +29,11 @@ function warmStep() {
   if (!engine) return
   const quiet = Date.now() - lastRequest
   if (quiet < 1000) return scheduleWarm(1000 - quiet)
+  if (keepSemantic && semanticDue) {
+    semanticDue = false
+    void engine.warmSemantic().catch(() => {})
+    return scheduleWarm(2)
+  }
   if (engine.warmTexts(8)) scheduleWarm(2)
 }
 
@@ -84,6 +92,12 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
       case "config": {
         if (!engine) break
         engine.config = msg.config as Config
+        if (!engine.config.semantic.enabled || !engine.config.content.enabled) engine.closeSemantic()
+        break
+      }
+      case "keepSemantic": {
+        keepSemantic = true
+        engine?.keepSemanticReady()
         break
       }
       case "opened": {
@@ -100,5 +114,6 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
     send({ type: "error", qid: "qid" in msg ? (msg as { qid?: number }).qid : undefined, error: (err as Error).message })
   }
   // Any request may have picked up index changes (which empty the cache): warm it again once idle.
+  semanticDue = true
   scheduleWarm(1000)
 }

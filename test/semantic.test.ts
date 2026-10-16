@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
-import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
+import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
 import { CutWorker } from "../src/semantic/workers.ts"
@@ -228,6 +228,50 @@ describe("Granite passage worker", () => {
       expect(cuts[0]!.total).toBe(chunkText(text).length)
       expect(cuts[0]!.passages[0]!.prompt.startsWith("pets\n\nParagraph 0")).toBe(true)
     } finally { workers.close() }
+  })
+})
+
+describe("query model", () => {
+  /** A stand-in model: counts what it is asked, and whether it was stopped. */
+  const fake = () => {
+    const log = { started: 0, texts: [] as string[], closed: 0 }
+    const start = () => {
+      log.started++
+      return {
+        embedTexts: async (texts: string[]) => { log.texts.push(...texts); return { vectors: new Float32Array([1, 0]), dim: 2, tokens: 1 } },
+        close: () => { log.closed++ },
+        kill: () => { log.closed++ },
+      }
+    }
+    return { log, start }
+  }
+
+  test("warm starts the model once, before the first query", async () => {
+    const { log, start } = fake()
+    const q = new QueryEmbedder(start)
+    await q.warm()
+    await q.warm()
+    await q.embed("red car")
+    expect(log.started).toBe(1)
+    expect(log.texts).toHaveLength(2)
+    q.close()
+  })
+
+  test("stops when idle, unless kept running", async () => {
+    const idle = fake()
+    const q = new QueryEmbedder(idle.start, 5)
+    await q.embed("red car")
+    await Bun.sleep(30)
+    expect(idle.log.closed).toBe(1)
+
+    const kept = fake()
+    const k = new QueryEmbedder(kept.start, Infinity)
+    await k.warm()
+    await k.embed("red car")
+    await Bun.sleep(30)
+    expect(kept.log.closed).toBe(0)
+    k.close()
+    expect(kept.log.closed).toBe(1)
   })
 })
 

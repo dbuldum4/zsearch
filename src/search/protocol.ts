@@ -11,6 +11,7 @@ export type SearchIn =
   | { type: "previews"; qid: number; ids: number[]; query: string; mode: Mode; focusLines?: (number | null)[] }
   | { type: "refresh"; force?: boolean }
   | { type: "config"; config: Config }
+  | { type: "keepSemantic" }
   | { type: "opened"; path: string }
   | { type: "stats"; qid: number }
   | { type: "read"; qid: number; path: string; query: string; mode: Mode; opts: ReadOptions }
