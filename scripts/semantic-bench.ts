@@ -16,6 +16,7 @@
  *
  * Pipelines (`--pipelines=a,b`, default all):
  *   current       zsearch's ranking (RANKING)
+ *   previous      the ranking before IDF-weighted coverage at 1.5 (plain coverage at 0.5)
  *   model         the model alone: each file's best passage, no gate, discount, words or names;
  *                 the closest to how MTEB scores the model (it embeds whole documents instead)
  *   meaning       meaning only, with zsearch's gate and length/shared discounts
@@ -56,6 +57,7 @@ const ext = meta.ext ?? "txt"
 /** The ways of ranking compared with a model. */
 const PIPELINES: Record<string, Ranking> = {
   current: RANKING,
+  previous: { ...RANKING, idf: false, coverage: 0.5 },
   model: { ...RANKING, words: 0, length: 0, shared: 0, zGate: -Infinity },
   meaning: { ...RANKING, words: 0 },
   bm25: { ...RANKING, strength: 0.5 },

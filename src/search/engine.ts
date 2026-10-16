@@ -20,7 +20,7 @@ import { retryClock, type RetryClock } from "../util/clock.ts"
 import { availableParallelism } from "node:os"
 import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel } from "../semantic/model.ts"
-import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, Z_GATE } from "../semantic/search.ts"
+import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { mainGeneration } from "../semantic/indexer.ts"
 
@@ -636,9 +636,13 @@ export class SearchEngine {
       const candidate = new Set<number>()
       for (const [id, n] of share) if (n / terms.length >= gate - 1e-9) candidate.add(id)
       for (const [file, b] of best) if (b.z >= zGate) candidate.add(file)
+      // Rare words count for more, as without vectors (sizes here include text the user may not read).
+      const idf = terms.map((_, t) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(byName[t]!.size + byText[t]!.size, 1)))
+      const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
+      const add = (id: number, t: number) => { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) }
       for (let t = 0; t < terms.length; t++) {
-        for (const id of byName[t]!) if (candidate.has(id)) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
-        for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length) }
+        for (const id of byName[t]!) if (candidate.has(id)) add(id, t)
+        for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); add(id, t) }
       }
       for (const id of candidate) if (best.has(id) && !readable(id)) best.delete(id)
     } else {
@@ -653,8 +657,8 @@ export class SearchEngine {
       const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
       sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
     }
-    for (const id of negatedNames) { coverage.delete(id); named.delete(id) }
-    for (const id of negatedText) coverage.delete(id)
+    for (const id of negatedNames) { coverage.delete(id); weighted.delete(id); named.delete(id) }
+    for (const id of negatedText) { coverage.delete(id); weighted.delete(id) }
 
     // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
     const strength = new Map<number, number>()
@@ -680,9 +684,10 @@ export class SearchEngine {
     // Code's word evidence counts half as much as prose. Compute its stage weight once.
     const codeCoverage = isLookup(terms) ? 1 : best.size ? (this.ranking.coverage ?? 1) : (this.ranking.keywordCoverage ?? 1)
     const codeWordWeight = this.ranking.words * codeCoverage * (isLookup(terms) ? 2 : 1)
+    const shares = wordShares(this.ranking, best.size > 0, isLookup(terms), coverage, weighted)
     for (const r of ranked) {
       const i = cat.indexOf(r.file)
-      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * codeWordWeight * (coverage.get(r.file) ?? 0) ** 1.5
+      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * codeWordWeight * (shares.get(r.file) ?? 0) ** 1.5
     }
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)

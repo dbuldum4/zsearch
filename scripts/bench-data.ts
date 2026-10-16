@@ -30,6 +30,7 @@ const MTEB: Record<string, { ndcg: number; recall: number; task: string }> = {
   arguana: { ndcg: 0.544, recall: 0.9893, task: "ArguAna" },
   fiqa: { ndcg: 0.4081, recall: 0.735, task: "FiQA2018" },
   scidocs: { ndcg: 0.2406, recall: 0.534, task: "SCIDOCS" },
+  "cqadupstack-gaming": { ndcg: 0.6244, recall: 0.9173, task: "CQADupstackGamingRetrieval" },
   "lemb-narrativeqa": { ndcg: 0.4132, recall: 0.8194, task: "LEMBNarrativeQARetrieval" },
   "lemb-qmsum": { ndcg: 0.3648, recall: 0.9561, task: "LEMBQMSumRetrieval" },
   "lemb-summscreenfd": { ndcg: 0.8991, recall: 1, task: "LEMBSummScreenFDRetrieval" },
@@ -39,7 +40,7 @@ const MTEB: Record<string, { ndcg: number; recall: number; task: string }> = {
   "lemb-needle-32768": { ndcg: 0.2194, recall: 1, task: "LEMBNeedleRetrieval (test_32768)" },
 }
 
-const BEIR = ["scifact", "nfcorpus", "arguana", "fiqa", "scidocs"]
+const BEIR = ["scifact", "nfcorpus", "arguana", "fiqa", "scidocs", "cqadupstack-gaming"]
 const LEMB: Record<string, string> = { "lemb-qmsum": "qmsum", "lemb-summscreenfd": "summ_screen_fd", "lemb-2wikimqa": "2wikimqa", "lemb-narrativeqa": "narrativeqa" }
 const NEEDLE = [4096, 16384, 32768]
 const NANO = ["ArguAna", "ClimateFEVER", "DBPedia", "FEVER", "FiQA2018", "HotpotQA", "MSMARCO", "NFCorpus", "NQ", "QuoraRetrieval", "SCIDOCS", "SciFact", "Touche2020"]

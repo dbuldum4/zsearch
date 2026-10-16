@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
-import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
+import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, RANKING, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
 import { CutWorker } from "../src/semantic/workers.ts"
@@ -101,6 +101,18 @@ describe("DigUp's ranking", () => {
     const lookup = rank({ best: new Map([[1, { z: 5, row: 0 }]]), coverage: new Map([[2, 1]]), lookup: true, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
     expect(lookup[0]!.file).toBe(2)
     expect(queryTerms("how much did the plumber charge")).toEqual(["much", "plumber", "charge"])
+  })
+
+  test("with vectors, the file holding the query's rarer word ranks first among equal meanings", () => {
+    const best = new Map([[1, { z: 3, row: 0 }], [2, { z: 3, row: 1 }]])
+    // Each holds one of two words; file 2's is the rare one.
+    const coverage = new Map([[1, 0.5], [2, 0.5]])
+    const weighted = new Map([[1, 0.2], [2, 0.8]])
+    const opts = { best, coverage, weighted, lookup: false, wordWeight: 2, hinted: new Set<never>(), kindOf: () => "text" as const }
+    expect(rank(opts).map((x) => x.file)).toEqual([2, 1])
+    expect(rank({ ...opts, ranking: { ...RANKING, idf: false } }).map((x) => x.file)).toEqual([1, 2])
+    // Code and number lookups count every word the same.
+    expect(rank({ ...opts, lookup: true }).map((x) => x.file)).toEqual([1, 2])
   })
 
   test("without vectors, word matches follow coverage and keyword order, and long queries need only three words", () => {
