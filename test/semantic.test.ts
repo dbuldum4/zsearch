@@ -213,6 +213,14 @@ describe("DigUp's ranking", () => {
     expect(q.forcedMode).toBe("semantic")
     expect(q.words).toEqual(["red", "car*"])
   })
+
+  test("a question in the semantic tab keeps its last word rather than filtering names by it", () => {
+    const semantic = parseQuery("when does my passport expire?", Date.now(), "semantic")
+    expect(semantic.filters.names).toBeUndefined()
+    expect(semantic.words).toEqual(["when", "does", "my", "passport", "expire?"])
+    // Find still reads it as a glob on names.
+    expect(parseQuery("expire?", Date.now(), "find").filters.names).toEqual([{ source: "^expire.$", flags: "i" }])
+  })
 })
 
 describe("Granite passage worker", () => {
@@ -407,6 +415,9 @@ describe("semantic index and search", () => {
     expect(r.hits.some((h) => h.display === "Documents/credentials")).toBe(false)
     const pets = await engine().search("canine", "semantic")
     expect(pets.hits[0]!.display).toBe("notes/pets.md")
+    // A question mark is punctuation here, not a one-character wildcard on file names.
+    const question = await engine().search("where is my automobile?", "semantic")
+    expect(question.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     // Lean proofs are for find, not for the semantic tab, even by their words.
     expect((await engine().search("kennel sofa", "semantic")).hits.some((h) => h.display.endsWith(".lean"))).toBe(false)
     expect((await engine().search("kennel_sofa", "find")).hits.map((h) => h.display)).toContain("proofs/Kennel.lean")

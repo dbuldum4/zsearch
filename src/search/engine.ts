@@ -266,7 +266,7 @@ export class SearchEngine {
   async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
-    const q = parseQuery(rawQuery)
+    const q = parseQuery(rawQuery, Date.now(), mode)
     if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
@@ -305,7 +305,7 @@ export class SearchEngine {
 
   private done(res: SearchResponse, t0: number): SearchResponse {
     const policyOpts = policyFor(crawlOptionsFor(this.config))
-    const metadataQuery = usesMetadata(parseQuery(res.query).filters)
+    const metadataQuery = usesMetadata(parseQuery(res.query, Date.now(), res.mode).filters)
     const returned = res.hits.length
     res.hits = res.hits.filter((hit) => {
       const policy = policyOpts(hit.path)
@@ -357,7 +357,7 @@ export class SearchEngine {
     const revision = this.revision, config = this.config
     const result = await this.evaluateGroup(expr, mode, opts, deadline)
     if (this.revision !== revision || this.config !== config) return this.done({ query, mode, resolved: mode, strategy: "grouped search interrupted", hits: [], total: 0, elapsedMs: 0, partial: true }, started)
-    const filters = parseQuery(query).filters
+    const filters = parseQuery(query, Date.now(), mode).filters
     const hits = [...result.hits.values()].sort((a, b) => filters.sort ? this.compareIds(a.id, b.id, filters.sort) : b.score - a.score)
     const notice = [...new Set(result.notices)].join("; ")
     return this.done({
@@ -1338,7 +1338,7 @@ export class SearchEngine {
    * Throws on an invalid regex.
    */
   matchPattern(rawQuery: string, mode: Mode): { re: RegExp; folded: boolean } | null {
-    const q = parseQuery(rawQuery)
+    const q = parseQuery(rawQuery, Date.now(), mode)
     if ((q.forcedMode ?? mode) === "find") return q.text ? { re: this.buildRegex(q, q.regex).re, folded: false } : null
     const p = termsPattern(q.words, q.phrases, q.typing)
     return p ? { re: new RegExp(p, "giu"), folded: true } : null
