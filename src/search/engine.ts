@@ -567,24 +567,35 @@ export class SearchEngine {
     // Each word's files: by name or folders, and (not yet checked for content authorization) by text alone.
     const byName: Set<number>[] = []
     const byText: Set<number>[] = []
-    terms.forEach((term, t) => {
-      // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
-      const stem = stemOf(term)
-      const prefix = stem !== term || (q.typing && t === terms.length - 1)
-      const names = new Set<number>()
-      for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { names.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
-      const body = new Set<number>()
-      if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) if (!names.has(id) && usable(id) !== undefined) body.add(id)
-      byName.push(names)
-      byText.push(body)
-    })
     // Words after `-` or `!` rule a file out.
     const negatedNames = new Set<number>()
     const negatedText = new Set<number>()
-    for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
-      for (const id of matching("{name dirs}", n, false)) negatedNames.add(id)
-      for (const id of matching("body", n, false)) negatedText.add(id)
+    const lookUpWords = () => {
+      byName.length = 0
+      byText.length = 0
+      nameMatch.clear()
+      named.clear()
+      negatedNames.clear()
+      negatedText.clear()
+      terms.forEach((term, t) => {
+        // Endings count as the same word ("invoices", "invoice"), as DigUp's stemmed index has it.
+        const stem = stemOf(term)
+        const prefix = stem !== term || (q.typing && t === terms.length - 1)
+        const names = new Set<number>()
+        for (const id of matching("{name dirs}", stem, prefix)) if (usable(id) !== undefined) { names.add(id); nameMatch.add(id); named.set(id, (named.get(id) ?? 0) + 1 / terms.length) }
+        const body = new Set<number>()
+        if (this.config.content.enabled) for (const id of matching("body", stem, prefix)) if (!names.has(id) && usable(id) !== undefined) body.add(id)
+        byName.push(names)
+        byText.push(body)
+      })
+      for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
+        for (const id of matching("{name dirs}", n, false)) negatedNames.add(id)
+        for (const id of matching("body", n, false)) negatedText.add(id)
+      }
     }
+    const revision = this.revision
+    const config = this.config
+    lookUpWords()
 
     if (embedding) {
       try {
@@ -596,6 +607,9 @@ export class SearchEngine {
       } catch (err) {
         notices.push(`Semantic search failed (${(err as Error).message}). Showing word matches`)
       }
+      // The worker may have taken in an index update or new settings while the query was
+      // embedded: the words found before it would match files by text they no longer hold.
+      if (this.revision !== revision || this.config !== config) lookUpWords()
     }
     for (const id of negatedNames) best.delete(id)
     for (const id of negatedText) best.delete(id)

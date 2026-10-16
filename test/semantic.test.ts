@@ -549,6 +549,30 @@ describe("semantic index and search", () => {
     expect((await e.search("pets", "fuzzy")).hits.length).toBeGreaterThan(0)
   })
 
+  test("an index update picked up while the query is embedded is searched as updated", async () => {
+    corpus.write("notes/release.txt", "The zephyr release is ready.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    const e = engine()
+    const embed = e.embedQuery!
+    let answer!: () => void
+    // A meaning only the garage notes have: the release note can come in by its words alone.
+    e.embedQuery = async () => { await new Promise<void>((r) => { answer = r }); return embed("automobile") }
+    const pending = e.search("zephyr", "semantic")
+    // While the query is embedded, the note loses the word and the engine takes in the update.
+    corpus.write("notes/release.txt", "The breeze release is ready now.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    e.refresh(true)
+    answer()
+    const r = await pending
+    expect(r.strategy).toBe("semantic + words")
+    expect(r.hits.map((h) => h.display)).not.toContain("notes/release.txt")
+    e.closeSemantic()
+    rmSync(join(corpus.home, "notes/release.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+  })
+
   test("a big background run waits on power, and goes when asked", async () => {
     for (let i = 0; i < 110; i++) corpus.write(`bulk/note-${i}.txt`, `Note ${i} about the vacation planning, part ${i}.\n`)
     await new Indexer(db, config, { inProcess: true }).run()
