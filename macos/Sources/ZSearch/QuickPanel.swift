@@ -83,10 +83,11 @@ final class QuickPanel: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        // A click in another app puts the panel away; Quick Look opening over it does not.
+        // A click in another app puts the panel away; Quick Look opening over it does not, nor
+        // the question before opening many files.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isVisible, !self.isKey else { return }
-            if NSApp.keyWindow is QLPreviewPanel { return }
+            if NSApp.keyWindow is QLPreviewPanel || NSApp.modalWindow != nil { return }
             self.hide()
         }
     }
@@ -151,6 +152,7 @@ struct PanelShortcuts: View {
             }
             Button("Next Result") { model.moveSelection(by: 1) }.keyboardShortcut("j")
             Button("Previous Result") { model.moveSelection(by: -1) }.keyboardShortcut("k")
+            Button("Select All Results") { model.selectAllResults() }.keyboardShortcut("a", modifiers: [.command, .shift])
             Button("Open Main Window") { model.showMainWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
         }
     }

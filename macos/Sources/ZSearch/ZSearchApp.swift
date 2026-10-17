@@ -35,7 +35,7 @@ struct ZSearchApp: App {
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
             CommandGroup(after: .pasteboard) {
-                Button("Copy Path") { model.copySelectedPath() }
+                Button(model.pickedCount > 1 ? "Copy \(model.pickedCount) Paths" : "Copy Path") { model.copySelectedPath() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(!model.hasSelection)
                 Button("Show in Finder") { model.revealSelected() }
@@ -64,6 +64,9 @@ struct ZSearchApp: App {
                     .keyboardShortcut("j")
                 Button("Previous Result") { model.moveSelection(by: -1) }
                     .keyboardShortcut("k")
+                Button("Select All Results") { model.selectAllResults() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(!model.hasSelection)
                 Divider()
                 Button("Next Match in Preview") { model.jumpToMatch(by: 1) }
                     .keyboardShortcut("g")

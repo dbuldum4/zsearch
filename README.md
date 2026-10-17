@@ -54,7 +54,7 @@ Optional: install `pdftotext` (`brew install poppler` / `apt install poppler-uti
 
 ### Mac app (preview)
 
-There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. It has a settings pane (folders, what to read, automatic updates, index size and rebuild), a menu bar item, and a shortcut (⌥ Space by default) that opens a floating search panel over any app. Space shows the selected file in Quick Look, ⌘E opens it in your code editor, and results can be dragged into other apps. The Mac app also reads the text in images and scanned PDFs, using macOS's own text recognition. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
+There is also a native Mac app (SwiftUI, macOS 14 or newer, Apple silicon) with the same engine inside. It has a settings pane (folders, what to read, automatic updates, index size and rebuild), a menu bar item, and a shortcut (⌥ Space by default) that opens a floating search panel over any app. Space shows the selected file in Quick Look, ⌘E opens it in your code editor, and results can be dragged into other apps. ⌘-click, ⇧-click or ⇧↑/⇧↓ select several results to open, show in Finder, copy, Quick Look or drag together. The Mac app also reads the text in images and scanned PDFs, using macOS's own text recognition. Every pull request and every push to `main` builds a DMG on GitHub Actions and publishes it as a pre-release. To install one from a clone:
 
 ```sh
 macos/scripts/install-preview.sh main       # latest main
