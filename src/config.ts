@@ -244,17 +244,18 @@ export function validateConfigPatch(base: Config, patch: unknown): Config {
   return out
 }
 
-/** Deep-merge a partial user config onto defaults, ignoring unknown or ill-typed keys. */
+/** Deep-merge a partial user config onto defaults, ignoring unknown or invalid values. */
 export function mergeConfig(base: Config, patch: unknown): Config {
   const out = structuredClone(base) as unknown as Record<string, unknown>
   if (!isObject(patch)) return out as unknown as Config
-  const walk = (dst: Record<string, unknown>, src: Record<string, unknown>) => {
+  const walk = (dst: Record<string, unknown>, src: Record<string, unknown>, prefix = "") => {
     for (const [k, v] of Object.entries(src)) {
-      if (!(k in dst)) continue
+      if (!Object.hasOwn(dst, k)) continue
+      const key = prefix + k
       const cur = dst[k]
-      if (isObject(cur) && isObject(v)) walk(cur, v)
+      if (isObject(cur) && isObject(v)) walk(cur, v, key + ".")
       else if (Array.isArray(cur) && Array.isArray(v)) dst[k] = v.filter((x) => typeof x === "string")
-      else if (typeof cur === typeof v) dst[k] = v
+      else if (typeof cur === typeof v && !isObject(cur) && !Array.isArray(cur) && !CONFIG_RULES[key]?.(v)) dst[k] = v
     }
   }
   // An older version's semantic settings (with its own `model`) were for another kind of model.

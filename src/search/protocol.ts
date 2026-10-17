@@ -18,6 +18,7 @@ export type SearchIn =
 
 export type SearchOut =
   | { type: "ready"; files: number }
+  | { type: "completed"; qid: number }
   | { type: "results"; qid: number; response: SearchResponse }
   | { type: "preview"; qid: number; preview: Preview }
   | { type: "previews"; qid: number; previews: Preview[] }

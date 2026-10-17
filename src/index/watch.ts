@@ -9,8 +9,9 @@ import { under } from "./policy.ts"
 export class RootWatcher {
   private watchers: FSWatcher[] = []
   private timer: ReturnType<typeof setTimeout> | null = null
+  private maxTimer: ReturnType<typeof setTimeout> | null = null
   private key = ""
-  constructor(private changed: () => void | boolean, private delayMs = 1000) {}
+  constructor(private changed: () => void | boolean, private delayMs = 1000, private maxWaitMs = 10_000) {}
   update(config: Config) {
     const key = JSON.stringify([config.roots, config.exclude, config.includeHidden, config.liveUpdates])
     if (key === this.key) return
@@ -39,16 +40,25 @@ export class RootWatcher {
   }
   private schedule() {
     if (this.timer) clearTimeout(this.timer)
-    this.timer = setTimeout(() => {
-      this.timer = null
-      if (this.changed() === false) this.schedule()
-    }, this.delayMs)
+    this.timer = setTimeout(() => this.flush(), this.delayMs)
     this.timer.unref?.()
+    // A busy log or build must not keep postponing the refresh until it goes quiet.
+    this.maxTimer ??= setTimeout(() => this.flush(), this.maxWaitMs)
+    this.maxTimer.unref?.()
+  }
+  private flush() {
+    this.clearTimers()
+    if (this.changed() === false) this.schedule()
+  }
+  private clearTimers() {
+    if (this.timer) clearTimeout(this.timer)
+    if (this.maxTimer) clearTimeout(this.maxTimer)
+    this.timer = this.maxTimer = null
   }
   close() {
     for (const w of this.watchers) w.close()
     this.watchers = []
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null; this.key = ""
+    this.clearTimers()
+    this.key = ""
   }
 }

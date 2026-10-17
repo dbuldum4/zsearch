@@ -405,6 +405,26 @@ describe("text utilities", () => {
 })
 
 describe("configuration", () => {
+  test("loaded numeric settings and locales obey the same constraints as setting updates", async () => {
+    const { defaultConfig, mergeConfig } = await import("../src/config.ts")
+    const base = defaultConfig()
+    for (const value of [-1, 0, 1.5, Infinity, NaN]) {
+      const c = mergeConfig(base, { content: { maxChars: value } })
+      expect(c.content.maxChars).toBe(base.content.maxChars)
+    }
+    const invalid = mergeConfig(base, {
+      workers: 65, indexLoad: 9, autoRefreshMinutes: -1,
+      content: { maxDocumentMB: 0, maxTextMB: -2, transcriptionLocale: "not a locale", enabled: false },
+    })
+    expect(invalid.workers).toBe(base.workers)
+    expect(invalid.indexLoad).toBe(base.indexLoad)
+    expect(invalid.autoRefreshMinutes).toBe(base.autoRefreshMinutes)
+    expect(invalid.content).toEqual({ ...base.content, enabled: false })
+    const valid = { workers: 64, indexLoad: 10, autoRefreshMinutes: 0, content: { maxChars: 1, maxDocumentMB: 0.5, maxTextMB: 0.5, transcriptionLocale: "en-US" } }
+    expect(mergeConfig(base, valid)).toMatchObject(valid)
+    expect(mergeConfig(base, { content: null, semantic: null, roots: null })).toEqual(base)
+  })
+
   test("merging user config keeps defaults and ignores bad values", async () => {
     const { defaultConfig, mergeConfig, setConfigValue } = await import("../src/config.ts")
     const c = mergeConfig(defaultConfig(), { includeHidden: true, roots: ["~/a", 5], content: { maxTextMB: "big", enabled: false }, bogus: 1 })
