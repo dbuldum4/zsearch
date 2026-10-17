@@ -291,3 +291,46 @@ test("an index that can't be opened is reported at once, not after a timeout", a
     expect(Date.now() - started).toBeLessThan(1000)
   } finally { client.close(); rmSync(dir, { recursive: true, force: true }) }
 })
+
+test("new searches cannot postpone the watchdog for a superseded stuck search", async () => fixture(async (_dir, c, e) => {
+  const client = new SearchClient(e.db.filename, c, 150)
+  let changes: ReturnType<typeof setInterval> | undefined
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  const restarted = new Promise<string>((resolve) => { client.onRestart = resolve })
+  try {
+    await client.waitReady()
+    const stuck = client.search("re:(a+)+$", "find")
+    // Give the worker the first query before continually replacing its caller.
+    await Bun.sleep(30)
+    changes = setInterval(() => { void client.search("ordinary", "find") }, 20)
+    const reason = await Promise.race([
+      restarted,
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("typing postponed recovery")), 2000) }),
+    ])
+    clearInterval(changes)
+    expect(reason).toContain("was stopped")
+    await stuck
+    await client.waitReady()
+    expect((await client.stats())?.stats.files).toBe(1)
+  } finally { clearInterval(changes); clearTimeout(deadline); client.close() }
+}, { "a.txt": "a".repeat(35) + "!" }))
+
+test("healthy superseded searches and previews leave no watchdog deadlines behind", async () => fixture(async (_dir, c, e) => {
+  const client = new SearchClient(e.db.filename, c, 250)
+  let restarts = 0
+  client.onRestart = () => { restarts++ }
+  try {
+    await client.waitReady()
+    const { id } = e.db.query("SELECT id FROM files WHERE name = 'a.txt'").get() as { id: number }
+    const replies: Promise<unknown>[] = []
+    for (let i = 0; i < 20; i++) {
+      replies.push(client.search("alpha", "find"), client.preview(id, "alpha", "find"), client.previews([id], "alpha", "find"))
+      // Let requests reach the worker before newer ones supersede their callers.
+      await Bun.sleep(1)
+    }
+    await Promise.all(replies)
+    await Bun.sleep(400)
+    expect(restarts).toBe(0)
+    expect((await client.stats())?.stats.files).toBe(1)
+  } finally { client.close() }
+}, { "a.txt": "alpha beta" }))

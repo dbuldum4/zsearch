@@ -112,6 +112,9 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
     }
   } catch (err) {
     send({ type: "error", qid: "qid" in msg ? (msg as { qid?: number }).qid : undefined, error: (err as Error).message })
+  } finally {
+    // Superseded searches/previews may omit their result, but still release their deadline.
+    if ("qid" in msg) send({ type: "completed", qid: msg.qid })
   }
   // Any request may have picked up index changes (which empty the cache): warm it again once idle.
   semanticDue = true

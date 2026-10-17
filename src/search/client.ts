@@ -19,6 +19,8 @@ export class SearchClient {
   private worker!: Worker
   private qid = 0
   private pending = new Map<number, { resolve: (v: unknown) => void; kind: string; started: number }>()
+  /** Sent requests stay timed even when a newer request supersedes their caller. */
+  private outstanding = new Map<number, { kind: string; started: number }>()
   private ready!: Promise<void>
   private readyResolve!: () => void
   /** Resolves when the worker is ready or could not open the index. */
@@ -75,6 +77,7 @@ export class SearchClient {
   }
 
   private failPending(reason: string) {
+    this.outstanding.clear()
     for (const [qid, p] of this.pending) {
       p.resolve(p.kind === "search" ? ({ error: reason } as never) : null)
       this.pending.delete(qid)
@@ -83,7 +86,7 @@ export class SearchClient {
 
   private checkStuck() {
     const now = Date.now()
-    for (const p of this.pending.values()) {
+    for (const p of [...this.outstanding.values(), ...this.pending.values()]) {
       if (now - p.started > this.timeoutMs) {
         this.restart(`${p.kind} took longer than ${this.timeoutMs / 1000}s and was stopped`)
         return
@@ -97,6 +100,9 @@ export class SearchClient {
 
   private handle(m: SearchOut) {
     switch (m.type) {
+      case "completed":
+        this.outstanding.delete(m.qid)
+        break
       case "ready":
         this.started = true
         this.readyResolve()
@@ -152,7 +158,12 @@ export class SearchClient {
     }
     return new Promise<T | null>((resolve) => {
       this.pending.set(qid, { resolve: resolve as (v: unknown) => void, kind, started: Date.now() })
-      void this.ready.then(() => this.post(build(qid)))
+      const worker = this.worker
+      void this.ready.then(() => {
+        if (this.worker !== worker || !this.pending.has(qid)) return
+        this.outstanding.set(qid, { kind, started: Date.now() })
+        this.post(build(qid))
+      })
     })
   }
 
