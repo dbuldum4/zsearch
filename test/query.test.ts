@@ -58,6 +58,16 @@ describe("query parsing", () => {
     expect([...q.filters.notKinds!]).toEqual(["pdf"])
   })
 
+  test("an unknown type is dropped with a warning, suggesting ext: when it is a file extension", () => {
+    const docx = parseQuery("type:docx", now)
+    expect(docx.filters.kinds).toBeNull()
+    expect(docx.text).toBe("")
+    expect(docx.warnings).toEqual(['unknown type "docx", did you mean ext:docx?'])
+    expect(parseQuery("-type:.heic", now).warnings).toEqual(['unknown type ".heic", did you mean -ext:heic?'])
+    expect(parseQuery("type:pdf,docx", now).warnings).toEqual(['unknown type "docx", did you mean ext:docx?'])
+    expect(parseQuery("type:imgae", now).warnings).toEqual(['unknown type "imgae"'])
+  })
+
   test("dates and ages", () => {
     expect(parseQuery("mtime:<7d", now).filters.mtimeMin).toBe(now - 7 * 86_400_000)
     expect(parseQuery("mtime:>1y", now).filters.mtimeMax).toBe(now - 365 * 86_400_000)

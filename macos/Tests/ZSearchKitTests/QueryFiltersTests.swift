@@ -53,6 +53,14 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.setting(Q.typeKeys, to: "pdf", in: "is:open"), "is:open type:pdf")
     }
 
+    func testUnknownTypes() {
+        XCTAssertTrue(Q.isUnknownType("docx"))
+        XCTAssertTrue(Q.isUnknownType("imgae,heic"))
+        XCTAssertFalse(Q.isUnknownType("pdf"))
+        XCTAssertFalse(Q.isUnknownType("Word"))
+        XCTAssertFalse(Q.isUnknownType("pdf,docx"))
+    }
+
     func testQuotesValuesWithSpaces() {
         let q = Q.setting(Q.folderKeys, to: "~/My Folder", in: "notes")
         XCTAssertEqual(q, "notes in:\"~/My Folder\"")

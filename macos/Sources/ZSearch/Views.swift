@@ -346,9 +346,19 @@ struct StatusBar: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             } else if let r = model.response {
+                // What the engine says about the search: a filter it could not understand, semantic
+                // search falling back to words, a "did you mean".
+                if let notice = r.notice, !notice.isEmpty {
+                    Text(notice)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(notice)
+                }
                 Text("\(r.total.formatted()) results · \(r.strategy) · \(Int(r.elapsedMs.rounded())) ms" + (r.partial ? " · partial" : ""))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(1)
             }
         }
         .font(.caption)

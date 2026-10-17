@@ -69,6 +69,11 @@ add(VIDEO, "video")
 add(ARCHIVE, "archive")
 add(APP, "app")
 
+/** Whether `ext` (lower-case, no dot) is an extension with a known kind. */
+export function isKnownExt(ext: string): boolean {
+  return EXT_KIND.has(ext)
+}
+
 /** Lower-case extension without the dot. Dotfiles like `.bashrc` have the extension "". */
 export function extOf(name: string): string {
   const dot = name.lastIndexOf(".")
