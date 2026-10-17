@@ -17,7 +17,7 @@ import {
   setConfigValue,
   tildify,
 } from "./config.ts"
-import { getMeta, indexStats, openDb } from "./index/db.ts"
+import { clearIndex, getMeta, indexStats, openDb } from "./index/db.ts"
 import { excludingPath } from "./index/exclude.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
@@ -365,9 +365,6 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
   const meaningOnly = flag(args, "semantic-only", "meaning-only") === true
   if (meaningOnly && flag(args, "rebuild")) throw new UsageError("--semantic-only cannot be combined with --rebuild")
   try {
-    if (flag(args, "rebuild")) {
-      for (const suffix of ["", "-wal", "-shm"]) rmSync(p.db + suffix, { force: true })
-    }
     // Refuse a semantic-only run before opening (and thereby creating) the index.
     const tool = embedToolPath()
     const blocked = semanticAvailable(config, tool)
@@ -376,6 +373,8 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
       return 1
     }
     const db = openDb(p.db)
+    // Emptied in place rather than deleted: frontends may have the database open.
+    if (flag(args, "rebuild")) clearIndex(db)
     const quiet = flag(args, "quiet", "q") === true
     const tty = process.stderr.isTTY === true
     let lastLine = Date.now()
@@ -604,7 +603,9 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
         process.off("SIGINT", onSignal)
         if (tty) process.stderr.write("\r\x1b[2K")
       }
-      saveConfig({ ...config, defaultMode: "semantic", semantic: { ...config.semantic, enabled: true, declined: false } })
+      // Read again: settings may have changed during the download.
+      const latest = loadConfig()
+      saveConfig({ ...latest, defaultMode: "semantic", semantic: { ...latest.semantic, enabled: true, declined: false } })
       console.error("Semantic search is on: the next index update reads your files for it (`zsearch index` starts one now).")
       if (!embedToolPath()) console.error("Granite needs the embedding helper: build it with scripts/build-embed.sh for Granite, or use the Mac app.")
       return 0
