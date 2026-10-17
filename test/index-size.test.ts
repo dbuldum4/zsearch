@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig, type Config } from "../src/config.ts"
 import { byteTerms } from "../src/index/byte-terms.ts"
-import { clearIndex, compactIndex, compressText, decompressText, getMeta, openDb, readContent, setMeta, TEXT_HASHES } from "../src/index/db.ts"
+import { clearIndex, compactIndex, compressText, decompressText, getMeta, openDb, readContent, setMeta } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { ftsBody, indexTerms, isLongWord, shortWord } from "../src/util/text.ts"
@@ -52,6 +52,7 @@ describe("long words", () => {
     expect(body.split(" ")).toEqual(["commit", shortWord(GIT), "sha256", shortWord(SHA)])
     // The vocabulary keeps them whole: searches find them by any part.
     expect([...terms]).toEqual(["commit", GIT, "sha256", SHA])
+    expect([...indexTerms(`a ${"x".repeat(70)} b`).terms]).toEqual(["a", "x".repeat(70), "b"])
   })
 
   test("the byte-level reader indexes the same words as the text one", () => {
@@ -156,74 +157,21 @@ describe("stored texts", () => {
   })
 })
 
-/**
- * Turn a version 10 index back into the layout version 9 wrote: one `content` row per file,
- * no hashes, long words whole in the full-text index, no OCR cache.
- */
-function downgradeTo9(db: Database) {
-  db.transaction(() => {
-    db.exec("CREATE TABLE content9 (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
-    for (const r of db.query("SELECT m.id, t.data FROM content_map m JOIN texts t ON t.id = m.text").all() as { id: number; data: Uint8Array }[])
-      db.query("INSERT INTO content9(id, data) VALUES (?, ?)").run(r.id, compressText(decompressText(r.data)))
-    for (const t of ["content_insert", "content_delete", "content_map_delete", "content_map_update"]) db.exec(`DROP TRIGGER ${t}`)
-    db.exec("DROP VIEW content")
-    db.exec("DROP TABLE content_map")
-    db.exec("DROP TABLE texts")
-    db.exec("DROP TABLE ocr_cache")
-    db.exec("ALTER TABLE content9 RENAME TO content")
-    for (const r of db.query("SELECT f.id, f.name, c.data FROM files f JOIN content c ON c.id = f.id").all() as { id: number; name: string; data: Uint8Array }[]) {
-      const whole = [...new Set(decompressText(r.data).toLowerCase().match(/[a-z0-9]+/g) ?? [])].join(" ")
-      db.query("DELETE FROM fts WHERE rowid = ?").run(r.id)
-      db.query("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, '', ?)").run(r.id, r.name.replace(/\W+/g, " "), whole)
-    }
-    setMeta(db, "schema_version", "9")
-  })()
-}
-
-describe("upgrading a version 9 index", () => {
-  test("happens in place: nothing is read again, copies are shared, and hashes are re-indexed short", async () => {
-    const shared = `Shared text with ${SHA} inside.\n`.repeat(40)
-    const { config, db, dbPath } = setup("upgrade", { "one.txt": shared, "two.txt": shared, "three.txt": `just ${GIT}` })
+describe("an index from before version 11", () => {
+  test("is rebuilt, and its long words then go into the vocabulary", async () => {
+    const long = "z".repeat(80)
+    const { config, db, dbPath } = setup("upgrade", { "one.txt": `start ${long} end` })
     await new Indexer(db, config, { inProcess: true }).run()
-    downgradeTo9(db)
+    setMeta(db, "schema_version", "10")
     db.close()
-
     const up = openDb(dbPath)
-    expect(getMeta(up, "schema_version")).toBe("10")
-    expect(getMeta(up, TEXT_HASHES)).toBe("1")
-    expect(count(up, "SELECT count(*) AS n FROM texts")).toBe(3)
-    // Readers work before the upgrade pass, through the view.
-    expect(count(up, "SELECT count(*) AS n FROM content")).toBe(3)
+    expect(getMeta(up, "schema_version")).toBe("11")
+    expect(count(up, "SELECT count(*) AS n FROM files")).toBe(0)
+    await new Indexer(up, config, { inProcess: true }).run()
     const e = new SearchEngine(up, config)
-    expect(names((await e.search(SHA)).hits)).toEqual(["one.txt", "two.txt"])
-
-    const progress = await new Indexer(up, config, { inProcess: true }).run()
-    expect(progress.phase).toBe("done")
-    expect(progress.contentTotal).toBe(0)
-    expect(getMeta(up, TEXT_HASHES)).toBe("")
-    expect(count(up, "SELECT count(*) AS n FROM texts")).toBe(2)
-    expect(count(up, "SELECT count(*) AS n FROM content_map WHERE hash IS NULL")).toBe(0)
-    expect(count(up, `SELECT count(*) AS n FROM fts WHERE fts MATCH ?`, `body : "${SHA}"`)).toBe(0)
-    expect(count(up, `SELECT count(*) AS n FROM fts WHERE fts MATCH ?`, `body : "${shortWord(SHA)}"`)).toBe(2)
-    e.refresh(true)
-    for (const mode of ["find", "fuzzy"] as const) {
-      expect(names((await e.search(SHA, mode)).hits)).toEqual(["one.txt", "two.txt"])
-      expect(names((await e.search(GIT, mode)).hits)).toEqual(["three.txt"])
-    }
-    expect(names((await e.search(MIDDLE)).hits)).toEqual(["one.txt", "two.txt"])
+    expect(names((await e.search("zzz")).hits)).toEqual(["one.txt"])
+    expect(names((await e.search(long)).hits)).toEqual(["one.txt"])
     up.close()
-  })
-
-  test("an index on the classic FTS delete protocol is rebuilt instead", () => {
-    const path = join(dir, "manual.db")
-    const db = openDb(path, { manualFtsDelete: true })
-    db.query("INSERT INTO files(path, name, ext, kind) VALUES ('/x/a.txt', 'a.txt', 'txt', 'text')").run()
-    setMeta(db, "schema_version", "9")
-    db.close()
-    const again = openDb(path, { manualFtsDelete: true })
-    expect(count(again, "SELECT count(*) AS n FROM files")).toBe(0)
-    expect(getMeta(again, TEXT_HASHES)).toBeNull()
-    again.close()
   })
 })
 

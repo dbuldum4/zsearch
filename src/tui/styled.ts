@@ -127,11 +127,13 @@ export function wrapLine(text: string, ranges: [number, number][], cols: number,
     let end = start
     let lastSpace = -1
     while (end < chars.length) {
-      const cw = width(chars[end]!)
-      if (w + cw > cols) break
-      if (chars[end] === " ") lastSpace = end
+      // Whole code points: a surrogate half alone measures narrower than the character.
+      const ch = String.fromCodePoint(chars.codePointAt(end)!)
+      const cw = width(ch)
+      if (w + cw > cols && end > start) break
+      if (ch === " ") lastSpace = end
       w += cw
-      end++
+      end += ch.length
     }
     if (end < chars.length && lastSpace > start + cols / 2) end = lastSpace + 1
     const rowRanges = ranges.map(([a, b]) => [Math.max(a, start) - start, Math.min(b, end) - start] as [number, number]).filter(([a, b]) => b > a)

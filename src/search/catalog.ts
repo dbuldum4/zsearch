@@ -325,7 +325,7 @@ export class Catalog {
    * Fuzzy-match the query against display paths. Returns top `limit` entries.
    * `bias(i)` adds frecency/recency points.
    */
-  fuzzy(query: string, filters: Filters, limit: number, bias?: (i: number) => number): { idx: number; score: number; positions: number[] }[] {
+  fuzzy(query: string, filters: Filters, limit: number, bias?: (i: number) => number, withPositions = true): { idx: number; score: number; positions: number[] }[] {
     const terms = parseFuzzyTerms(query)
     if (!terms.length) return []
     const positive = terms.filter((t) => !t.negate)
@@ -359,7 +359,12 @@ export class Catalog {
     else for (let i = 0; i < this.size; i++) consider(i)
     this.cache = { terms, matches: Int32Array.from(matched) }
     // Positions (for highlighting) only for the winners.
-    return top.values().map(({ idx, score }) => ({ idx, score, positions: matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? [] }))
+    return top.values().map(({ idx, score }) => ({ idx, score, positions: withPositions ? (matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? []) : [] }))
+  }
+
+  /** Highlights of a fuzzy match of `query` in entry `i`'s path; undefined if it does not match. */
+  positions(i: number, query: string): number[] | undefined {
+    return matchPath(this.display[i]!, this.lower[i]!, this.nameStart[i]!, parseFuzzyTerms(query), true)?.positions
   }
 
   /**
@@ -367,8 +372,11 @@ export class Catalog {
    * ("mian" finds main.rs, "recieve" finds receive.py).
    */
   typo(query: string, filters: Filters, limit: number): { idx: number; score: number; positions: number[] }[] {
-    const terms: FuzzyTerm[] = parseFuzzyTerms(query).filter((t) => !t.negate && t.kind === "fuzzy" && t.text.length >= 4)
+    const parsed = parseFuzzyTerms(query)
+    const terms: FuzzyTerm[] = parsed.filter((t) => !t.negate && t.kind === "fuzzy" && t.text.length >= 4)
     if (!terms.length) return []
+    // Exclusions and exact, prefix and suffix terms still hold: only fuzzy terms may be misspelt.
+    const operators = parsed.filter((t) => t.negate || t.kind !== "fuzzy")
     const out: { idx: number; score: number; positions: number[] }[] = []
     for (let i = 0; i < this.size; i++) {
       const lower = this.lower[i]!
@@ -401,7 +409,14 @@ export class Catalog {
         total += t.text.length * 8 - best * 12
         for (let p = bestAt; p < bestAt + bestLen; p++) positions.push(p)
       }
-      if (!ok || !this.passes(i, filters)) continue
+      if (!ok) continue
+      if (operators.length) {
+        const m = matchPath(this.display[i]!, lower, start, operators, true)
+        if (!m) continue
+        positions.push(...m.positions)
+        positions.sort((a, b) => a - b)
+      }
+      if (!this.passes(i, filters)) continue
       out.push({ idx: i, score: total, positions })
     }
     out.sort((a, b) => b.score - a.score || this.display[a.idx]!.length - this.display[b.idx]!.length)

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 /** Bump when the on-disk layout or tokenisation changes; older indexes are rebuilt. */
-const SCHEMA_VERSION = 10
+const SCHEMA_VERSION = 11
 
 export const ContentState = {
   /** No content wanted (folders, media, names-only areas). */
@@ -40,10 +40,9 @@ const OCR_CACHE_KEY = "CREATE UNIQUE INDEX IF NOT EXISTS ocr_cache_key ON ocr_ca
  * is a view of both with the layout of the table it replaced, (file id, compressed text), so
  * readers and deletes need not know. A text no file holds any more is deleted with its last row.
  */
-function createContentTables(db: Database, texts: boolean) {
-  if (texts) db.exec("CREATE TABLE texts (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+function createContentTables(db: Database) {
+  db.exec("CREATE TABLE texts (id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
   db.exec("CREATE TABLE content_map (id INTEGER PRIMARY KEY, text INTEGER NOT NULL, hash BLOB)")
-  if (!texts) db.exec("INSERT INTO content_map(id, text) SELECT id, id FROM texts")
   db.exec("CREATE INDEX content_map_text ON content_map(text)")
   db.exec("CREATE INDEX content_map_hash ON content_map(hash)")
   const unused = "DELETE FROM texts WHERE id = OLD.text AND NOT EXISTS (SELECT 1 FROM content_map WHERE text = OLD.text);"
@@ -51,19 +50,13 @@ function createContentTables(db: Database, texts: boolean) {
   db.exec(`CREATE TRIGGER content_map_update AFTER UPDATE OF text ON content_map WHEN OLD.text <> NEW.text BEGIN ${unused} END`)
   db.exec("CREATE VIEW content(id, data) AS SELECT m.id, t.data FROM content_map m JOIN texts t ON t.id = m.text")
   db.exec("CREATE TRIGGER content_delete INSTEAD OF DELETE ON content BEGIN DELETE FROM content_map WHERE id = OLD.id; END")
-  // Texts written without a hash are not shared; the indexer hashes them later (see `TEXT_HASHES`).
+  // Texts written without a hash are not shared.
   db.exec(`CREATE TRIGGER content_insert INSTEAD OF INSERT ON content BEGIN
     DELETE FROM content_map WHERE id = NEW.id;
     INSERT INTO texts(data) VALUES (NEW.data);
     INSERT INTO content_map(id, text) VALUES (NEW.id, last_insert_rowid());
   END`)
 }
-
-/**
- * Set while some stored texts have no hash (an index upgraded from version 9): the indexer
- * hashes them, shares the ones held twice and re-indexes their long words (see `upgradeTexts`).
- */
-export const TEXT_HASHES = "texts_unhashed"
 
 function versionAtLeast(v: string, major: number, minor: number): boolean {
   const [a = 0, b = 0] = v.split(".").map(Number)
@@ -105,20 +98,6 @@ function migrate(db: Database, opts: OpenOptions) {
     db.exec(OCR_CACHE_KEY)
     return
   }
-  // Version 10 shares texts held twice, shortens long words in the full-text index and compresses
-  // texts harder: a version 9 index is upgraded in place rather than read again. The classic
-  // FTS delete protocol needs every row's words exactly as indexed, so those indexes are rebuilt.
-  if (version === 9 && getMeta(db, "fts_delete") === "contentless" && !opts.manualFtsDelete) {
-    db.transaction(() => {
-      db.exec("ALTER TABLE content RENAME TO texts")
-      createContentTables(db, false)
-      db.exec(OCR_CACHE_TABLE)
-      db.exec(OCR_CACHE_KEY)
-      setMeta(db, TEXT_HASHES, "1")
-      setMeta(db, "schema_version", String(SCHEMA_VERSION))
-    })()
-    return
-  }
   db.transaction(() => {
     const views = new Set((db.query("SELECT name FROM sqlite_master WHERE type = 'view'").all() as { name: string }[]).map((r) => r.name))
     // "chunks" held semantic search vectors before version 6; "vocab" was one row per term before version 7.
@@ -152,7 +131,7 @@ function migrate(db: Database, opts: OpenOptions) {
         UPDATE files SET seq = (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'change_seq') WHERE id = NEW.id;
       END`)
     }
-    createContentTables(db, true)
+    createContentTables(db)
     db.exec(OCR_CACHE_TABLE)
     db.exec(OCR_CACHE_KEY)
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
@@ -194,11 +173,12 @@ export function clearIndex(db: Database): void {
     }
     db.exec("DELETE FROM texts")
     db.exec("DELETE FROM content_map")
-    setMeta(db, TEXT_HASHES, "")
     db.exec("DELETE FROM files")
     db.exec("DELETE FROM vocab_chunks")
     db.exec("DELETE FROM removed")
     setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
+    // Empty until a run completes: it must not look up to date meanwhile.
+    db.exec("DELETE FROM meta WHERE key IN ('last_indexed_at', 'last_duration_ms')")
   })()
   compact(db)
 }
@@ -236,16 +216,15 @@ const VACUUM_FREE_BYTES = 4 * 1024 * 1024
  * merged into one segment: FTS5 merges as it goes, but leaves many segments behind, which
  * queries read one by one, and the pages of the merged ones free. Free pages are then given back
  * to the file system when they are a good share of the file, which VACUUM does by rewriting it.
- * With `rewritten`, it does in any case: rows rewritten in place leave pages part empty, which
- * only VACUUM packs again. Returns whether it did.
+ * Returns whether it did.
  */
-export function compactIndex(db: Database, optimizeFts: boolean, rewritten = false): boolean {
+export function compactIndex(db: Database, optimizeFts: boolean): boolean {
   try {
     if (optimizeFts) db.exec("INSERT INTO fts(fts) VALUES ('optimize')")
     const pages = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count
     const free = (db.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
     const size = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
-    if (!rewritten && (free < pages * VACUUM_FREE_SHARE || free * size < VACUUM_FREE_BYTES)) return false
+    if (free < pages * VACUUM_FREE_SHARE || free * size < VACUUM_FREE_BYTES) return false
     vacuum(db)
     // Readers still open keep the log at its size until their next transaction; the size limit
     // trims it at a later checkpoint then.

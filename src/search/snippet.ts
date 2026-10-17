@@ -64,13 +64,20 @@ export function findLines(
     if (nextFf === -1) return nextNl
     return Math.min(nextNl, nextFf)
   }
+  // Past an empty match by a whole character: a unicode regex steps back to the start of a
+  // surrogate pair, so one unit on it would find the same empty match again.
+  const skipEmpty = () => {
+    const c = haystack.charCodeAt(re.lastIndex)
+    const d = haystack.charCodeAt(re.lastIndex + 1)
+    re.lastIndex += c >= 0xd800 && c <= 0xdbff && d >= 0xdc00 && d <= 0xdfff ? 2 : 1
+  }
   let current: LineMatch | null = null
   let currentStart = -1
   re.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(haystack))) {
     if (m[0].length === 0) {
-      re.lastIndex++
+      skipEmpty()
       if (re.lastIndex > text.length) break
       continue
     }
@@ -91,7 +98,7 @@ export function findLines(
         // Every snippet line is taken: from here on only the number of matches is needed.
         while (count < maxMatches && (m = re.exec(haystack))) {
           if (m[0].length === 0) {
-            re.lastIndex++
+            skipEmpty()
             if (re.lastIndex > text.length) break
             continue
           }
@@ -143,13 +150,25 @@ export function termsPattern(words: string[], phrases: string[], prefixLast: boo
   return alts.join("|")
 }
 
-/** Accent variants are compiled once per query; document text stays untouched. */
-const accents = new Map<string, string>()
+/**
+ * Accent variants are compiled once per query; document text stays untouched. Each letter has a
+ * lower- and an upper-case class, so a case-sensitive pattern keeps its case; the `i` flag adds
+ * the other case back. Variants the `i` flag cannot pair with a letter of the other case (`İ`,
+ * `ẙ`) go in both, or case-insensitive patterns would miss them.
+ */
+const accents = new Map<string, { lower: string; upper: string }>()
 for (const [start, end] of [[0xc0, 0x24f], [0x1e00, 0x1eff], [0x2c60, 0x2c7f], [0xa720, 0xa7ff], [0xab30, 0xab6f]]) {
   for (let cp = start!; cp <= end!; cp++) {
     const ch = String.fromCodePoint(cp)
     const folded = foldTerm(ch)
-    if (/^[a-z]$/.test(folded) && ch !== folded) accents.set(folded, (accents.get(folded) ?? folded) + ch)
+    if (!/^[a-z]$/.test(folded) || ch === folded) continue
+    const cls = accents.get(folded) ?? { lower: folded, upper: folded.toUpperCase() }
+    const upper = ch !== ch.toLowerCase()
+    const other = upper ? ch.toLowerCase() : ch.toUpperCase()
+    const paired = other.length === ch.length && other !== ch && new RegExp(`^${ch}$`, "iu").test(other)
+    if (upper || !paired) cls.upper += ch
+    if (!upper || !paired) cls.lower += ch
+    accents.set(folded, cls)
   }
 }
 const patterns = new Map<string, string>()
@@ -167,7 +186,11 @@ export function diacriticPattern(pattern: string): string {
       }
     } else if (ch === "[") { bracket = true; out += ch }
     else if (ch === "]") { bracket = false; out += ch }
-    else if (!bracket && /^[a-z]$/.test(foldTerm(ch))) out += `[${accents.get(foldTerm(ch)) ?? ch}]\\p{M}*`
+    else if (!bracket && /^[a-z]$/.test(foldTerm(ch))) {
+      const cls = accents.get(foldTerm(ch))
+      const same = cls ? (ch !== ch.toLowerCase() ? cls.upper : cls.lower) : ""
+      out += `[${same.includes(ch) ? same : ch + same}]\\p{M}*`
+    }
     else out += ch
   }
   if (patterns.size >= 128) patterns.clear()

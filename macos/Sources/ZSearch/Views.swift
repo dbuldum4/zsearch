@@ -167,7 +167,14 @@ private struct NoResultsNote: View {
     @Environment(SearchModel.self) private var model
 
     var body: some View {
-        if model.hits.isEmpty, model.response != nil {
+        // A query the engine could not run (`re:[`, say) comes back with its reason and no hits.
+        if model.hits.isEmpty, let error = model.response?.error, !error.isEmpty {
+            Text(error)
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+                .padding()
+        } else if model.hits.isEmpty, model.response != nil {
             Text(model.query.isEmpty ? "No recent files" : "No results")
                 .foregroundStyle(.secondary)
         }

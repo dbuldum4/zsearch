@@ -1,5 +1,5 @@
 import { pdftotextPath } from "../../platform.ts"
-import { ocrBlankPages, type OcrMemo } from "./ocr.ts"
+import { ocrBlankPages, tidyPages, type OcrMemo } from "./ocr.ts"
 import { tidy } from "./xml.ts"
 import { cappedText, trackProcess } from "../../util/process.ts"
 
@@ -9,11 +9,11 @@ import { cappedText, trackProcess } from "../../util/process.ts"
  */
 export async function extractPdf(path: string, buf: () => Promise<Uint8Array>, timeoutMs = 60_000, ocrTool?: string | null, metadata = false, memo?: OcrMemo): Promise<string> {
   const text = metadata ? await viaPdfjs(await buf(), timeoutMs, true) : await pdfText(path, buf, timeoutMs)
-  return ocrTool ? ocrBlankPages(ocrTool, path, text, timeoutMs, memo) : text
+  return ocrTool ? ocrBlankPages(ocrTool, path, text, timeoutMs, memo) : tidy(text)
 }
 
 export async function extractPdfBytes(bytes: Uint8Array, timeoutMs = 60_000, metadata = false): Promise<string> {
-  return viaPdfjs(bytes, timeoutMs, metadata)
+  return tidy(await viaPdfjs(bytes, timeoutMs, metadata))
 }
 
 async function pdfText(path: string, buf: () => Promise<Uint8Array>, timeoutMs: number): Promise<string> {
@@ -37,7 +37,8 @@ async function viaPdftotext(tool: string, path: string, timeoutMs: number): Prom
     const [out, err, code] = await Promise.all([cappedText(p.stdout, 8 * 1024 * 1024, () => p.kill()), cappedText(p.stderr, 8192, () => p.kill()), p.exited])
     if (p.signalCode) throw new Error(`pdftotext timed out after ${timeoutMs / 1000}s`)
     if (code !== 0) throw new Error(`pdftotext failed (${code}): ${err.trim().slice(0, 200)}`)
-    return tidy(out)
+    // pdftotext ends every page with a form feed, the last one included.
+    return tidyPages(out.replace(/\f$/, ""))
   } finally {
     clearTimeout(timer)
   }
@@ -68,7 +69,7 @@ async function viaPdfjs(data: Uint8Array, timeoutMs: number, includeMetadata = f
         const { text } = await extractText(doc, { mergePages: false })
         const metadata = includeMetadata ? await (doc as unknown as { getMetadata(): Promise<{ info?: { Title?: string } }> }).getMetadata().catch(() => null) : null
         const title = metadata?.info?.Title
-        return tidy((title ? `Title: ${title.slice(0, 2048)}\n` : "") + (text as string[]).map((t) => t.trim()).join("\f"))
+        return tidyPages((title ? `Title: ${title.slice(0, 2048)}\n` : "") + (text as string[]).map((t) => t.trim()).join("\f"))
       } finally {
         await (doc as unknown as { destroy?: () => Promise<void> }).destroy?.().catch(() => {})
       }

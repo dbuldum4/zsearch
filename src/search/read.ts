@@ -234,7 +234,8 @@ function takeMatches(out: ReadResult, all: string[], ranges: Map<number, [number
   const take = new Taker(out, all, ranges, opts)
   let last = start - 1
   for (const m of out.matchLines) {
-    if (m < start) continue
+    // A match above the cursor still owns the context lines from the cursor on.
+    if (m + ctx < start) continue
     for (let n = Math.max(last + 1, m - ctx); n <= Math.min(all.length, m + ctx); n++) {
       if (!take.add(n, n === start ? (opts.column ?? 1) : 1)) return out
       last = n

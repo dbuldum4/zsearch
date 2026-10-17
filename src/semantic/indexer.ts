@@ -35,7 +35,7 @@ import type { PowerGate } from "../index/power.ts"
 import { crawlOptionsFor, policyFor } from "../index/policy.ts"
 import { secretFile } from "../index/secrets.ts"
 import { type Kind, semanticExcluded } from "../kinds.ts"
-import { CHUNK_CHARS, CHUNKER_VERSION } from "./chunk.ts"
+import { CHUNK_CHARS, CHUNKER_VERSION, titleOf } from "./chunk.ts"
 import type { Cut, CutJob } from "./cut.ts"
 import { Embedder, type TextEmbedder } from "./helper.ts"
 import { GRANITE, installedModel, modelFingerprint } from "./model.ts"
@@ -136,9 +136,9 @@ export function semanticFingerprint(vectorVersion: number): string {
   return `${modelFingerprint(GRANITE)} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
 }
 
-/** What a file's passages are read from: its size, date and text length. */
-export function textSig(size: number, mtime: number, len: number): string {
-  return `t:${size}:${mtime}:${len}`
+/** What a file's passages are read from: its size, date and text length, and the title they go to the model with. */
+export function textSig(size: number, mtime: number, len: number, title: string): string {
+  return `t:${size}:${mtime}:${len}:${title}`
 }
 
 interface Candidate {
@@ -373,7 +373,7 @@ export class SemanticIndexer {
     for (const r of rows) {
       if (!kinds.has(r.kind) || semanticExcluded(r.path)) continue
       const p = policy(r.path)
-      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len), mtime: r.mtime, len: r.len })
+      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)), mtime: r.mtime, len: r.len })
     }
     return out
   }
