@@ -73,10 +73,10 @@ export async function serve(version: string): Promise<number> {
   const downloading: { run: AbortController | null } = { run: null }
   /** A run to start when the one going ends: it started before semantic search was installed. */
   let followUp: { meaningOnly: boolean } | null = null
-  const watcher = new RootWatcher(() => {
+  const watcher = new RootWatcher((changed) => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
-    startIndex(undefined, false, true)
+    startIndex(undefined, false, true, false, changed ?? undefined)
   })
   watcher.update(config)
 
@@ -86,8 +86,8 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  /** `background`: the run started on its own (file changes, the app's schedule), not on request. */
-  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false) => {
+  /** `background`: the run started on its own (file changes, the app's schedule), not on request. `paths`: the files that changed. */
+  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false, paths?: string[]) => {
     if (closed) return
     config = loadConfig()
     client.setConfig(config)
@@ -119,7 +119,7 @@ export async function serve(version: string): Promise<number> {
         flush()
       },
       onCommit: () => client.refresh(),
-    }, rebuild, background, meaningOnly)
+    }, rebuild, background, meaningOnly, paths)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {

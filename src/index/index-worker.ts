@@ -10,7 +10,7 @@ import { runSemanticPass, semanticAvailable } from "../semantic/indexer.ts"
 
 declare const self: Worker
 
-export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; rebuild?: boolean; background?: boolean; meaningOnly?: boolean } | { type: "cancel" } | { type: "goNow" }
+export type IndexWorkerIn = { type: "start"; config: Config; dbPath: string; lockPath: string; rebuild?: boolean; background?: boolean; meaningOnly?: boolean; paths?: string[] } | { type: "cancel" } | { type: "goNow" }
 
 export type IndexWorkerOut =
   | { type: "progress"; progress: IndexProgress }
@@ -57,6 +57,7 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     const indexer = new Indexer(db, msg.config, {
       signal: controller.signal,
       power,
+      paths: msg.paths,
       onProgress: (progress) => send({ type: "progress", progress }),
       onCommit,
     })

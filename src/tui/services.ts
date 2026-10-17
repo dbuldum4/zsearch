@@ -69,11 +69,11 @@ export function realServices(config: Config): Services {
     void run.done.finally(() => runs.delete(run))
     return run
   }
-  const watcher = new RootWatcher(() => {
+  const watcher = new RootWatcher((changed) => {
     if (live || lockHolder(p.lock) !== null) return false
     if (!configExists()) return
     const current = loadConfig(); client.setConfig(current)
-    live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true))
+    live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true, false, changed ?? undefined))
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)

@@ -1,10 +1,11 @@
 import type { Database, Statement } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
+import { dirname } from "node:path"
 import { type Config, home, resolvePath } from "../config.ts"
 import { extOf, kindOf, type Kind, OCR_EXTS, TRANSCRIBE_EXTS } from "../kinds.ts"
 import { ocrToolPath, transcriptionToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
-import { type CrawlStats, crawl } from "./crawler.ts"
+import { type CrawlOptions, type CrawlStats, crawl, crawlTargets } from "./crawler.ts"
 import { compactIndex, ContentState, decompressText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
@@ -53,6 +54,11 @@ interface IndexOptions {
   onCommit?: () => void
   /** Wait during big passes while this says to (background runs; see `power.ts`). */
   power?: PowerGate
+  /**
+   * Changed paths (file events): update just these, and the folders below them, instead of
+   * walking every root. The run walks every root anyway when it cannot tell the rest is current.
+   */
+  paths?: string[]
 }
 
 /** A file waiting for its contents. */
@@ -86,6 +92,8 @@ const MAX_HELD_BYTES = 64 * 1024 * 1024
  * held until the content phase, so this and MAX_INFLIGHT_BYTES bound the memory they take.
  */
 const EARLY_JOBS = 2048
+
+type ExistingRow = { id: number; path: string; size: number; mtime: number; dev: number; ino: number; source_path: string; state: number; is_dir: number; kind: string; in_fts: number }
 
 interface Existing {
   id: number
@@ -125,6 +133,10 @@ export class Indexer {
   private powerOverridden = false
   /** Folders whose images OCR leaves out (see `datasets.ts`). */
   private datasets = new Set<string>()
+  /** The run updates some paths only (see `IndexOptions.paths`). */
+  private partial = false
+  /** The settings the walk follows: an update of some paths needs the last full walk's. */
+  private walkPolicy = ""
   private st!: {
     insertFile: Statement
     updateFile: Statement
@@ -281,10 +293,14 @@ export class Indexer {
       setMeta(this.db, "waiting_for", "")
     }
     if (phase === "done") {
-      const now = Date.now()
-      setMeta(this.db, "last_indexed_at", String(now))
-      setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
-      setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
+      // These stand for the last full walk: the timed refresh goes by it, to catch missed events.
+      if (!this.partial) {
+        const now = Date.now()
+        setMeta(this.db, "last_indexed_at", String(now))
+        setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
+        setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
+        setMeta(this.db, "walk_policy", this.walkPolicy)
+      }
       // Readers follow the removed files from this log; only its recent part is needed.
       this.db.query("DELETE FROM removed WHERE n <= (SELECT MAX(n) FROM removed) - ?").run(REMOVED_KEPT)
       pruneOcrCache(this.db, this.ocrTool !== null)
@@ -323,20 +339,44 @@ export class Indexer {
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
-    for (const r of this.db.query("SELECT id, path, size, mtime, dev, ino, source_path, content_state AS state, is_dir, kind, in_fts FROM files").iterate() as IterableIterator<{
-      id: number
-      path: string
-      size: number
-      mtime: number
-      dev: number
-      ino: number
-      source_path: string
-      state: number
-      is_dir: number
-      kind: string
-      in_fts: number
-    }>) {
+    const columns = "SELECT id, path, size, mtime, dev, ino, source_path, content_state AS state, is_dir, kind, in_fts FROM files"
+    const known = (r: ExistingRow) => {
       existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
+      return r.id
+    }
+    const { transcribe, transcriptionLocale, ...ordinaryContent } = this.config.content
+    const contentPolicy = JSON.stringify([ordinaryContent, this.config.cloudContent, this.ocrTool])
+    // A helper becoming available retries just media, without re-extracting every document.
+    const speechPolicy = JSON.stringify([this.transcriptionTool, transcribe, transcriptionLocale])
+    const crawlOpts = crawlOptionsFor(this.config)
+    this.walkPolicy = JSON.stringify([{ ...crawlOpts, onlyChildren: [...crawlOpts.onlyChildren].map(([dir, names]) => [dir, [...names]]) }, contentPolicy, speechPolicy])
+    const targets = this.targets(crawlOpts)
+    /** With targets, the files under them: the only ones the run may find gone. */
+    let scoped: Set<number> | null = null
+    if (!targets) for (const r of this.db.query(columns).iterate() as IterableIterator<ExistingRow>) known(r)
+    else {
+      this.partial = true
+      const one = this.db.query(`${columns} WHERE path = ?`)
+      const below = this.db.query(`${columns} WHERE path > ? AND path < ?`)
+      const inRoot = (dir: string) => crawlOpts.roots.some((r) => r !== dir && under(dir, r))
+      // A folder the index does not have yet is walked whole: events may name only part of what came with it.
+      const widened = targets.map((target) => {
+        let top = target
+        for (let dir = dirname(target); inRoot(dir); dir = dirname(dir)) {
+          const r = one.get(dir) as ExistingRow | null
+          if (r) known(r)
+          else top = dir
+        }
+        return top
+      })
+      targets.splice(0, targets.length, ...crawlTargets(crawlOpts, widened))
+      scoped = new Set()
+      for (const target of targets) {
+        const r = one.get(target) as ExistingRow | null
+        if (r) scoped.add(known(r))
+        const prefix = target === "/" ? "/" : target + "/"
+        for (const r of below.iterate(prefix, prefix.slice(0, -1) + "0") as IterableIterator<ExistingRow>) scoped.add(known(r))
+      }
     }
     // Built when the first new file turns up: most updates find none, and checking every known
     // file for a move up front costs as many stat calls as the crawl itself.
@@ -355,12 +395,8 @@ export class Indexer {
         .filter(({ path, entry }) => entry.dev === e.dev && entry.size === e.size && entry.mtime === e.mtime && !existsSync(path))
     }
     const visited = new Set<number>()
-    const { transcribe, transcriptionLocale, ...ordinaryContent } = this.config.content
-    const contentPolicy = JSON.stringify([ordinaryContent, this.config.cloudContent, this.ocrTool])
     const previousPolicy = getMeta(this.db, "content_policy")
     const policyChanged = previousPolicy !== null && previousPolicy !== contentPolicy
-    // A helper becoming available retries just media, without re-extracting every document.
-    const speechPolicy = JSON.stringify([this.transcriptionTool, transcribe, transcriptionLocale])
     const speechChanged = getMeta(this.db, "transcription_policy") !== speechPolicy
     // Offline asset downloads and temporary speech-service failures can recover later.
     // Back off across live refreshes instead of retrying every file event.
@@ -368,7 +404,6 @@ export class Indexer {
     let attemptedSpeech = false
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }
-    const crawlOpts = crawlOptionsFor(this.config)
     const resolveTargets = this.config.followSymlinks || crawlOpts.roots.some((root) => { try { return realpathSync(root) !== root } catch { return false } })
     let batch: (() => void)[] = []
     /** Files the batch makes wait for their contents. */
@@ -389,7 +424,7 @@ export class Indexer {
       waiting = []
     }
     let lastYield = Date.now()
-    for (const e of crawl(crawlOpts, stats)) {
+    for (const e of crawl(crawlOpts, stats, targets ?? undefined)) {
       // The walk is synchronous: let a cancel message or a signal handler in now and then.
       if (Date.now() - lastYield > 50) {
         await new Promise((resolve) => setImmediate(resolve))
@@ -473,13 +508,18 @@ export class Indexer {
     if (this.aborted) return []
     // Files that vanished. Keep entries under roots that are currently unavailable (unmounted drives).
     const missingRoots = [...crawlOpts.roots.filter((r) => !existsSync(r)), ...(stats.unreadable ?? [])]
-    this.progress.unreadableFolders = stats.unreadable?.length ?? 0
-    setMeta(this.db, "unreadable_folders", JSON.stringify(stats.unreadable ?? []))
+    // An update of some paths finds out about folders under them only.
+    const unreadable = [
+      ...(targets ? (JSON.parse(getMeta(this.db, "unreadable_folders") ?? "[]") as string[]).filter((p) => !targets.some((t) => under(p, t))) : []),
+      ...(stats.unreadable ?? []),
+    ]
+    this.progress.unreadableFolders = unreadable.length
+    setMeta(this.db, "unreadable_folders", JSON.stringify(unreadable))
     const removed: number[] = []
     /** Text read under the old content settings, in folders this run could not reach. */
     const stale: { id: number; path: string }[] = []
     for (const [path, ex] of existing) {
-      if (visited.has(ex.id)) continue
+      if (visited.has(ex.id) || (scoped && !scoped.has(ex.id))) continue
       if (missingRoots.some((r) => under(path, r))) {
         if ((policyChanged || (speechChanged && TRANSCRIBE_EXTS.has(extOf(path)))) && ex.state === ContentState.Indexed) stale.push({ id: ex.id, path })
         continue
@@ -497,6 +537,18 @@ export class Indexer {
     }).immediate()
     this.progress.removed = removed.length
     return removed
+  }
+
+  /**
+   * The paths this run walks (see `IndexOptions.paths`), or null to walk all the roots. Only a
+   * finished full walk with the same settings leaves the rest of the index as a walk would.
+   */
+  private targets(crawlOpts: CrawlOptions): string[] | null {
+    if (!this.opts.paths) return null
+    if (getMeta(this.db, "last_indexed_at") === null || getMeta(this.db, "walk_policy") !== this.walkPolicy) return null
+    // A followed link's files are indexed at every path that leads to them, and an event names one.
+    if (crawlOpts.followSymlinks) return null
+    return crawlTargets(crawlOpts, this.opts.paths)
   }
 
   /** Remove a file's content and searchable body, keeping the file entry. */

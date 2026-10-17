@@ -73,9 +73,9 @@ class Host {
   private client: SearchClient
   private queue: Promise<unknown> = Promise.resolve()
   private db: Database | null = null
-  private watcher = new RootWatcher(() => {
+  private watcher = new RootWatcher((changed) => {
     if (this.run || lockHolder(this.paths.lock) !== null) return false
-    if (configExists()) this.startIndex(false, "auto")
+    if (configExists()) this.startIndex(false, "auto", changed ?? undefined)
   })
   run: RunState | null = null
   lastRun: LastRun | null = null
@@ -216,8 +216,8 @@ class Host {
     return out
   }
 
-  /** Start an index run with the current settings, unless one is running here or elsewhere. */
-  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested"): { status: "started" | "running" } | { status: "busy"; pid: number } {
+  /** Start an index run with the current settings, unless one is running here or elsewhere. `paths`: the files that changed. */
+  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested", paths?: string[]): { status: "started" | "running" } | { status: "busy"; pid: number } {
     this.reloadConfig()
     if (this.run) {
       // Asked for while one runs, perhaps waiting on power: that one goes on now.
@@ -239,6 +239,8 @@ class Host {
       },
       rebuild,
       reason === "auto",
+      false,
+      paths,
     )
     const run: RunState = { handle, progress: null, startedAt: Date.now(), reason, done: handle.done }
     this.run = run
