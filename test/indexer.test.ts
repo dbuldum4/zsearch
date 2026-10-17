@@ -429,7 +429,9 @@ describe("storage helpers", () => {
     const probers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, "-e", `
       const { lockHolder } = await import(${JSON.stringify(join(import.meta.dir, "../src/index/lock.ts"))})
       const end = Date.now() + 1500
-      while (Date.now() < end) lockHolder(${JSON.stringify(lock)})
+      // Far more often than any app probes, but with gaps: probes back to back can keep a busy
+      // CI machine's lock shared for longer than a writer waits, which no real prober does.
+      while (Date.now() < end) { lockHolder(${JSON.stringify(lock)}); Bun.sleepSync(1) }
     `], { stdout: "ignore", stderr: "inherit" }))
     await Bun.sleep(300)
     let failed = 0
