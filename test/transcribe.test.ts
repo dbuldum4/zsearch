@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { defaultConfig, mergeConfig, withConfigSetting } from "../src/config.ts"
-import { ContentState, openDb } from "../src/index/db.ts"
+import { ContentState, getMeta, openDb, setMeta } from "../src/index/db.ts"
 import { DEFAULT_EXTRACT, extract, wantsContent } from "../src/index/extract/index.ts"
 import { transcribe } from "../src/index/extract/transcribe.ts"
 import { Indexer } from "../src/index/indexer.ts"
@@ -79,6 +79,17 @@ process.kill(process.pid, "SIGTERM")
   test("deadlines stop the helper and preserve finalized text", async () => {
     const stalled = script("stalled", 'console.log(JSON.stringify({start: 0, text: "finished words"})); setInterval(() => {}, 1000)')
     expect(await transcribe(stalled, "unused", "", 100, 1000)).toEqual({ text: "[00:00:00] finished words", truncated: true })
+  })
+
+  test("asset preparation and transcription share one job deadline", async () => {
+    const slowPreparation = script("slow-preparation", `
+if (process.argv[2] === "--prepare") { await Bun.sleep(1000); process.exit(0) }
+console.log(JSON.stringify({start: 0, text: "finished before deadline"}))
+await Bun.sleep(2500)
+console.log(JSON.stringify({start: 1, text: "after shared deadline"}))
+console.log(JSON.stringify({complete: true, truncated: false}))
+`)
+    expect(await transcribe(slowPreparation, "unused", "", 1000, 3000, "shared-deadline")).toEqual({ text: "[00:00:00] finished before deadline", truncated: true })
   })
 
   test("character and duration limits are marked partial", async () => {
@@ -169,6 +180,36 @@ test("transcripts are searchable, serial, reused, and hidden immediately on opt-
     engine.config = { ...off, namesOnly: [root] }
     expect(engine.preview(found.hits[0]!.id, "", "find").contentAllowed).toBe(false)
   } finally { db.close() }
+})
+
+test("new recordings do not postpone retries of older failed transcripts", async () => {
+  const root = join(dir, "retry-media"), recovered = join(dir, "speech-recovered")
+  mkdirSync(root)
+  writeFileSync(join(root, "failed.wav"), "fake audio")
+  const retryHelper = script("retry-helper", `
+import { existsSync } from "node:fs"
+if (process.argv[2] === "--prepare") process.exit(0)
+if (process.argv[3].endsWith("failed.wav") && !existsSync(${JSON.stringify(recovered)})) { console.error("temporary failure"); process.exit(1) }
+console.log(JSON.stringify({start: 0, text: "recovered speech"}))
+console.log(JSON.stringify({complete: true, truncated: false}))
+`)
+  process.env.ZSEARCH_TRANSCRIBE = retryHelper
+  const config = { ...defaultConfig(), roots: [root], indexLoad: 100, workers: 1 }
+  const db = openDb(join(dir, "retry-index.db"))
+  try {
+    expect((await new Indexer(db, config).run()).contentErrors).toBe(1)
+    writeFileSync(recovered, "ready")
+    const halfway = String(Date.now() - 30 * 60_000)
+    setMeta(db, "transcription_attempt_at", halfway)
+    writeFileSync(join(root, "new.wav"), "new recording")
+    const next = await new Indexer(db, config).run()
+    expect(next.contentDone).toBe(1)
+    expect(getMeta(db, "transcription_attempt_at")).toBe(halfway)
+    expect(db.query("SELECT content_state FROM files WHERE name = 'failed.wav'").get()).toEqual({ content_state: ContentState.Error })
+    setMeta(db, "transcription_attempt_at", String(Date.now() - 61 * 60_000))
+    expect((await new Indexer(db, config).run()).contentDone).toBe(1)
+    expect(db.query("SELECT content_state FROM files WHERE name = 'failed.wav'").get()).toEqual({ content_state: ContentState.Indexed })
+  } finally { db.close(); process.env.ZSEARCH_TRANSCRIBE = helper }
 })
 
 test("speech settings default on, preserve older configs, validate locale, and inform estimates", () => {

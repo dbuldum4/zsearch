@@ -1,6 +1,6 @@
 import { cappedText, trackProcess } from "../../util/process.ts"
 
-/** Bounded even for long recordings and a first-use Apple language-asset download. */
+/** One deadline shared by first-use language-asset preparation and recognition. */
 export const TRANSCRIPTION_TIMEOUT_MS = 30 * 60_000
 export const TRANSCRIPTION_MAX_SECONDS = 2 * 60 * 60
 
@@ -34,8 +34,11 @@ function prepare(tool: string, locale: string, runId: string, timeoutMs: number)
 
 /** Final segments are JSON lines; a killed helper may leave an incomplete last line. */
 export async function transcribe(tool: string, path: string, locale: string, maxChars: number, timeoutMs = TRANSCRIPTION_TIMEOUT_MS, runId?: string): Promise<{ text: string; truncated: boolean }> {
+  const deadline = performance.now() + timeoutMs
   if (runId) await prepare(tool, locale, runId, timeoutMs)
-  const { out, err, code, interrupted } = await run(tool, ["transcribe", path, "--locale", locale, "--max-seconds", String(TRANSCRIPTION_MAX_SECONDS), "--max-chars", String(Math.min(maxChars, 2_000_000))], timeoutMs)
+  const remaining = deadline - performance.now()
+  if (remaining <= 0) throw new Error("Transcription did not finish: asset preparation exhausted the deadline")
+  const { out, err, code, interrupted } = await run(tool, ["transcribe", path, "--locale", locale, "--max-seconds", String(TRANSCRIPTION_MAX_SECONDS), "--max-chars", String(Math.min(maxChars, 2_000_000))], remaining)
   const lines: string[] = []
   let complete = false, truncated = false, chars = 0
   for (const line of out.split("\n").slice(0, -1)) {

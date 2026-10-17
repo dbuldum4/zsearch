@@ -492,7 +492,8 @@ export class Indexer {
       for (const s of stale) this.dropContent(s.id, s.path, ContentState.None, null)
       setMeta(this.db, "content_policy", contentPolicy)
       setMeta(this.db, "transcription_policy", speechPolicy)
-      if (attemptedSpeech) setMeta(this.db, "transcription_attempt_at", String(Date.now()))
+      // New recordings must not postpone the retry window for older failed recordings.
+      if (attemptedSpeech && retrySpeech) setMeta(this.db, "transcription_attempt_at", String(Date.now()))
     }).immediate()
     this.progress.removed = removed.length
     return removed
