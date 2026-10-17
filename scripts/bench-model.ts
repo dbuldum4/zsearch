@@ -42,9 +42,9 @@ const queries = readJsonl(join(dataset, "queries.jsonl")).filter((q) => qrels.ha
 const meta = existsSync(join(dataset, "meta.json")) ? JSON.parse(readFileSync(join(dataset, "meta.json"), "utf8")) as { reference?: { ndcg: number; recall: number } | null } : {}
 
 function scores(ranked: string[], rel: Map<string, number>) {
-  const gain = (g: number) => 2 ** g - 1
-  const dcg = ranked.slice(0, 10).reduce((s, d, i) => s + gain(rel.get(d) ?? 0) / Math.log2(i + 2), 0)
-  const ideal = [...rel.values()].sort((a, b) => b - a).slice(0, 10).reduce((s, g, i) => s + gain(g) / Math.log2(i + 2), 0)
+  // Grades count as they are (no 2^g - 1), as BEIR's and MTEB's ndcg_cut has them.
+  const dcg = ranked.slice(0, 10).reduce((s, d, i) => s + (rel.get(d) ?? 0) / Math.log2(i + 2), 0)
+  const ideal = [...rel.values()].sort((a, b) => b - a).slice(0, 10).reduce((s, g, i) => s + g / Math.log2(i + 2), 0)
   const found = [...rel.keys()].filter((d) => ranked.slice(0, 100).includes(d)).length
   return { ndcg: ideal ? dcg / ideal : 0, recall: found / rel.size }
 }

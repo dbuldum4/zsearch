@@ -117,9 +117,9 @@ const modelDirs = [GRANITE].filter((m) => installedModel(m)).map((m) => [m.folde
 /* ------------------------------------------------------------ the runs -- */
 
 function scores(ranked: string[], rel: Map<string, number>) {
-  const gain = (g: number) => 2 ** g - 1
-  const dcg = ranked.slice(0, 10).reduce((s, d, i) => s + gain(rel.get(d) ?? 0) / Math.log2(i + 2), 0)
-  const ideal = [...rel.values()].sort((a, b) => b - a).slice(0, 10).reduce((s, g, i) => s + gain(g) / Math.log2(i + 2), 0)
+  // Grades count as they are (no 2^g - 1), as BEIR's and MTEB's ndcg_cut has them.
+  const dcg = ranked.slice(0, 10).reduce((s, d, i) => s + (rel.get(d) ?? 0) / Math.log2(i + 2), 0)
+  const ideal = [...rel.values()].sort((a, b) => b - a).slice(0, 10).reduce((s, g, i) => s + g / Math.log2(i + 2), 0)
   const first = ranked.slice(0, 10).findIndex((d) => rel.has(d))
   const found = [...rel.keys()].filter((d) => ranked.slice(0, 100).includes(d)).length
   return { ndcg: ideal ? dcg / ideal : 0, mrr: first < 0 ? 0 : 1 / (first + 1), recall: found / rel.size }
@@ -160,11 +160,13 @@ try {
       const t0 = performance.now()
       const sum = { ndcg: 0, mrr: 0, recall: 0, empty: 0 }
       for (const q of queries) {
-        const res = await engine.search(q.text!, "semantic", { limit: 100 })
+        // One more than the 100 scored, so removing the query's own document still leaves 100.
+        const res = await engine.search(q.text!, "semantic", { limit: 101 })
         if (res.error) throw new Error(`${q._id}: ${res.error}`)
         // As BEIR's evaluation: a document with the query's own id is the query (ArguAna), not a result.
-        const s = scores(res.hits.map((h) => idOf.get(h.display) ?? h.display).filter((id) => id !== q._id), qrels.get(q._id!)!)
-        sum.ndcg += s.ndcg; sum.mrr += s.mrr; sum.recall += s.recall; sum.empty += res.hits.length ? 0 : 1
+        const ranked = res.hits.map((h) => idOf.get(h.display) ?? h.display).filter((id) => id !== q._id).slice(0, 100)
+        const s = scores(ranked, qrels.get(q._id!)!)
+        sum.ndcg += s.ndcg; sum.mrr += s.mrr; sum.recall += s.recall; sum.empty += ranked.length ? 0 : 1
         ;(perQuery[q._id!] ??= {})[pipeline] = [+s.ndcg.toFixed(4), +s.mrr.toFixed(4), +s.recall.toFixed(4)]
       }
       const n = Math.max(queries.length, 1)

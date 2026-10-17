@@ -636,8 +636,13 @@ export class SearchEngine {
       const candidate = new Set<number>()
       for (const [id, n] of share) if (n / terms.length >= gate - 1e-9) candidate.add(id)
       for (const [file, b] of best) if (b.z >= zGate) candidate.add(file)
-      // Rare words count for more, as without vectors (sizes here include text the user may not read).
-      const idf = terms.map((_, t) => Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(byName[t]!.size + byText[t]!.size, 1)))
+      // Rare words count for more, as without vectors. Only text the user may read counts: otherwise
+      // a names-only folder's contents would shift visible files' order and give its words away.
+      const idf = terms.map((_, t) => {
+        let n = byName[t]!.size
+        for (const id of byText[t]!) if (readable(id)) n++
+        return Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(n, 1))
+      })
       const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
       const add = (id: number, t: number) => { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) }
       for (let t = 0; t < terms.length; t++) {

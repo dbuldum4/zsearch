@@ -596,6 +596,38 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("text in a names-only folder does not change how visible files rank", async () => {
+    corpus.write("notes/flowers.txt", "The zinnia bloomed in the garden.\n")
+    corpus.write("notes/animals.txt", "A quokka smiled at the camera.\n")
+    const restricted = join(corpus.home, "restricted")
+    const scoresWith = async (word: string) => {
+      // Code has no vectors: these files can only ever match by their text.
+      for (let i = 0; i < 10; i++) corpus.write(`restricted/r${i}.ts`, `export const word = "${word}"\n`)
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+      // Indexed while readable, then made names-only: the stored text stays behind.
+      const e = engine()
+      e.config = { ...config, namesOnly: [restricted] }
+      const r = await e.search("zinnia quokka", "semantic")
+      e.closeSemantic()
+      expect(r.strategy).toBe("semantic + words")
+      expect(r.hits.some((h) => h.display.startsWith("restricted/"))).toBe(false)
+      return Object.fromEntries(r.hits.filter((h) => h.display === "notes/flowers.txt" || h.display === "notes/animals.txt").map((h) => [h.display, h.score]))
+    }
+    try {
+      const unrelated = await scoresWith("marigold")
+      const shared = await scoresWith("zinnia")
+      expect(Object.keys(unrelated)).toHaveLength(2)
+      for (const [file, score] of Object.entries(unrelated)) expect(shared[file]).toBeCloseTo(score, 9)
+    } finally {
+      rmSync(restricted, { recursive: true, force: true })
+      rmSync(join(corpus.home, "notes/flowers.txt"))
+      rmSync(join(corpus.home, "notes/animals.txt"))
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
+
   test("a big background run waits on power, and goes when asked", async () => {
     for (let i = 0; i < 110; i++) corpus.write(`bulk/note-${i}.txt`, `Note ${i} about the vacation planning, part ${i}.\n`)
     await new Indexer(db, config, { inProcess: true }).run()
