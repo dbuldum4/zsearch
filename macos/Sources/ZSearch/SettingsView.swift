@@ -37,6 +37,7 @@ enum AppSettings {
     static let documentShowsText = "documentShowsText"
     /// Images (and other files Quick Look shows) preview as the text read from them instead.
     static let imageShowsText = "imageShowsText"
+    static let mediaShowsTranscript = "mediaShowsTranscript"
     /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
     static let editor = "editor"
     /// What the global shortcut shows (see `ShortcutTarget`).
@@ -244,6 +245,7 @@ private struct IndexSettings: View {
     @Environment(SearchModel.self) private var model
     @State private var confirmRebuild = false
     @State private var excludeText = ""
+    @State private var transcriptionLanguage = ""
 
     var body: some View {
         Form {
@@ -278,6 +280,18 @@ private struct IndexSettings: View {
                     .help("Recognizes text in screenshots, photos and scans (OCR), after the other files are read.")
                 Toggle("Index photo metadata, Finder tags and PDF titles", isOn: metadata)
                     .disabled(model.config?.content.enabled != true)
+                Toggle("Transcribe speech in audio and video", isOn: transcription)
+                    .disabled(model.config?.content.enabled != true)
+                    .help("On-device on supported Macs with macOS 26+. Apple may download language assets on first use. Reads up to two hours per recording, after documents and images.")
+                TextField("Transcript language", text: $transcriptionLanguage, prompt: Text("System language"))
+                    .disabled(model.config?.content.enabled != true || model.config?.content.transcribe == false)
+                    .onAppear { transcriptionLanguage = model.config?.content.transcriptionLocale ?? "" }
+                    .onChange(of: model.config?.content.transcriptionLocale) { _, locale in transcriptionLanguage = locale ?? "" }
+                    .onSubmit {
+                        guard let content = model.config?.content else { return }
+                        model.updateConfig(ConfigPatch(content: ContentConfig(enabled: content.enabled, transcriptionLocale: transcriptionLanguage.trimmingCharacters(in: .whitespaces))), reindex: true)
+                    }
+                    .help("Language code such as en-US or tr-TR; press Return to save. Leave empty for the system language; language is not detected automatically.")
                 Toggle("Include hidden files and folders", isOn: flag(\.includeHidden) { ConfigPatch(includeHidden: $0) })
                 Toggle("Skip what .gitignore files exclude", isOn: flag(\.respectGitignore) { ConfigPatch(respectGitignore: $0) })
                 Toggle("Follow symbolic links within indexed folders", isOn: flag(\.followSymlinks) { ConfigPatch(followSymlinks: $0) })
@@ -384,6 +398,16 @@ private struct IndexSettings: View {
         Binding(
             get: { model.config?.pauseOnBattery ?? false },
             set: { model.updateConfig(ConfigPatch(pauseOnBattery: $0), reindex: false) }
+        )
+    }
+
+    private var transcription: Binding<Bool> {
+        Binding(
+            get: { model.config?.content.transcribe ?? true },
+            set: { on in
+                guard let content = model.config?.content else { return }
+                model.updateConfig(ConfigPatch(content: ContentConfig(enabled: content.enabled, transcribe: on)), reindex: true)
+            }
         )
     }
 

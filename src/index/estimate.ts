@@ -3,8 +3,8 @@
  * opened. Setup shows it next to each choice before anything is indexed.
  */
 import { type Config, resolvePath } from "../config.ts"
-import { DOCUMENT_EXTS, extOf, kindOf, OCR_EXTS } from "../kinds.ts"
-import { ocrToolPath } from "../platform.ts"
+import { DOCUMENT_EXTS, extOf, kindOf, OCR_EXTS, TRANSCRIBE_EXTS } from "../kinds.ts"
+import { ocrToolPath, transcriptionToolPath } from "../platform.ts"
 import { formatCount } from "../util/text.ts"
 import { workerUrl } from "../util/workers.ts"
 import { crawl } from "./crawler.ts"
@@ -25,6 +25,8 @@ export interface FolderEstimate {
   documents: number
   /** Images to read with OCR. */
   ocrImages: number
+  /** Duration is not read during estimation, so transcription time is reported separately. */
+  mediaFiles?: number
   /** The walk finished in time: otherwise the counts and time are a lower bound. */
   complete: boolean
   /** The first pass, roughly. */
@@ -58,6 +60,7 @@ export function firstPassSeconds(c: Pick<FolderEstimate, "files" | "folders" | "
 export function estimateFolder(root: string, config: Config, budgetMs = ESTIMATE_BUDGET_MS, now: () => number = Date.now): FolderEstimate {
   const opts = crawlOptionsFor({ ...config, roots: [root] })
   const ocr = config.content.enabled && config.content.ocr && ocrToolPath() !== null
+  const speech = config.content.enabled && config.content.transcribe && transcriptionToolPath() !== null
   const maxText = config.content.maxTextMB * 1024 * 1024
   const maxDoc = config.content.maxDocumentMB * 1024 * 1024
   const e: FolderEstimate = { root, files: 0, folders: 0, textFiles: 0, textBytes: 0, documents: 0, ocrImages: 0, complete: true, seconds: 0 }
@@ -70,8 +73,9 @@ export function estimateFolder(root: string, config: Config, budgetMs = ESTIMATE
     if (!config.content.enabled || entry.namesOnly || entry.offline || entry.size === 0) continue
     const ext = extOf(entry.name)
     const kind = kindOf(entry.name)
-    if (!wantsContent(ext, kind, ocr, config.content.metadata) || secretFile(entry.path)) continue
-    if (DOCUMENT_EXTS.has(ext)) { if (entry.size <= maxDoc) e.documents++ }
+    if (!wantsContent(ext, kind, ocr, config.content.metadata, speech) || secretFile(entry.path)) continue
+    if (speech && TRANSCRIBE_EXTS.has(ext)) e.mediaFiles = (e.mediaFiles ?? 0) + 1
+    else if (DOCUMENT_EXTS.has(ext)) { if (entry.size <= maxDoc) e.documents++ }
     else if (OCR_EXTS.has(ext) && kind === "image") { if (ocr && entry.size <= maxDoc) e.ocrImages++ }
     // Files of unknown types are mostly binary, which a look at their first 8 KB rules out.
     else if (entry.size <= maxText) { e.textFiles++; e.textBytes += kind === "other" ? Math.min(entry.size, 8192) : entry.size }
@@ -87,6 +91,7 @@ export function combine(estimates: FolderEstimate[], root = estimates.map((e) =>
   for (const e of estimates) {
     out.files += e.files; out.folders += e.folders; out.textFiles += e.textFiles; out.textBytes += e.textBytes
     out.documents += e.documents; out.ocrImages += e.ocrImages; out.seconds += e.seconds
+    if (e.mediaFiles) out.mediaFiles = (out.mediaFiles ?? 0) + e.mediaFiles
     out.complete &&= e.complete
   }
   return out
@@ -103,8 +108,9 @@ export function roughDuration(seconds: number): string {
 
 /** "12,345 files · about 3 minutes", or a lower bound when the walk ran out of time. */
 export function describeEstimate(e: FolderEstimate): string {
-  if (e.complete) return `${formatCount(e.files)} files · ${roughDuration(e.seconds)}`
-  return `over ${formatCount(e.files)} files · ${e.seconds < 60 ? "a minute or more" : `at least ${roughDuration(e.seconds).replace(/^about /, "")}`}`
+  const speech = e.mediaFiles ? `, plus transcription of ${formatCount(e.mediaFiles)} recordings (depends on duration)` : ""
+  if (e.complete) return `${formatCount(e.files)} files · ${roughDuration(e.seconds)}${speech}`
+  return `over ${formatCount(e.files)} files · ${e.seconds < 60 ? "a minute or more" : `at least ${roughDuration(e.seconds).replace(/^about /, "")}`}${speech}`
 }
 
 /** The error `estimateInBackground` rejects with once cancelled. */

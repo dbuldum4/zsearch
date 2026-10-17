@@ -37,13 +37,13 @@ const MARKDOWN = `md markdown mdown mkd mkdn mdx rst adoc asciidoc org textile w
 const TEXT = `txt text log out err nfo me readme license licence changelog authors contributors copying todo notes srt vtt sub ass diff patch`
 const DATA = `json jsonc json5 jsonl ndjson geojson yaml yml toml ini cfg conf config env properties prop xml xsd xsl xslt plist csv tsv psv dat ilean lock gitignore gitattributes editorconfig npmrc htaccess`
 const WEB = `html htm xhtml shtml mhtml svg`
-const DOC = `doc docx docm dot dotx odt ott rtf pages wpd wps abw fodt`
-const SHEET = `xls xlsx xlsm xlsb xlt xltx ods ots numbers fods`
-const SLIDES = `ppt pptx pptm pps ppsx pot potx odp otp key fodp`
+const DOC = `doc docx docm dot dotx dotm odt ott rtf pages wpd wps abw fodt`
+const SHEET = `xls xlsx xlsm xlsb xlt xltx xltm ods ots numbers fods`
+const SLIDES = `ppt pptx pptm pps ppsx pot potx potm odp otp key fodp`
 const EBOOK = `epub mobi azw azw3 fb2 djvu cbz cbr`
 const EMAIL = `eml emlx msg mbox ics vcf`
 const IMAGE = `png jpg jpeg gif bmp tif tiff webp heic heif avif ico icns raw cr2 cr3 nef arw dng orf rw2 psd xcf ai eps sketch fig`
-const AUDIO = `mp3 wav flac aac m4a ogg oga opus wma aiff aif alac mid midi`
+const AUDIO = `mp3 wav flac aac m4a ogg oga opus wma aiff aif alac mid midi caf`
 const VIDEO = `mp4 m4v mov avi mkv webm wmv flv mpg mpeg 3gp ogv`
 const ARCHIVE = `zip tar gz tgz bz2 tbz xz txz zst 7z rar dmg iso img pkg deb rpm apk jar war whl gem crate`
 const APP = `app exe dll so dylib a o obj class pyc pyo wasm bin elf msi appimage olean`
@@ -126,6 +126,11 @@ export const TEXTUAL_KINDS = new Set<Kind>(["code", "text", "markdown", "data", 
 /** Images whose text can be read with OCR (see `ocrToolPath`): formats macOS's Vision reads. */
 export const OCR_EXTS = new Set(["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "bmp", "gif"])
 
+/** File containers AVFoundation can decode for on-device speech transcription. */
+export const TRANSCRIBE_EXTS = new Set("mp3 wav flac aac m4a aiff aif caf mp4 m4v mov".split(" "))
+
+export const TEXT_EXPORT_EXTS = new Set(["ics", "vcf"])
+
 /** Kinds that need a document extractor. */
 export const DOCUMENT_EXTS = new Set([
   "pages", "numbers", "key",
@@ -133,13 +138,20 @@ export const DOCUMENT_EXTS = new Set([
   "docx",
   "docm",
   "dotx",
+  "dotm",
+  "dot",
   "xlsx",
   "xlsm",
   "xltx",
+  "xltm",
+  "xlt",
   "pptx",
   "pptm",
   "ppsx",
   "potx",
+  "potm",
+  "pot",
+  "pps",
   "odt",
   "ott",
   "ods",

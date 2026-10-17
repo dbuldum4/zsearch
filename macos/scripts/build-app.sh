@@ -27,6 +27,7 @@ fi
 
 swift build -c release --package-path "$ROOT/macos" --product ZSearch
 swift build -c release --package-path "$ROOT/macos" --product zsearch-ocr
+swift build -c release --package-path "$ROOT/macos" --product zsearch-transcribe
 BIN=$(swift build -c release --package-path "$ROOT/macos" --show-bin-path)
 
 APP="$DIST/zsearch.app"
@@ -36,6 +37,7 @@ cp "$BIN/ZSearch" "$APP/Contents/MacOS/ZSearch"
 cp "$ENGINE" "$APP/Contents/Helpers/zsearch"
 # The OCR helper sits next to the engine, where the engine looks for it.
 cp "$BIN/zsearch-ocr" "$APP/Contents/Helpers/zsearch-ocr"
+cp "$BIN/zsearch-transcribe" "$APP/Contents/Helpers/zsearch-transcribe"
 # So does the embedding helper (search by meaning). The model is downloaded on request, not bundled.
 [ -x "$EMBED" ] && cp "$EMBED" "$APP/Contents/Helpers/zsearch-embed"
 # Licences of what the helpers are built from (DigUp, llama.cpp).
@@ -62,6 +64,7 @@ fi
 # The engine first, then the bundle.
 codesign "${SIGN_FLAGS[@]}" --entitlements "$ROOT/macos/engine-entitlements.plist" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.engine "$APP/Contents/Helpers/zsearch"
 codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.ocr "$APP/Contents/Helpers/zsearch-ocr"
+codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.transcribe "$APP/Contents/Helpers/zsearch-transcribe"
 if [ -x "$APP/Contents/Helpers/zsearch-embed" ]; then
   codesign "${SIGN_FLAGS[@]}" --sign "$IDENTITY" --identifier io.github.dbuldum4.zsearch.embed "$APP/Contents/Helpers/zsearch-embed"
 fi

@@ -19,6 +19,8 @@ export interface CrawlOptions {
   onlyChildren: Map<string, Set<string>>
   /** Absolute folders whose files are indexed by name only. */
   namesOnly: string[]
+  /** Hide stored speech transcripts as soon as the user opts out. */
+  transcribe?: boolean
   /** Skip folders with these names anywhere (defaults to SKIP_DIR_NAMES). */
   skipDirNames?: Set<string>
   /** Treat macOS bundle folders (.app, .photoslibrary...) as opaque files. */

@@ -128,6 +128,7 @@ public struct FolderEstimate: Decodable, Hashable, Sendable {
     public var textBytes: Int
     public var documents: Int
     public var ocrImages: Int
+    public var mediaFiles: Int?
     /// False when the walk ran out of time: the counts and time are then a lower bound.
     public var complete: Bool
     /// The first pass, roughly.
@@ -147,11 +148,15 @@ public struct ContentConfig: Codable, Hashable, Sendable {
     /// patches that leave it as it is.
     public var ocr: Bool?
     public var metadata: Bool?
+    public var transcribe: Bool?
+    public var transcriptionLocale: String?
 
-    public init(enabled: Bool, ocr: Bool? = nil, metadata: Bool? = nil) {
+    public init(enabled: Bool, ocr: Bool? = nil, metadata: Bool? = nil, transcribe: Bool? = nil, transcriptionLocale: String? = nil) {
         self.enabled = enabled
         self.ocr = ocr
         self.metadata = metadata
+        self.transcribe = transcribe
+        self.transcriptionLocale = transcriptionLocale
     }
 }
 

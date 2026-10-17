@@ -43,7 +43,7 @@ import { CutWorker } from "./workers.ts"
 import { clearAll, clearPassages, getMeta, openSemanticDb, packVector, semanticDbPath, setMeta } from "./store.ts"
 
 /** Kinds whose text is embedded (images: the text OCR read in them). Code and data files only with `semantic.code`. */
-const TEXT_KINDS = new Set<Kind>(["text", "markdown", "web", "pdf", "doc", "sheet", "slides", "ebook", "email", "image", "other"])
+const TEXT_KINDS = new Set<Kind>(["text", "markdown", "web", "pdf", "doc", "sheet", "slides", "ebook", "email", "image", "audio", "video", "other"])
 const CODE_KINDS = new Set<Kind>(["code", "data"])
 /** Passages of a file in the first round (DigUp's `docStep`); the rest come in the second. */
 const FIRST_ROUND = 40
@@ -373,7 +373,10 @@ export class SemanticIndexer {
     for (const r of rows) {
       if (!kinds.has(r.kind) || semanticExcluded(r.path)) continue
       const p = policy(r.path)
-      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)), mtime: r.mtime, len: r.len })
+      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) {
+        const speech = r.kind === "audio" || r.kind === "video" ? `:speech:${this.config.content.transcriptionLocale}` : ""
+        out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)) + speech, mtime: r.mtime, len: r.len })
+      }
     }
     return out
   }

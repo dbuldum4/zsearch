@@ -29,7 +29,7 @@ The interface is built with [OpenTUI](https://github.com/anomalyco/opentui) and 
 - **Updates are incremental.** Only new or changed files are read again, and search picks up the changes without reloading the whole index. While a frontend is running, native file-system events trigger a refresh; an hourly refresh also catches missed events. Press <kbd>Ctrl-R</kbd> to refresh now. Refreshes currently walk the selected roots.
 - **Defaults keep the index clean.** zsearch follows `.gitignore`. It skips `node_modules`, VCS folders, caches, trash and package-manager stores, and its own data. On macOS it treats app bundles as single files. It never reads cloud "online-only" placeholders, because reading them would download them. Hidden files are left out unless you turn them on.
 - **It is fast and small.** On the benchmark corpus (`bun run bench`: 20,000 files, 80 MB), a full index takes about 14 s and makes a 70 MB index. Find takes 5–20 ms, fuzzy name search about 15–25 ms, and a regex that reads every file about 15–55 ms. Search runs in a worker thread, so typing never stutters.
-- **Everything stays local.** The index is a SQLite file on your machine, and zsearch makes no network requests, except to download the model for semantic search when you ask for it.
+- **Everything stays local.** The index, extracted text and speech recognition stay on your machine. Models for semantic search are downloaded when enabled; macOS may download Apple's speech language assets on first use. File contents and recordings are not uploaded for either feature.
 - **AI assistants can use it.** `zsearch mcp` lets Claude and other MCP clients search your files and read their text (see [below](#use-it-from-claude-and-other-ai-apps-mcp)).
 
 ## Install
@@ -221,15 +221,25 @@ zsearch estimate --home             # how long a first index of ~ takes, roughly
 
 | Contents read from | Formats |
 | --- | --- |
-| Documents | PDF, DOCX/DOCM/DOTX, ODT, RTF, legacy DOC, EPUB |
-| Spreadsheets | XLSX/XLSM, ODS, legacy XLS (sheets, shared strings, numbers) |
-| Presentations | PPTX, ODP, legacy PPT (slides and speaker notes) |
+| Documents | PDF, DOCX/DOCM/DOTX/DOTM, ODT, RTF, legacy DOC/DOT, EPUB |
+| Spreadsheets | XLSX/XLSM/XLTX/XLTM, ODS, legacy XLS/XLT (sheets, shared strings, numbers) |
+| Presentations | PPTX/PPTM/PPSX/POTX/POTM, ODP, legacy PPT/PPS/POT (slides and speaker notes) |
 | iWork | Single-file Pages, Numbers and Keynote archives with an embedded Quick Look PDF or an image preview (with OCR enabled); other iWork files stay names-only |
 | Mail & notebooks | EML/EMLX (headers, plain text and HTML bodies), Jupyter `.ipynb` |
+| Calendar & contacts | `.ics` and modern `.vcf` readable fields, with folded lines and text escapes decoded; embedded photos, keys and attachments are omitted. Legacy vCard transfer encodings are not decoded. |
 | Text | Code in ~100 languages, Markdown, reStructuredText, Org, LaTeX, HTML, XML, JSON, YAML, TOML, CSV, logs, config files, and any file without an extension that turns out to be text |
 | Images and scans (Mac app) | PNG, JPEG, HEIC, TIFF, WebP, BMP, GIF, and PDF pages that have no text, read with OCR |
+| Speech (Mac app, supported Macs on macOS 26+) | On-device transcripts of MP3, WAV, FLAC, AAC, M4A, AIFF/AIF, CAF, and the first audio track of MP4/M4V/MOV files, where AVFoundation supports the encoding |
 
-All other files (audio, video, archives, applications, and images outside the Mac app) are indexed by name, folder, size and date.
+Other formats, archives, applications and media without their helper are indexed by name, folder, size and date.
+
+**Audio and video transcripts.** Transcription is on by default where the bundled `zsearch-transcribe` helper and Apple's on-device `SpeechTranscriber` are available. Turn it off in **Settings › Index › Transcribe speech in audio and video**, or with `zsearch config set content.transcribe false`. This hides stored transcripts immediately from searches and reads; the next index update removes their stored text. The Mac app also cancels an active index run when you opt out. Files remain searchable by name and can still be played.
+
+The spoken language defaults to the Mac's system locale. Set **Transcript language** in Settings (press Return to save), or `zsearch config set content.transcriptionLocale en-US`, for recordings in another supported language. Language is not detected automatically. Apple may download shared language assets before the first transcript; recognition itself stays on-device, with no API key, paid service or server fallback. See [Apple's SpeechAnalyzer overview](https://developer.apple.com/videos/play/wwdc2025/277/).
+
+Recordings are streamed, one at a time after documents and images, at background priority under the index's power settings. Each reads up to the first **two hours**, with a **30-minute processing deadline** and at most **2 million transcript characters** (or the lower `content.maxChars`). Media do not use the PDF/Office file-size limit. Final segments carry `[hh:mm:ss]` timestamps in search previews; a **File/Transcript** switch in the Mac app lets you play the recording instead. Duration, output and deadline limits mark retained text `truncated`; timestamps are text, not playback seek links. Unchanged recordings reuse their indexed transcripts; an explicit rebuild transcribes them again. Silent/unsupported files and service failures appear in `status --errors`; failed speech jobs can retry on an index update after an hour, or after changing the speech settings. Asset preparation is attempted once per worker/run, so a failed download is not repeated for every recording.
+
+`zsearch doctor` reports the helper path. For the terminal app, point `ZSEARCH_TRANSCRIBE` at the bundled helper, for example `ZSEARCH_TRANSCRIBE=~/Applications/zsearch.app/Contents/Helpers/zsearch-transcribe`. `ZSEARCH_TRANSCRIBE=0` disables discovery. Older macOS releases and unsupported hardware keep media searchable by name. First-index estimates list recordings separately because a count-only scan cannot estimate their transcription time.
 
 **Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists such folders; `zsearch config set skipDatasetOcr false` reads them too.
 
@@ -257,6 +267,8 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `content.maxChars` | `2000000` | Text kept per file |
 | `content.metadata` | `false` | Index selected EXIF fields, PDF titles and Finder tags (Mac); obeys content privacy settings |
 | `content.ocr` | `true` | Read the text in images and scanned PDF pages, when the OCR helper is available (macOS) |
+| `content.transcribe` | `true` | Transcribe supported audio/video with the Mac helper; opt-out immediately hides stored transcripts |
+| `content.transcriptionLocale` | `""` | Spoken language, e.g. `en-US` or `tr-TR`; empty uses the Mac's system locale |
 | `liveUpdates` | `true` | Watch roots for changes while a frontend is running; updates still walk the selected roots |
 | `autoRefreshMinutes` | `60` | Refresh the index in the background when it is older than this (`0` = off) |
 | `workers` | `0` | Extraction threads (`0` = automatic: the CPUs less two, at most 8, within `indexLoad`) |
