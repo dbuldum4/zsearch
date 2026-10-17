@@ -138,7 +138,7 @@ struct PreviewTextView: NSViewRepresentable {
         // The same text with another line in focus (⌘G to a match among these lines): only scroll.
         if let previous, let styled = coordinator.styled, TextPreviews.Key(previous) == TextPreviews.Key(preview) {
             if previous.focusLine != preview.focusLine || wrappingChanged {
-                Self.center(styled.lineRanges[preview.focusLine], in: textView, scroll: scroll)
+                Self.center(styled.focusRanges[preview.focusLine], in: textView, scroll: scroll)
             }
             return
         }
@@ -148,7 +148,7 @@ struct PreviewTextView: NSViewRepresentable {
         textView.sizeToFit()
         // A refresh of the same file keeps the reader's scroll position; anything else centers the match.
         if previous?.id == preview.id, previous?.focusLine == preview.focusLine { return }
-        let focus = styled.lineRanges[preview.focusLine]
+        let focus = styled.focusRanges[preview.focusLine]
         Self.center(focus, in: textView, scroll: scroll)
         // Layout may not be final on the first pass (a newly shown pane has no size yet).
         DispatchQueue.main.async { Self.center(focus, in: textView, scroll: scroll) }
@@ -177,8 +177,8 @@ struct PreviewTextView: NSViewRepresentable {
 /// the main thread (see `TextPreviews`).
 struct StyledText: @unchecked Sendable {
     let text: NSAttributedString
-    /// Each line's range in `text`, gutter included, by line number.
-    let lineRanges: [Int: NSRange]
+    /// The first matching character (or line start), so a tall wrapped line cannot hide the match.
+    let focusRanges: [Int: NSRange]
 
     init(_ p: FilePreview) {
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -202,6 +202,8 @@ struct StyledText: @unchecked Sendable {
             out.append(NSAttributedString(string: pad + number + "  ", attributes: matches.contains(line.n) ? matchGutter : gutter))
             let textStart = out.length
             out.append(NSAttributedString(string: line.text, attributes: body))
+            var focus = start
+            var hasMatch = false
             // Syntax tokens and engine ranges are UTF-16 offsets, the same unit NSString uses.
             let length = (line.text as NSString).length
             for t in syntax?.tokens(line.text) ?? [] where t.start < t.end && t.end <= length {
@@ -210,13 +212,19 @@ struct StyledText: @unchecked Sendable {
             // Matches are a background, so highlighted code keeps its colors.
             for r in line.ranges where r.count == 2 {
                 let a = max(0, r[0]), b = min(r[1], length)
-                if a < b { out.addAttributes(highlight, range: NSRange(location: textStart + a, length: b - a)) }
+                if a < b {
+                    out.addAttributes(highlight, range: NSRange(location: textStart + a, length: b - a))
+                    if !hasMatch {
+                        focus = textStart + a
+                        hasMatch = true
+                    }
+                }
             }
             out.append(NSAttributedString(string: "\n", attributes: body))
-            ranges[line.n] = NSRange(location: start, length: out.length - start)
+            ranges[line.n] = NSRange(location: focus, length: 1)
         }
         text = out
-        lineRanges = ranges
+        focusRanges = ranges
     }
 
     static func syntaxColor(_ kind: SyntaxKind) -> NSColor {
