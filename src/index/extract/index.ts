@@ -13,6 +13,7 @@ import { extractPdf, extractPdfBytes } from "./pdf.ts"
 import { decodeText, extractEmail, extractNotebook, looksBinary } from "./text.ts"
 import { htmlText } from "./xml.ts"
 import { ZipReader } from "./zip.ts"
+import { extractMobi } from "./mobi.ts"
 
 export interface ExtractOptions {
   maxTextBytes: number
@@ -173,6 +174,8 @@ async function extractDocument(path: string, ext: string, opts: ExtractOptions, 
       return extractFlatOdf(decodeText(buf))
     case "epub":
       return extractEpub(buf, opts.maxChars)
+    case "mobi":
+      return extractMobi(buf)
     case "rtf":
       return extractRtf(decodeText(buf))
     case "doc":

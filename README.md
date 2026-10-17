@@ -221,7 +221,8 @@ zsearch estimate --home             # how long a first index of ~ takes, roughly
 
 | Contents read from | Formats |
 | --- | --- |
-| Documents | PDF, DOCX/DOCM/DOTX, ODT, RTF, legacy DOC, EPUB |
+| Documents | PDF, DOCX/DOCM/DOTX, ODT, RTF, legacy DOC |
+| Ebooks | EPUB (chapters in reading order), MOBI 6 (uncompressed or PalmDOC compressed, including the MOBI 6 part of dual-format books) |
 | Spreadsheets | XLSX/XLSM, ODS, legacy XLS (sheets, shared strings, numbers) |
 | Presentations | PPTX, ODP, legacy PPT (slides and speaker notes) |
 | iWork | Single-file Pages, Numbers and Keynote archives with an embedded Quick Look PDF or an image preview (with OCR enabled); other iWork files stay names-only |
@@ -230,6 +231,8 @@ zsearch estimate --home             # how long a first index of ~ takes, roughly
 | Images and scans (Mac app) | PNG, JPEG, HEIC, TIFF, WebP, BMP, GIF, and PDF pages that have no text, read with OCR |
 
 All other files (audio, video, archives, applications, and images outside the Mac app) are indexed by name, folder, size and date.
+
+The Mac app previews EPUB and MOBI as wrapped reading excerpts with highlighted search matches. Choose **Text** for numbered lines instead; the choice is also available in Settings. These previews use extracted text, without the book's original layout or illustrations. Encrypted MOBI, HUFF/CDIC compression and standalone KF8 books are unsupported and remain searchable by name.
 
 **Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists such folders; `zsearch config set skipDatasetOcr false` reads them too.
 

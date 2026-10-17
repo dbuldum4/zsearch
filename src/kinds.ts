@@ -151,6 +151,7 @@ export const DOCUMENT_EXTS = new Set([
   "fodp",
   "rtf",
   "epub",
+  "mobi",
   "doc",
   "xls",
   "ppt",

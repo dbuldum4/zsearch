@@ -35,6 +35,7 @@ enum AppSettings {
     static let pdfShowsText = "pdfShowsText"
     /// Word documents preview as their extracted text instead of their formatting. The switch above the preview changes it too.
     static let documentShowsText = "documentShowsText"
+    static let ebookShowsText = "ebookShowsText"
     /// Images (and other files Quick Look shows) preview as the text read from them instead.
     static let imageShowsText = "imageShowsText"
     /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
@@ -57,6 +58,7 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.hotKeyTaken) private var hotKeyTaken = false
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     @AppStorage(AppSettings.documentShowsText) private var documentShowsText = false
+    @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
     @AppStorage(AppSettings.editor) private var editor = ""
     @AppStorage(AppSettings.shortcutOpens) private var shortcutOpens = ShortcutTarget.panel.rawValue
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
@@ -79,6 +81,10 @@ private struct GeneralSettings: View {
             }
             Picker("Preview Word documents as", selection: $documentShowsText) {
                 Text("Document").tag(false)
+                Text("Text").tag(true)
+            }
+            Picker("Preview EPUB and MOBI books as", selection: $ebookShowsText) {
+                Text("Reading").tag(false)
                 Text("Text").tag(true)
             }
             Picker("Open code in (⌘E)", selection: $editor) {
