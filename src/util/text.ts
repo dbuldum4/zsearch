@@ -19,7 +19,6 @@ export function uniqueTerms(text: string, into: Set<string> = new Set()): Set<st
   let m: RegExpExecArray | null
   while ((m = re.exec(text))) {
     const w = m[0]
-    if (w.length > 64) continue
     into.add(re === ASCII_WORD ? w.toLowerCase() : foldTerm(w))
   }
   return into
@@ -33,9 +32,8 @@ const ASCII_UPPER = /[A-Z]+/g
  * Long words of ASCII letters and digits (hashes, ids, encoded data) are indexed short: their
  * first SHORT_HEAD characters and a tag made from the whole word, which keeps them apart. They
  * are rarely searched for, yet each is a word of its own, and the full-text index stores every
- * word whole. The vocabulary keeps them whole (words up to 64 characters), so searches still
- * find them by any part, and map them to the short form (see `ftsTerm`). Longer words are not in
- * the vocabulary, and stay whole.
+ * word whole. The vocabulary keeps them whole, so searches still find them by any part, and map
+ * them to the short form (see `ftsTerm`). Longer words stay whole in both.
  */
 const LONG_WORD = /^[a-z0-9]{32,64}$/
 const SHORT_HEAD = 12
@@ -86,7 +84,7 @@ export function indexTerms(text: string): { body: string; terms: Iterable<string
     // ASCII: the tokens are exactly the runs of letters and digits, lower-cased.
     const words = asciiWords(text.toLowerCase())
     const body = shortenBody(words.join(" "))
-    return { body, terms: words.some((w) => w.length > 64) ? words.filter((w) => w.length <= 64) : words }
+    return { body, terms: words }
   }
   // Otherwise split only at ASCII separators, and leave the rest to SQLite's tokenizer. ASCII
   // letters are lower-cased first, as it would, so that a word in other cases goes in once.

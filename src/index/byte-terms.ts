@@ -170,7 +170,7 @@ export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
           doneWide.add(t)
           fresh.push(t)
         }
-      } else if (len <= 64 && markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
+      } else if (markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
       at = end + 1
     }
     return fresh

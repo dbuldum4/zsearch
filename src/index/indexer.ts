@@ -5,7 +5,7 @@ import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
 import { ocrToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
-import { compactIndex, compressBytes, ContentState, decompressText, encodeText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta, TEXT_HASHES, textHash } from "./db.ts"
+import { compactIndex, ContentState, decompressText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
 import { DATASET_NOTE, type DatasetFolder, datasetFolders } from "./datasets.ts"
@@ -16,9 +16,6 @@ import { ExtractPool } from "./pool.ts"
 import { type ContentItem, type ContentSink, InlineSink, ThreadSink } from "./writer.ts"
 import { crawlOptionsFor, under } from "./policy.ts"
 export { crawlOptionsFor } from "./policy.ts"
-
-/** A text that may have long words (see `shortWord`); a few that do not are re-indexed for nothing. */
-const LONG_WORD_IN_TEXT = /(?<![A-Za-z0-9])[A-Za-z0-9]{32,64}(?![A-Za-z0-9])/
 
 /** Packages with a preview inside, which OCR reads when it is a picture. */
 const IWORK_EXTS = new Set(["pages", "numbers", "key"])
@@ -256,9 +253,7 @@ export class Indexer {
       await this.content()
       if (this.aborted) return this.finish("cancelled")
       this.cleanup(removed)
-      const upgraded = await this.upgradeTexts()
-      if (this.aborted) return this.finish("cancelled")
-      return this.finish("done", upgraded !== null || this.rewroteMuch(), upgraded !== null)
+      return this.finish("done", this.rewroteMuch())
     } catch (err) {
       this.progress.error = (err as Error).message
       return this.finish("error")
@@ -275,11 +270,8 @@ export class Indexer {
     return this.progress.contentDone * 4 >= indexed
   }
 
-  /**
-   * `bigWrite`: the run rewrote much of the full-text index, which is merged afterwards.
-   * `rewritten`: it rewrote stored texts in place, and the file is packed again afterwards.
-   */
-  private finish(phase: IndexPhase, bigWrite = false, rewritten = false): IndexProgress {
+  /** `bigWrite`: the run rewrote much of the full-text index, which is merged afterwards. */
+  private finish(phase: IndexPhase, bigWrite = false): IndexProgress {
     this.progress.phase = phase
     this.progress.current = ""
     if (this.progress.waiting !== undefined) {
@@ -294,7 +286,7 @@ export class Indexer {
       // Readers follow the removed files from this log; only its recent part is needed.
       this.db.query("DELETE FROM removed WHERE n <= (SELECT MAX(n) FROM removed) - ?").run(REMOVED_KEPT)
       pruneOcrCache(this.db, this.ocrTool !== null)
-      compactIndex(this.db, bigWrite, rewritten)
+      compactIndex(this.db, bigWrite)
       this.db.exec("PRAGMA optimize")
     }
     this.db.exec("PRAGMA wal_checkpoint(PASSIVE)")
@@ -774,70 +766,6 @@ export class Indexer {
 
   /** Content terms already in the vocabulary, loaded the first time contents are stored. */
   private known: Set<string> | null = null
-
-  /* ---------------------------------------------------------- upgrade -- */
-
-  /**
-   * Bring texts stored before version 10 up to date, a few at a time (see `TEXT_HASHES`): hash
-   * them, keep the ones held twice once, compress them as texts are now, and re-index the
-   * files whose texts have long words, which go in short now (see `shortWord`). Nothing is read
-   * from the files again. Returns whether it re-indexed any, or null when there was nothing to
-   * do. A run cancelled meanwhile leaves the rest to the next one.
-   */
-  private async upgradeTexts(): Promise<boolean | null> {
-    if (getMeta(this.db, TEXT_HASHES) !== "1") return null
-    this.progress.phase = "cleanup"
-    this.emit(true)
-    const q = (sql: string) => this.db.prepare(sql)
-    const next = q("SELECT DISTINCT text FROM content_map WHERE hash IS NULL LIMIT 64")
-    const get = q("SELECT data FROM texts WHERE id = ?")
-    const holders = q("SELECT m.id, f.path, f.in_fts AS inFts FROM content_map m JOIN files f ON f.id = m.id WHERE m.text = ?")
-    const same = q("SELECT text FROM content_map WHERE hash = ? AND text <> ? LIMIT 1")
-    const share = q("UPDATE content_map SET text = ?, hash = ? WHERE text = ?")
-    const setHash = q("UPDATE content_map SET hash = ? WHERE text = ?")
-    const setData = q("UPDATE texts SET data = ? WHERE id = ?")
-    const orphans = q("DELETE FROM content_map WHERE text = ?")
-    let reindexed = false
-    for (;;) {
-      if (this.aborted) return reindexed
-      const batch = next.values() as number[][]
-      if (!batch.length) break
-      this.db.transaction(() => {
-        for (const [text] of batch) {
-          const row = get.get(text!) as { data: Uint8Array } | null
-          if (!row) {
-            orphans.run(text!)
-            continue
-          }
-          const t = decompressText(row.data)
-          if (LONG_WORD_IN_TEXT.test(t)) {
-            const body = ftsBody(t)
-            for (const h of holders.all(text!) as { id: number; path: string; inFts: number }[]) {
-              if (!h.inFts) continue
-              const f = this.ftsFields(h.path)
-              this.st.ftsDeleteRow.run(h.id)
-              this.st.ftsInsert.run(h.id, f.name, f.dirs, body)
-              reindexed = true
-            }
-          }
-          const bytes = encodeText(t)
-          const hash = textHash(bytes)
-          const other = same.get(hash, text!) as { text: number } | null
-          // The files move to the other copy; this one goes with its last file.
-          if (other) share.run(other.text, hash, text!)
-          else {
-            setHash.run(hash, text!)
-            const z = compressBytes(bytes)
-            if (z.length < row.data.length) setData.run(z, text!)
-          }
-        }
-      }).immediate()
-      // Within the share of the computer indexing may use, and letting other work in.
-      await new Promise((r) => setTimeout(r, this.cpu.over ? 20 : 0))
-    }
-    setMeta(this.db, TEXT_HASHES, "")
-    return reindexed
-  }
 
   /* ---------------------------------------------------------- cleanup -- */
 

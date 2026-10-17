@@ -5,6 +5,8 @@
  * then runs the real regex on the candidates only.
  */
 
+import { escapeRegExp } from "../util/text.ts"
+
 export type Req = { t: "all" } | { t: "lit"; s: string } | { t: "and"; items: Req[] } | { t: "or"; items: Req[] }
 
 const ALL: Req = { t: "all" }
@@ -26,6 +28,46 @@ type Node =
   | { k: "alt"; items: Node[] }
   | { k: "rep"; node: Node; min: number; max: number }
   | { k: "group"; node: Node }
+
+/**
+ * The forms the index may hold, once lower-cased, for a character of the text that `c` matches.
+ * Lower-casing `c` alone does not cover them all: a case-insensitive Σ matches σ and ς, and µ
+ * matches μ. And the index lower-cases whole words, where Σ becomes ς at the end of one only.
+ */
+function indexForms(c: string, ci: boolean): string[] {
+  if (!ci) return c === "Σ" ? ["σ", "ς"] : [c]
+  const lower = c.toLowerCase()
+  // ASCII letters keep one form: they match others only with the u flag (s matches ſ), and
+  // alternatives for every s would cost most searches their best literals.
+  if (lower === c.toUpperCase() || c.charCodeAt(0) < 0x80) return [lower]
+  return (caseForms ??= buildCaseForms()).get(caseKey(c)) ?? [lower]
+}
+
+/** Characters with the same upper case or lower case, under one key. */
+function caseKey(c: string): string {
+  const upper = c.toUpperCase()
+  return upper.length === 1 ? upper.toLowerCase() : c.toLowerCase()
+}
+
+let caseForms: Map<string, string[]> | null = null
+
+/** The lower-case forms of each group of case-equivalent characters that has more than one. */
+function buildCaseForms(): Map<string, string[]> {
+  const groups = new Map<string, Set<string>>()
+  for (let cp = 0; cp < 0x10000; cp++) {
+    if (cp >= 0xd800 && cp < 0xe000) continue
+    const c = String.fromCharCode(cp)
+    const lower = c.toLowerCase()
+    if (lower === c.toUpperCase()) continue
+    const key = caseKey(c)
+    let group = groups.get(key)
+    if (!group) groups.set(key, (group = new Set()))
+    group.add(lower)
+  }
+  const out = new Map<string, string[]>()
+  for (const [key, group] of groups) if (group.size > 1) out.set(key, [...group])
+  return out
+}
 
 class Parser {
   i = 0
@@ -78,8 +120,8 @@ class Parser {
   }
 
   private lit(c: string): Node {
-    if (this.ci && c.toLowerCase() !== c.toUpperCase()) return { k: "lit", c: c.toLowerCase() }
-    return { k: "lit", c }
+    const forms = indexForms(c, this.ci)
+    return forms.length === 1 ? { k: "lit", c: forms[0]! } : { k: "class", chars: forms }
   }
 
   private atom(): Node {
@@ -189,7 +231,7 @@ class Parser {
     }
     if (this.s[this.i] === "]") this.i++
     if (negate || tooMany) return { k: "any" }
-    const folded = new Set([...chars].map((ch) => (this.ci ? ch.toLowerCase() : ch)))
+    const folded = new Set([...chars].flatMap((ch) => indexForms(ch, this.ci)))
     if (folded.size > 8) return { k: "any" }
     return { k: "class", chars: [...folded] }
   }
@@ -275,6 +317,7 @@ function analyze(n: Node): Info {
     case "cat": {
       let exact: Set<string> | null = new Set([""])
       let match: Req = ALL
+      let whole = true
       for (const item of n.items) {
         const info = analyze(item)
         if (exact && info.exact) {
@@ -285,6 +328,7 @@ function analyze(n: Node): Info {
           }
         }
         // Flush what we have and continue with this item.
+        whole = false
         if (exact) match = and(match, exactToReq(exact, MIN_LIT))
         if (info.exact) exact = info.exact
         else {
@@ -292,6 +336,8 @@ function analyze(n: Node): Info {
           exact = new Set([""])
         }
       }
+      // Once an item was flushed, `exact` only lists what may follow the last unknown part.
+      if (!whole) return { exact: null, match: exact ? and(match, exactToReq(exact, MIN_LIT)) : match }
       if (exact && exact.size === 1 && exact.has("")) return { exact: n.items.length ? null : exact, match }
       return { exact, match }
     }
@@ -339,6 +385,7 @@ function dedupe(items: Req[]): Req[] {
 
 /** Requirement for a plain literal search. */
 export function literalRequirement(s: string, caseInsensitive: boolean): Req {
+  if ([...s].some((c) => indexForms(c, caseInsensitive).length > 1)) return regexRequirements(escapeRegExp(s), caseInsensitive)
   const lit = caseInsensitive ? s.toLowerCase() : s
   return lit.length >= MIN_LIT ? { t: "lit", s: lit } : ALL
 }

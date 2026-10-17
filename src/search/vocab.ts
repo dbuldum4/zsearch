@@ -16,6 +16,8 @@ export class Vocab {
   /** Long words (see `isLongWord`), in vocabulary order, and their positions sorted by word. */
   private longs: string[] = []
   private longOrder: number[] | null = null
+  /** Characters other than ASCII ones looked up so far, and whether any term has them. */
+  private chars = new Map<string, boolean>()
 
   get size() {
     return this.count
@@ -30,6 +32,7 @@ export class Vocab {
       this.byLen.clear()
       this.longs = []
       this.longOrder = null
+      this.chars.clear()
     }
     const chunks = readVocabChunks(db, this.maxId)
     if (!chunks.length) return
@@ -50,6 +53,7 @@ export class Vocab {
     }
     this.joined += parts.join("\n") + "\n"
     this.count += parts.length
+    for (const [c, has] of this.chars) if (!has) this.chars.delete(c)
   }
 
   private termAt(offset: number): string {
@@ -67,6 +71,14 @@ export class Vocab {
 
   /** Terms containing `needle` (which never spans two terms). */
   private scan(needle: string, limit: number): string[] | null {
+    // Case-insensitive searches look up every case form of some letters (σ and ς, μ and µ), and
+    // most forms are in no term: one pass for each such character saves one for each lookup.
+    for (const c of needle) {
+      if (c.charCodeAt(0) < 0x80) continue
+      let has = this.chars.get(c)
+      if (has === undefined) this.chars.set(c, (has = this.joined.includes(c)))
+      if (!has) return []
+    }
     const out = new Set<string>()
     let i = this.joined.indexOf(needle)
     while (i >= 0) {
