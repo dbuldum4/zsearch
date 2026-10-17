@@ -317,8 +317,20 @@ public struct SyntaxHighlighter {
 
     private var state: State = .code
 
+    // The language's delimiters as UTF-16, made once rather than for every line.
+    private let blockOpen: [UInt16]?
+    private let blockClose: [UInt16]?
+    private let lineComments: [[UInt16]]
+    private let multiline: [[UInt16]]
+    private let quoteUnits: Set<UInt16>
+
     public init(language: SyntaxLanguage) {
         self.language = language
+        blockOpen = language.blockComment.map { Array($0.open.utf16) }
+        blockClose = language.blockComment.map { Array($0.close.utf16) }
+        lineComments = language.lineComments.map { Array($0.utf16) }
+        multiline = language.multilineStrings.map { Array($0.utf16) }
+        quoteUnits = Set(language.quotes.flatMap { $0.utf16 })
     }
 
     /// The tokens of the next line, in order and not overlapping.
@@ -353,10 +365,10 @@ public struct SyntaxHighlighter {
             return nil
         }
 
-        let blockOpen = lang.blockComment.map { Array($0.open.utf16) }
-        let blockClose = lang.blockComment.map { Array($0.close.utf16) }
-        let lineComments = lang.lineComments.map { Array($0.utf16) }
-        let multiline = lang.multilineStrings.map { Array($0.utf16) }
+        let blockOpen = self.blockOpen
+        let blockClose = self.blockClose
+        let lineComments = self.lineComments
+        let multiline = self.multiline
 
         // Finish what the previous line left open.
         switch state {
@@ -426,7 +438,7 @@ public struct SyntaxHighlighter {
                 return out
             }
             // One-line strings.
-            if c < 128, lang.quotes.contains(Character(Unicode.Scalar(UInt8(c)))),
+            if c < 128, quoteUnits.contains(c),
                !(lang.quotesNeedBoundary && i > 0 && isIdent(u[i - 1])) {
                 if c == 39, lang.charLiterals {
                     // 'a', '\n', '\u{1F600}' are characters; a lone one ('a in Rust) is not a string.

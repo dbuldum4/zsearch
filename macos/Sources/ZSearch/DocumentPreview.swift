@@ -4,28 +4,43 @@ import SwiftUI
 import ZSearchKit
 
 /// Word documents as AppKit reads them (headings, fonts, lists and tables), kept for the few most
-/// recent files like `PDFDocuments`. A file that changed on disk is read again.
+/// recent files like `PDFDocuments`. A file that changed on disk is read again. `load` reads them
+/// off the main thread, with their text prepared for finding matches; the view only lays them out.
 @MainActor
 final class WordDocuments {
     static let shared = WordDocuments()
 
     /// The Office Open XML word-processing formats AppKit's reader opens and the engine indexes.
     static let extensions: Set<String> = ["docx", "docm", "dotx"]
-    /// The reader runs on the main thread and drops pictures, which make up most of a big file.
+    /// The reader drops pictures, which make up most of a big file; this caps what it goes through.
     private static let maxBytes = 32 << 20
 
     private struct Key: Hashable {
         var path: String
         var size: Int
         var mtime: Double
+
+        init(_ p: FilePreview) {
+            path = p.path
+            size = p.size
+            mtime = p.mtime
+        }
     }
 
-    private var cache: [Key: NSAttributedString] = [:]
+    /// A document read, its text prepared for `PageMap.locate`, and every match of recent terms.
+    struct Entry: @unchecked Sendable {
+        let document: NSAttributedString
+        let prepared: PageMap.PreparedText
+        var matches: [[String]: [NSRange]] = [:]
+    }
+
+    private var cache: [Key: Entry] = [:]
     private var order: [Key] = []
     /// Files the reader could not open, and when. The preview doesn't try again on every redraw,
     /// but does once `retryAfter` has passed, as the file may have been read halfway through a save.
     private var failed: [Key: Date] = [:]
     private static let retryAfter: TimeInterval = 30
+    private var reading: [Key: Task<Entry?, Never>] = [:]
     private let limit = 4
 
     /// Whether a preview is of a Word file this reader would try, without reading it.
@@ -34,32 +49,67 @@ final class WordDocuments {
             && extensions.contains((p.path as NSString).pathExtension.lowercased())
     }
 
-    /// The document for a preview, or nil if it isn't a Word file or can't be read (gone, damaged,
-    /// password-protected, too big, or with no text).
+    /// The document for a preview, if `load` read it.
     func document(for p: FilePreview) -> NSAttributedString? {
         guard Self.handles(p) else { return nil }
-        let key = Key(path: p.path, size: p.size, mtime: p.mtime)
-        if let doc = cache[key] {
+        let key = Key(p)
+        guard let entry = cache[key] else { return nil }
+        if order.last != key {
             order.removeAll { $0 == key }
             order.append(key)
-            return doc
         }
-        if let at = failed[key], Date().timeIntervalSince(at) < Self.retryAfter { return nil }
-        let url = URL(fileURLWithPath: p.path)
-        guard let doc = try? NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil),
-              doc.length > 0 else {
-            if failed.count > 64 { failed.removeAll() }
-            failed[key] = Date()
-            return nil
+        return entry.document
+    }
+
+    /// The document's text prepared for `PageMap.locate`, and the matches of the preview's terms
+    /// if `load` found them.
+    func found(for p: FilePreview, terms: [String]) -> (prepared: PageMap.PreparedText, matches: [NSRange]?)? {
+        guard let entry = cache[Key(p)] else { return nil }
+        return (entry.prepared, entry.matches[terms])
+    }
+
+    func state(of p: FilePreview) -> DocumentState {
+        let key = Key(p)
+        if let entry = cache[key] { return entry.matches[PageMap.matchedTerms(p)] == nil ? .unknown : .ready }
+        if let at = failed[key], Date().timeIntervalSince(at) < Self.retryAfter { return .failed }
+        return .unknown
+    }
+
+    /// Read the preview's document and find its matches, off the main thread. A file that can't
+    /// be read (gone, damaged, password-protected, or with no text) is marked failed.
+    func load(_ p: FilePreview) async {
+        guard Self.handles(p) else { return }
+        let key = Key(p)
+        let terms = PageMap.matchedTerms(p)
+        if cache[key] == nil {
+            let task = reading[key] ?? Task.detached(priority: .userInitiated) { () -> Entry? in
+                let url = URL(fileURLWithPath: key.path)
+                guard let doc = try? NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil),
+                      doc.length > 0 else { return nil }
+                let text = doc.string
+                return Entry(document: doc, prepared: PageMap.PreparedText(text), matches: [terms: PageMap.occurrences(of: terms, in: text)])
+            }
+            reading[key] = task
+            let entry = await task.value
+            reading[key] = nil
+            guard let entry else {
+                if failed.count > 64 { failed.removeAll() }
+                failed[key] = Date()
+                return
+            }
+            failed[key] = nil
+            if cache.updateValue(entry, forKey: key) == nil { order.append(key) }
+            while order.count > limit { cache[order.removeFirst()] = nil }
         }
-        failed[key] = nil
-        cache[key] = doc
-        order.append(key)
-        while order.count > limit { cache[order.removeFirst()] = nil }
-        return doc
+        guard let entry = cache[key], entry.matches[terms] == nil else { return }
+        let text = entry.document.string
+        let matches = await Task.detached(priority: .userInitiated) { PageMap.occurrences(of: terms, in: text) }.value
+        guard cache[key] != nil else { return }
+        // A few queries' worth: each new query adds its own.
+        if cache[key]!.matches.count >= 4 { cache[key]!.matches.removeAll() }
+        cache[key]!.matches[terms] = matches
     }
 }
-
 /// A Word document laid out on a white page, scrolled to the match with the matching words
 /// highlighted.
 struct DocumentPreviewView: NSViewRepresentable {
@@ -128,15 +178,16 @@ struct DocumentPreviewView: NSViewRepresentable {
         let sameFile = coordinator.document === document
         guard previous != preview || !sameFile else { return }
         coordinator.shown = preview
+        let terms = PageMap.matchedTerms(preview)
+        let found = WordDocuments.shared.found(for: preview, terms: terms)
         if !sameFile {
             storage.setAttributedString(document)
             coordinator.document = document
-            coordinator.prepared = PageMap.PreparedText(storage.string)
+            coordinator.prepared = found?.prepared ?? PageMap.PreparedText(storage.string)
         }
-        let terms = PageMap.matchedTerms(preview)
         if !sameFile || terms != coordinator.terms {
             coordinator.terms = terms
-            coordinator.matches = PageMap.occurrences(of: terms, in: storage.string)
+            coordinator.matches = found?.matches ?? PageMap.occurrences(of: terms, in: storage.string)
         }
 
         let expected = PageMap.expectedLocation(ofFocusOf: preview, length: storage.length)
@@ -166,7 +217,9 @@ struct DocumentPreviewView: NSViewRepresentable {
             scroll.reflectScrolledClipView(clip)
             return
         }
-        layout.ensureLayout(for: container)
+        // Only the text up to a screen or so past the match: the rest is laid out in the background.
+        let length = textView.textStorage?.length ?? 0
+        layout.ensureLayout(forCharacterRange: NSRange(location: 0, length: min(length, NSMaxRange(range) + 4000)))
         let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
         let visible = clip.bounds.height

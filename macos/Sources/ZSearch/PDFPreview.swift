@@ -5,35 +5,188 @@ import Quartz
 import SwiftUI
 import ZSearchKit
 
+/// Identifies a file's contents: a file that changed on disk (new size or modification time) is
+/// opened again.
+private struct PDFKey: Hashable {
+    var path: String
+    var size: Int
+    var mtime: Double
+
+    init(_ p: FilePreview) {
+        path = p.path
+        size = p.size
+        mtime = p.mtime
+    }
+}
+
 /// Opened PDFs, kept for the few most recent files so moving back and forth through the results
-/// doesn't reopen them. A file that changed on disk (new size or modification time) is reopened.
+/// doesn't reopen them, with where each preview's matches are on their pages. Both are made off
+/// the main thread by `load`; the view only puts them on screen.
 @MainActor
 final class PDFDocuments {
     static let shared = PDFDocuments()
 
-    private struct Key: Hashable {
-        var path: String
-        var size: Int
-        var mtime: Double
-    }
-
-    private var cache: [Key: PDFDocument] = [:]
-    private var order: [Key] = []
+    private var cache: [PDFKey: PDFDocument] = [:]
+    private var order: [PDFKey] = []
+    /// Files that could not be opened, and when; tried again after `retryAfter` (the file may
+    /// have been read halfway through a save).
+    private var failed: [PDFKey: Date] = [:]
+    private static let retryAfter: TimeInterval = 30
+    private var opening: [PDFKey: Task<Handover<PDFDocument?>, Never>] = [:]
     private let limit = 4
+    /// Recent previews' matches, newest last.
+    private var recentMarks: [(preview: FilePreview, marks: PDFMarks)] = []
+    private let reader = PDFReader()
 
-    /// The document for a preview, or nil if it can't be opened (gone, damaged, or password-protected).
+    /// The document for a preview, if `load` opened it.
     func document(for p: FilePreview) -> PDFDocument? {
-        let key = Key(path: p.path, size: p.size, mtime: p.mtime)
-        if let doc = cache[key] {
+        let key = PDFKey(p)
+        guard let doc = cache[key] else { return nil }
+        if order.last != key {
             order.removeAll { $0 == key }
             order.append(key)
-            return doc
         }
-        guard let doc = PDFDocument(url: URL(fileURLWithPath: p.path)), !doc.isLocked, doc.pageCount > 0 else { return nil }
-        cache[key] = doc
-        order.append(key)
-        while order.count > limit { cache[order.removeFirst()] = nil }
         return doc
+    }
+
+    /// Where a preview's matches are, if `load` found them.
+    func marks(for p: FilePreview) -> PDFMarks? {
+        recentMarks.last { $0.preview == p }?.marks
+    }
+
+    func state(of p: FilePreview) -> DocumentState {
+        let key = PDFKey(p)
+        if cache[key] != nil { return marks(for: p) == nil ? .unknown : .ready }
+        if let at = failed[key], Date().timeIntervalSince(at) < Self.retryAfter { return .failed }
+        return .unknown
+    }
+
+    /// Open the preview's PDF and find its matches, off the main thread. A file that can't be
+    /// opened (gone, damaged, or password-protected) is marked failed.
+    func load(_ p: FilePreview) async {
+        let key = PDFKey(p)
+        if cache[key] == nil {
+            let task = opening[key] ?? Task.detached(priority: .userInitiated) {
+                let doc = PDFDocument(url: URL(fileURLWithPath: key.path))
+                return Handover(value: doc.flatMap { !$0.isLocked && $0.pageCount > 0 ? $0 : nil })
+            }
+            opening[key] = task
+            let doc = await task.value.value
+            opening[key] = nil
+            guard let doc else {
+                if failed.count > 64 { failed.removeAll() }
+                failed[key] = Date()
+                return
+            }
+            failed[key] = nil
+            if cache.updateValue(doc, forKey: key) == nil { order.append(key) }
+            while order.count > limit { cache[order.removeFirst()] = nil }
+        }
+        guard marks(for: p) == nil, let found = await reader.marks(for: p, key: key) else { return }
+        recentMarks.append((p, found))
+        if recentMarks.count > 8 { recentMarks.removeFirst() }
+    }
+}
+
+/// Reads the text of PDFs for `PDFMatching`, on its own copies of the documents: a PDFDocument
+/// shown on screen is only touched on the main thread.
+private actor PDFReader {
+    private var documents: [PDFKey: PDFDocument] = [:]
+    private var order: [PDFKey] = []
+
+    func marks(for p: FilePreview, key: PDFKey) -> PDFMarks? {
+        let doc: PDFDocument
+        if let cached = documents[key] {
+            doc = cached
+        } else {
+            guard let opened = PDFDocument(url: URL(fileURLWithPath: key.path)), !opened.isLocked, opened.pageCount > 0 else { return nil }
+            doc = opened
+            documents[key] = doc
+            order.append(key)
+            while order.count > 2 { documents[order.removeFirst()] = nil }
+        }
+        return PDFMatching.marks(for: p, in: doc)
+    }
+}
+
+/// Where the focused match is: its page, how far that is from the page the indexed text's page
+/// breaks point to, and its place on the page when it could be found there.
+struct PDFFocus: Sendable, Equatable {
+    var page: Int
+    var shift: Int
+    var range: NSRange?
+}
+
+struct PDFMark: Sendable, Equatable {
+    var page: Int
+    var range: NSRange
+}
+
+/// A preview's focused match and the matched words to highlight, in page order.
+struct PDFMarks: Sendable {
+    var focus: PDFFocus
+    var highlights: [PDFMark]
+}
+
+/// Finding matches in a PDF's text. Works on any thread, on a document no other thread uses.
+enum PDFMatching {
+    static let highlightLimit = 2000
+
+    static func marks(for p: FilePreview, in document: PDFDocument) -> PDFMarks {
+        let focus = focus(of: p, in: document)
+        return PDFMarks(focus: focus, highlights: highlights(for: p, focus: focus, in: document))
+    }
+
+    /// The page of the focus line. Its indexed text counts pages by their form feeds, which can
+    /// miss pages without text (a blank or scanned cover, say; older indexes dropped those), so
+    /// the line is looked for on that page and then on the pages after it, the way it can only
+    /// have moved, and on a few pages before it in case PDFKit splits the pages differently.
+    static func focus(of p: FilePreview, in document: PDFDocument) -> PDFFocus {
+        let count = document.pageCount
+        let estimate = min(PageMap.page(ofLine: p.focusLine, pageStarts: p.pageStarts), count - 1)
+        let candidates = Array(estimate..<min(count, estimate + 40)) + Array(max(0, estimate - 3)..<estimate).reversed()
+        for index in candidates {
+            guard let text = document.page(at: index)?.string else { continue }
+            if let range = PageMap.locate(focusOf: p, in: text) {
+                return PDFFocus(page: index, shift: index - estimate, range: range)
+            }
+        }
+        return PDFFocus(page: estimate, shift: 0, range: nil)
+    }
+
+    /// The matched words on the pages that have matches (the focus page first, so it is never
+    /// cut by the limit), returned in page order. Only those pages are searched, so a long
+    /// document doesn't take long.
+    static func highlights(for p: FilePreview, focus: PDFFocus, in document: PDFDocument) -> [PDFMark] {
+        let terms = PageMap.matchedTerms(p)
+        guard !terms.isEmpty else { return [] }
+        var pages = [focus.page]
+        for mapped in PageMap.pages(ofLines: p.matchLines, pageStarts: p.pageStarts).prefix(200) {
+            // Pages missing before the focus line are missing before the later matches too.
+            for page in Set([mapped, mapped + focus.shift]) where page >= 0 && page < document.pageCount && !pages.contains(page) {
+                pages.append(page)
+            }
+        }
+
+        var out: [PDFMark] = []
+        for index in pages {
+            guard let page = document.page(at: index), let string = page.string else { continue }
+            let text = string as NSString
+            var taken: [NSRange] = []
+            // Longest terms first, and a shorter one inside a longer match is not marked twice.
+            for term in terms {
+                var from = 0
+                while from < text.length, out.count < highlightLimit {
+                    let found = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: text.length - from))
+                    guard found.location != NSNotFound, found.length > 0 else { break }
+                    from = found.location + found.length
+                    guard !taken.contains(where: { NSIntersectionRange($0, found).length > 0 }) else { continue }
+                    taken.append(found)
+                    out.append(PDFMark(page: index, range: found))
+                }
+            }
+        }
+        return out.sorted { ($0.page, $0.range.location) < ($1.page, $1.range.location) }
     }
 }
 
@@ -45,6 +198,8 @@ struct PDFPreviewView: NSViewRepresentable {
 
     final class Coordinator {
         var shown: FilePreview?
+        /// The highlights on screen: another match in the same file usually has the same ones.
+        var highlights: [PDFMark]?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -60,96 +215,40 @@ struct PDFPreviewView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
-        let previous = context.coordinator.shown
+        let coordinator = context.coordinator
+        let previous = coordinator.shown
         guard previous != preview || view.document !== document else { return }
-        context.coordinator.shown = preview
+        coordinator.shown = preview
 
         let sameFile = view.document === document
-        if !sameFile { view.document = document }
-        let focus = Self.focus(of: preview, in: document)
-        let highlights = Self.highlights(for: preview, focus: focus, in: document)
-        view.highlightedSelections = highlights.isEmpty ? nil : highlights.map(\.selection)
+        if !sameFile {
+            view.document = document
+            coordinator.highlights = nil
+        }
+        let marks = PDFDocuments.shared.marks(for: preview) ?? PDFMatching.marks(for: preview, in: document)
+        if marks.highlights != coordinator.highlights {
+            coordinator.highlights = marks.highlights
+            let color = NSColor.systemYellow.withAlphaComponent(0.5)
+            let selections = marks.highlights.compactMap { mark -> PDFSelection? in
+                guard let selection = document.page(at: mark.page)?.selection(for: mark.range) else { return nil }
+                selection.color = color
+                return selection
+            }
+            view.highlightedSelections = selections.isEmpty ? nil : selections
+        }
         // A refresh of the same file keeps the reader's place; anything else goes to the match.
         if sameFile, previous?.id == preview.id, previous?.focusLine == preview.focusLine { return }
-        Self.reveal(focus, highlights: highlights, in: view)
+        Self.reveal(marks, in: view)
         // Layout may not be final on the first pass (a newly shown pane has no size yet).
-        DispatchQueue.main.async { Self.reveal(focus, highlights: highlights, in: view) }
-    }
-
-    /// Where the focused match is: its page, how far that is from the page the indexed text's page
-    /// breaks point to, and its place on the page when it could be found there.
-    struct Focus {
-        var page: Int
-        var shift: Int
-        var range: NSRange?
-    }
-
-    struct Highlight {
-        var page: Int
-        var range: NSRange
-        var selection: PDFSelection
-    }
-
-    /// The page of the focus line. Its indexed text counts pages by their form feeds, which can
-    /// miss pages without text (a blank or scanned cover, say; older indexes dropped those), so
-    /// the line is looked for on that page and then on the pages after it, the way it can only
-    /// have moved, and on a few pages before it in case PDFKit splits the pages differently.
-    static func focus(of p: FilePreview, in document: PDFDocument) -> Focus {
-        let count = document.pageCount
-        let estimate = min(PageMap.page(ofLine: p.focusLine, pageStarts: p.pageStarts), count - 1)
-        let candidates = Array(estimate..<min(count, estimate + 40)) + Array(max(0, estimate - 3)..<estimate).reversed()
-        for index in candidates {
-            guard let text = document.page(at: index)?.string else { continue }
-            if let range = PageMap.locate(focusOf: p, in: text) {
-                return Focus(page: index, shift: index - estimate, range: range)
-            }
-        }
-        return Focus(page: estimate, shift: 0, range: nil)
-    }
-
-    /// The matched words on the pages that have matches (the focus page first). Only those pages
-    /// are searched, so a long document doesn't stall the switch to it.
-    static func highlights(for p: FilePreview, focus: Focus, in document: PDFDocument) -> [Highlight] {
-        let terms = PageMap.matchedTerms(p)
-        guard !terms.isEmpty else { return [] }
-        var pages = [focus.page]
-        for mapped in PageMap.pages(ofLines: p.matchLines, pageStarts: p.pageStarts).prefix(200) {
-            // Pages missing before the focus line are missing before the later matches too.
-            for page in Set([mapped, mapped + focus.shift]) where page >= 0 && page < document.pageCount && !pages.contains(page) {
-                pages.append(page)
-            }
-        }
-
-        let color = NSColor.systemYellow.withAlphaComponent(0.5)
-        var out: [Highlight] = []
-        for index in pages {
-            guard let page = document.page(at: index), let string = page.string else { continue }
-            let text = string as NSString
-            var taken: [NSRange] = []
-            // Longest terms first, and a shorter one inside a longer match is not marked twice.
-            for term in terms {
-                var from = 0
-                while from < text.length, out.count < 2000 {
-                    let found = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: text.length - from))
-                    guard found.location != NSNotFound, found.length > 0 else { break }
-                    from = found.location + found.length
-                    guard !taken.contains(where: { NSIntersectionRange($0, found).length > 0 }) else { continue }
-                    taken.append(found)
-                    guard let selection = page.selection(for: found) else { continue }
-                    selection.color = color
-                    out.append(Highlight(page: index, range: found, selection: selection))
-                }
-            }
-        }
-        return out
+        DispatchQueue.main.async { Self.reveal(marks, in: view) }
     }
 
     /// Scroll to the focused match; if it couldn't be placed on the page, to the earliest
     /// highlight there in reading order, or else to the top of the page.
-    static func reveal(_ focus: Focus, highlights: [Highlight], in view: PDFView) {
+    static func reveal(_ marks: PDFMarks, in view: PDFView) {
+        let focus = marks.focus
         guard let document = view.document, let page = document.page(at: focus.page) else { return }
-        let earliest = highlights.filter { $0.page == focus.page }.min { $0.range.location < $1.range.location }
-        let range = focus.range ?? earliest?.range
+        let range = focus.range ?? marks.highlights.first { $0.page == focus.page }?.range
         if let range, let selection = page.selection(for: range) {
             // Leave some room above the match rather than pinning it to the top edge.
             var rect = selection.bounds(for: page)
@@ -159,8 +258,7 @@ struct PDFPreviewView: NSViewRepresentable {
             view.go(to: page)
         }
     }
-}
-/// Any other file, as Quick Look shows it: images, video, audio, fonts, and files without text.
+}/// Any other file, as Quick Look shows it: images, video, audio, fonts, and files without text.
 struct QuickLookView: NSViewRepresentable {
     let url: URL
 

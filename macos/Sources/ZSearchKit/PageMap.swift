@@ -180,7 +180,7 @@ public enum PageMap {
 
     /// A document's text made ready for `locate` once, so moving between its matches doesn't
     /// redo that for the whole document each time.
-    public struct PreparedText {
+    public struct PreparedText: Sendable {
         let squeezed: Squeezed
 
         public init(_ text: String) {
@@ -189,16 +189,28 @@ public enum PageMap {
     }
 
     /// Text with whitespace removed and case folded, remembering where each unit came from.
-    struct Squeezed {
+    struct Squeezed: Sendable {
         var units: [UInt16] = []
         /// For each unit, the UTF-16 range of the character it came from in the original text.
         var origins: [(start: Int, end: Int)] = []
 
         init(_ text: String) {
+            let capacity = text.utf16.count
+            units.reserveCapacity(capacity)
+            origins.reserveCapacity(capacity)
             var offset = 0
             for scalar in text.unicodeScalars {
                 let width = scalar.utf16.count
                 defer { offset += width }
+                // ASCII without building a String per character: a long document is mostly ASCII.
+                let value = scalar.value
+                if value < 128 {
+                    // The ASCII characters Unicode counts as whitespace: tab to carriage return, and space.
+                    if value == 32 || (value >= 9 && value <= 13) { continue }
+                    units.append(UInt16(value >= 65 && value <= 90 ? value + 32 : value))
+                    origins.append((offset, offset + 1))
+                    continue
+                }
                 if scalar.properties.isWhitespace { continue }
                 for unit in String(scalar).lowercased().utf16 {
                     units.append(unit)
