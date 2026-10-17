@@ -221,7 +221,8 @@ zsearch estimate --home             # how long a first index of ~ takes, roughly
 
 | Contents read from | Formats |
 | --- | --- |
-| Documents | PDF, DOCX/DOCM/DOTX/DOTM, ODT, RTF, legacy DOC/DOT, EPUB |
+| Documents | PDF, DOCX/DOCM/DOTX/DOTM, ODT, RTF, legacy DOC/DOT |
+| Ebooks | EPUB (chapters in reading order), MOBI 6 (uncompressed or PalmDOC compressed, including the MOBI 6 part of dual-format books) |
 | Spreadsheets | XLSX/XLSM/XLTX/XLTM, ODS, legacy XLS/XLT (sheets, shared strings, numbers) |
 | Presentations | PPTX/PPTM/PPSX/POTX/POTM, ODP, legacy PPT/PPS/POT (slides and speaker notes) |
 | iWork | Single-file Pages, Numbers and Keynote archives with an embedded Quick Look PDF or an image preview (with OCR enabled); other iWork files stay names-only |
@@ -240,6 +241,8 @@ The spoken language defaults to the Mac's system locale. Set **Transcript langua
 Recordings are streamed, one at a time after documents and images, at background priority under the index's power settings. Each reads up to the first **two hours**, with a **30-minute processing deadline** and at most **2 million transcript characters** (or the lower `content.maxChars`). Media do not use the PDF/Office file-size limit. Final segments carry `[hh:mm:ss]` timestamps in search previews; a **File/Transcript** switch in the Mac app lets you play the recording instead. Duration, output and deadline limits mark retained text `truncated`; timestamps are text, not playback seek links. Unchanged recordings reuse their indexed transcripts; an explicit rebuild transcribes them again. Silent/unsupported files and service failures appear in `status --errors`; failed speech jobs can retry on an index update after an hour, or after changing the speech settings. Asset preparation is attempted once per worker/run, so a failed download is not repeated for every recording.
 
 `zsearch doctor` reports the helper path. For the terminal app, point `ZSEARCH_TRANSCRIBE` at the bundled helper, for example `ZSEARCH_TRANSCRIBE=~/Applications/zsearch.app/Contents/Helpers/zsearch-transcribe`. `ZSEARCH_TRANSCRIBE=0` disables discovery. Older macOS releases and unsupported hardware keep media searchable by name. First-index estimates list recordings separately because a count-only scan cannot estimate their transcription time.
+
+The Mac app previews EPUB and MOBI as wrapped reading excerpts with highlighted search matches. Choose **Text** for numbered lines instead; the choice is also available in Settings. These previews use extracted text, without the book's original layout or illustrations. Encrypted MOBI, HUFF/CDIC compression and standalone KF8 books are unsupported and remain searchable by name.
 
 **Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists such folders; `zsearch config set skipDatasetOcr false` reads them too.
 
