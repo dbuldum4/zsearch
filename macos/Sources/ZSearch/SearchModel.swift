@@ -276,7 +276,7 @@ final class SearchModel {
             guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
-            if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits { return }
+            if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice { return }
             response = r
             if let id = selection, r.hits.contains(where: { $0.id == id }) {
                 loadPreview()

@@ -44,6 +44,12 @@ public enum QueryFilters {
         return tokens(body).last { t in t.matches(keys) }?.value
     }
 
+    /// Whether a `type:` value names no type the engine knows (`docx`, `imgae`), so the engine
+    /// drops the filter and searches every type. `pdf,docx` still filters, by its PDF part.
+    public static func isUnknownType(_ value: String) -> Bool {
+        !value.lowercased().split(separator: ",").contains { kindAliases.contains(String($0)) }
+    }
+
     /// The key a filter in the query was written with (`modified`, `after`...), for labels.
     public static func key(_ keys: [String], in query: String) -> String? {
         let (_, body) = splitPrefix(query)

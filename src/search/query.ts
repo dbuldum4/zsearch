@@ -1,6 +1,6 @@
 import { escapeRegExp } from "../util/text.ts"
 import { resolvePath } from "../config.ts"
-import { KIND_ALIASES, type Kind } from "../kinds.ts"
+import { isKnownExt, KIND_ALIASES, type Kind } from "../kinds.ts"
 
 /**
  * `find`: exact text, or a regex written as `/pattern/` or `re:pattern`. `fuzzy`: fzf-style.
@@ -270,7 +270,10 @@ function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: 
       for (const v of value.toLowerCase().split(",")) {
         const k = KIND_ALIASES[v]
         if (k) kinds.push(...k)
-        else if (key !== "is") warnings.push(`unknown type "${v}"`)
+        else if (key !== "is") {
+          const ext = v.replace(/^\*?\./, "")
+          warnings.push(`unknown type "${v}"` + (isKnownExt(ext) ? `, did you mean ${neg ? "-" : ""}ext:${ext}?` : ""))
+        }
       }
       if (!kinds.length) return key !== "is" // `is:` with unknown value stays as text
       if (neg) f.notKinds = new Set([...(f.notKinds ?? []), ...kinds])

@@ -34,7 +34,8 @@ struct FilterBar: View {
     var body: some View {
         let query = model.query
         HStack(spacing: 6) {
-            choiceMenu("Type", icon: "doc", keys: QueryFilters.typeKeys, options: Self.types, anyTitle: "Any Type", query: query)
+            choiceMenu("Type", icon: "doc", keys: QueryFilters.typeKeys, options: Self.types, anyTitle: "Any Type", query: query,
+                       isUnknown: QueryFilters.isUnknownType)
             ExtensionField()
             folderMenu(query)
             choiceMenu("Modified", icon: "calendar", keys: QueryFilters.modifiedKeys, options: Self.ages, anyTitle: "Any Time", query: query)
@@ -59,7 +60,8 @@ struct FilterBar: View {
         model.requestSearchFocus()
     }
 
-    private func choiceMenu(_ title: String, icon: String, keys: [String], options: [Option], anyTitle: String, query: String) -> some View {
+    private func choiceMenu(_ title: String, icon: String, keys: [String], options: [Option], anyTitle: String, query: String,
+                            isUnknown: (String) -> Bool = { _ in false }) -> some View {
         let value = QueryFilters.value(keys, in: query)
         let label: String
         if let value {
@@ -69,6 +71,7 @@ struct FilterBar: View {
         } else {
             label = title
         }
+        let unknown = value.map(isUnknown) ?? false
         return Menu {
             Button(anyTitle) { set(keys, nil) }
             Divider()
@@ -76,12 +79,12 @@ struct FilterBar: View {
                 Button(option.title) { set(keys, option.value) }
             }
         } label: {
-            FilterChip(title: label, icon: icon, active: value != nil)
+            FilterChip(title: label, icon: unknown ? "exclamationmark.triangle" : icon, active: value != nil && !unknown, warning: unknown)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
-        .help("\(title) filter (\(keys[0]):…)")
+        .help(unknown ? "Not a \(title.lowercased()) zsearch knows, so this filter is ignored" : "\(title) filter (\(keys[0]):…)")
     }
 
     private func folderMenu(_ query: String) -> some View {
@@ -167,6 +170,8 @@ struct FilterChip: View {
     let title: String
     let icon: String
     let active: Bool
+    /// A filter that is written but does nothing (an unknown value).
+    var warning = false
     var showsChevron = true
 
     var body: some View {
@@ -181,10 +186,10 @@ struct FilterChip: View {
             }
         }
         .font(.callout)
-        .foregroundStyle(active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+        .foregroundStyle(warning ? AnyShapeStyle(Color.orange) : active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(active ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1)))
+        .background(Capsule().fill(warning ? Color.orange.opacity(0.15) : active ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1)))
         .contentShape(Capsule())
     }
 }
