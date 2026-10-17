@@ -255,6 +255,7 @@ struct PreviewPane: View {
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     /// Word documents show their formatting unless the reader picked the extracted text instead.
     @AppStorage(AppSettings.documentShowsText) private var documentShowsText = false
+    @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
     /// Images show themselves unless the reader picked the text OCR read from them.
     @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
 
@@ -280,6 +281,7 @@ struct PreviewPane: View {
             // A Word file is only read when the document will show.
             let wordFile = pdf == nil && WordDocuments.handles(p)
             let word = wordFile && (!documentShowsText || p.message != nil) ? WordDocuments.shared.document(for: p) : nil
+            let ebook = EbookPreviewView.handles(p)
             // Images, video and audio, and other files without text: Quick Look shows them.
             let visual = p.contentAllowed != false && pdf == nil && word == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
             VStack(alignment: .leading, spacing: 0) {
@@ -315,6 +317,16 @@ struct PreviewPane: View {
                         .controlSize(.small)
                         .fixedSize()
                         .help("Show the formatted document, or the text zsearch read from it")
+                    } else if ebook {
+                        Picker("Show", selection: $ebookShowsText) {
+                            Text("Reading").tag(false)
+                            Text("Text").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Show a reflowed excerpt, or the line-numbered text zsearch read from the book")
                     } else if visual, p.message == nil {
                         Picker("Show", selection: $imageShowsText) {
                             Text(p.kind == "image" ? "Image" : "File").tag(false)
@@ -334,6 +346,8 @@ struct PreviewPane: View {
                     PDFPreviewView(preview: p, document: pdf)
                 } else if let word {
                     DocumentPreviewView(preview: p, document: word)
+                } else if ebook, !ebookShowsText {
+                    EbookPreviewView(preview: p)
                 } else if visual, !imageShowsText || p.message != nil {
                     QuickLookView(url: URL(fileURLWithPath: p.path))
                 } else if let message = p.message {
