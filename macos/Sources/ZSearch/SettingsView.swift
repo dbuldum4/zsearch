@@ -39,6 +39,8 @@ enum AppSettings {
     /// Images (and other files Quick Look shows) preview as the text read from them instead.
     static let imageShowsText = "imageShowsText"
     static let mediaShowsTranscript = "mediaShowsTranscript"
+    static let wrapTextPreviews = "wrapTextPreviews"
+    static let wrapPanelTextPreviews = "wrapPanelTextPreviews"
     /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
     static let editor = "editor"
     /// What the global shortcut shows (see `ShortcutTarget`).
@@ -60,6 +62,8 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     @AppStorage(AppSettings.documentShowsText) private var documentShowsText = false
     @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
+    @AppStorage(AppSettings.wrapTextPreviews) private var wrapTextPreviews = true
+    @AppStorage(AppSettings.wrapPanelTextPreviews) private var wrapPanelTextPreviews = true
     @AppStorage(AppSettings.editor) private var editor = ""
     @AppStorage(AppSettings.shortcutOpens) private var shortcutOpens = ShortcutTarget.panel.rawValue
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
@@ -88,6 +92,8 @@ private struct GeneralSettings: View {
                 Text("Reading").tag(false)
                 Text("Text").tag(true)
             }
+            Toggle("Wrap text in the floating search panel", isOn: $wrapPanelTextPreviews)
+            Toggle("Wrap text in the main window", isOn: $wrapTextPreviews)
             Picker("Open code in (⌘E)", selection: $editor) {
                 Text("First editor installed").tag("")
                 ForEach(installedEditors) { Text($0.name).tag($0.bundleID) }
