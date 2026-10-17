@@ -49,7 +49,8 @@ export function extractMobi(buf: Uint8Array): string {
   }
   if (written !== textLength) throw new Error("truncated MOBI text")
   const html = new TextDecoder(encoding === 65001 ? "utf-8" : "windows-1252").decode(text)
-  return htmlText(html.replace(/<mbp:pagebreak\b[^>]*>/gi, "\f"))
+  // Stop at the next tag opener too: unfinished tags must not rescan the remaining book.
+  return htmlText(html.replace(/<mbp:pagebreak\b[^<>]*>/gi, "\f"))
 }
 
 /** Trailing metadata is outside the compressed stream; bit zero adds UTF-8 overlap bytes. */

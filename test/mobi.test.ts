@@ -29,6 +29,19 @@ test("MOBI: explicit page breaks keep chapter boundaries", () => {
   expect(extractMobi(mobi([bytes("<p>One</p><mbp:pagebreak/><p>Two</p>")]))).toBe("One\fTwo")
 })
 
+test("MOBI: repeated unfinished page breaks stay bounded and preserve later tags", () => {
+  const text = bytes("<mbp:pagebreak ".repeat(70_000) + "<p>Recovered</p><MBP:PAGEBREAK /><p>Second</p>")
+  const records: Uint8Array[] = []
+  for (let i = 0; i < text.length; i += 4096) records.push(text.subarray(i, i + 4096))
+  const book = mobi(records)
+  const started = performance.now()
+  const result = extractMobi(book)
+  const elapsed = performance.now() - started
+  expect(result).toBe("Recovered\fSecond")
+  // The old quadratic scan takes seconds on this input; allow ample headroom for CI.
+  expect(elapsed).toBeLessThan(2000)
+})
+
 test("MOBI: trailing metadata and UTF-8 overlap are removed before decompressing", () => {
   const text = bytes("<p>Café</p>")
   const record = new Uint8Array([...text, 0xc3, 1, 65, 66, 0x83])
