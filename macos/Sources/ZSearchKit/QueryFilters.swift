@@ -10,7 +10,8 @@ public enum QueryFilters {
     public static let folderKeys = ["in", "dir"]
     public static let sizeKeys = ["size"]
     public static let modifiedKeys = ["modified", "mtime", "changed", "after", "since", "before"]
-    static let allKeys: Set<String> = Set(typeKeys + extKeys + folderKeys + sizeKeys + modifiedKeys + ["path", "limit"])
+    static let allKeys: Set<String> = Set(typeKeys + extKeys + folderKeys + sizeKeys + modifiedKeys
+        + ["path", "limit", "created", "tag", "name", "sort", "case", "word", "diacritics", "near", "fold"])
 
     /// Type names the engine accepts (KIND_ALIASES in src/kinds.ts). `is:` is only a filter when
     /// one of its values is among them; otherwise the engine keeps it as text (`is:open`).
@@ -24,6 +25,8 @@ public enum QueryFilters {
 
     static let regexPrefixes = ["re:", "regex:"]
     static let modePrefixes = ["re:", "regex:", "find:", "exact:", "grep:", "fuzzy:", "f:", "semantic:", "meaning:", "s:"]
+    /// JavaScript's flags, as accepted by src/search/query.ts, including multiline patterns.
+    static let delimitedRegex = #"^/[\s\S]+/[dgimsuvy]*$"#
 
     struct Token {
         var range: Range<String.Index>
@@ -74,7 +77,7 @@ public enum QueryFilters {
             let words = tokens.filter { $0.key == nil }
             guard let first = words.first, let last = words.last else { return false }
             let text = String(body[first.range.lowerBound..<last.range.upperBound])
-            return text.count > 2 && text.range(of: #"^/.+/[imsux]*$"#, options: .regularExpression) != nil
+            return text.range(of: QueryFilters.delimitedRegex, options: .regularExpression) != nil
         }
     }
 
@@ -109,6 +112,17 @@ public enum QueryFilters {
         return prefix + out
     }
 
+    /// A sort header alternates ascending and descending without changing quoted search text or paths.
+    public static func togglingSort(_ key: String, in query: String) -> String {
+        let descending = value(["sort"], in: query) == key
+        return setting(["sort"], to: (descending ? "-" : "") + key, in: query)
+    }
+
+    public static func togglingFold(in query: String) -> String {
+        let on = ["on", "true"].contains(value(["fold"], in: query)?.lowercased() ?? "")
+        return setting(["fold"], to: on ? "off" : "on", in: query)
+    }
+
     /// Whether any filter is set (negated ones included).
     public static func hasFilters(_ query: String) -> Bool {
         Parsed(query).hasFilters
@@ -130,17 +144,20 @@ public enum QueryFilters {
     /// The query with regex matching switched on (a `re:` prefix) or off (the prefix or `/…/` removed).
     public static func settingRegex(_ on: Bool, in query: String) -> String {
         guard on != isRegex(query) else { return query }
-        let (prefix, body) = splitPrefix(query)
+        let (_, body) = splitPrefix(query)
         if on { return "re:" + body.trimmingLeadingSpaces() }
-        if !prefix.isEmpty { return body.trimmingLeadingSpaces() }
-        // Unwrap `/pattern/flags`, leaving the filters around it alone.
-        let words = tokens(body).filter { $0.key == nil }
-        guard let first = words.first, let last = words.last else { return query }
+        // Remove the prefix and unwrap `/pattern/flags`, leaving the filters around it alone.
+        // `re:/pattern/g` needs both removed, or it would still run as a regex.
+        let plain = body.trimmingLeadingSpaces()
+        let words = tokens(plain).filter { $0.key == nil }
+        guard let first = words.first, let last = words.last else { return plain }
         let range = first.range.lowerBound..<last.range.upperBound
-        let pattern = String(body[range])
+        let delimited = String(plain[range])
+        guard delimited.range(of: Self.delimitedRegex, options: .regularExpression) != nil else { return plain }
+        let pattern = delimited
             .replacingOccurrences(of: #"^/"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"/[imsux]*$"#, with: "", options: .regularExpression)
-        return body.replacingCharacters(in: range, with: pattern)
+            .replacingOccurrences(of: #"/[dgimsuvy]*$"#, with: "", options: .regularExpression)
+        return plain.replacingCharacters(in: range, with: pattern)
     }
 
     // MARK: - Tokens
