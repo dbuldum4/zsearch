@@ -202,10 +202,18 @@ class Host {
     return this.db
   }
 
+  /** Files whose contents could not be read, leaving out any the current settings no longer allow. */
   async unreadable(limit: number): Promise<{ path: string; reason: string }[]> {
     await this.client.waitReady()
-    const rows = this.database().query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path LIMIT ?").all(limit) as { path: string; note: string | null }[]
-    return rows.map((r) => ({ path: r.path, reason: r.note ?? "error" }))
+    const check = policyFor(crawlOptionsFor(this.reloadConfig()))
+    const out: { path: string; reason: string }[] = []
+    const rows = this.database().query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path")
+    for (const r of rows.iterate() as Iterable<{ path: string; note: string | null }>) {
+      if (!check(r.path).allowed) continue
+      out.push({ path: r.path, reason: r.note ?? "error" })
+      if (out.length >= limit) break
+    }
+    return out
   }
 
   /** Start an index run with the current settings, unless one is running here or elsewhere. */
@@ -492,9 +500,12 @@ const STATE_SCHEMA = loose(
 
 /* ----------------------------------------------------------------- tools -- */
 
-/** Remote preferences cannot widen indexing or choose an executable. */
-const LOCAL_SETTINGS = /^(liveUpdates$|editor$|roots$|exclude$|namesOnly$|includeHidden$|respectGitignore$|followSymlinks$|oneFileSystem$|cloudContent$|content\.)/
-export const CONFIG_KEYS = configKeys().filter((key) => !LOCAL_SETTINGS.test(key))
+/**
+ * The only settings an MCP client may change. An allowlist, so a new setting stays local (it
+ * might widen indexing, read more contents or choose an executable) until it is added here.
+ */
+const REMOTE_SETTINGS = new Set(["autoRefreshMinutes", "workers", "indexLoad", "pauseOnLowPower", "pauseOnBattery", "defaultMode", "preview", "semantic.enabled", "semantic.declined", "semantic.code"])
+export const CONFIG_KEYS = configKeys().filter((key) => REMOTE_SETTINGS.has(key))
 const INDEX_KEYS = /^(roots|exclude|namesOnly|includeHidden|respectGitignore|followSymlinks|oneFileSystem|cloudContent|content\.)/
 
 function getKey(config: Config, key: string): unknown {
@@ -533,7 +544,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
       before: str("Modified before this date (2024-01-01, 2024-06 or 2024)"),
       size: str('File size: ">5mb", "<100k", "1mb..10mb"'),
       limit: int("Results to return", 1, 200, 20),
-      offset: int("Results to skip, to page through many results", 0, 800, 0),
+      offset: int("Results to skip, to page through many results", 0, SEARCH_POOL - 1, 0),
       lines_per_file: int("Matching lines to show per file", 0, 8, 3),
     }),
     outputSchema: loose(
@@ -611,7 +622,8 @@ Each result gives the file's absolute path, kind, size, modification time and it
           out.push("", `${offset + i + 1}. ${h.path}${h.isDir ? "/" : ""}`, `   ${describeHit(h)}`)
           for (const l of s.lines) out.push(`   ${hitLocation(h.kind, l.line, l.page ?? 0, l.page !== undefined)}: ${l.text}`)
         })
-        if (res.total > offset + hits.length) out.push("", `More results: call again with offset ${offset + hits.length}, or narrow the search.`)
+        if (res.hits.length > offset + hits.length) out.push("", `More results: call again with offset ${offset + hits.length}, or narrow the search.`)
+        else if (res.total > offset + hits.length) out.push("", `More results than the first ${formatCount(res.hits.length)}: narrow the search to see them.`)
       }
       if (res.partial) out.push("", "The search stopped at its budget, so there may be more matches.")
       if (res.notice) out.push("", `Note: ${res.notice}`)
@@ -857,7 +869,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
   const setConfig: Tool = {
     name: "set_config",
     title: "Change a setting",
-    description: "Change a shared preference: autoRefreshMinutes, workers, indexLoad, defaultMode or preview. Index folders, exclusions, content policy and editor must be changed in the app or CLI.",
+    description: "Change a shared preference: autoRefreshMinutes, workers, indexLoad, pauseOnLowPower, pauseOnBattery, defaultMode, preview, or semantic search (semantic.enabled, semantic.declined, semantic.code). Index folders, exclusions, content policy and editor must be changed in the app or CLI.",
     inputSchema: obj(
       {
         key: str("The preference to change", { enum: CONFIG_KEYS }),

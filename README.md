@@ -335,7 +335,7 @@ Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mc
 | `update_index` | Update the locally configured roots in the background, or rebuild the index; `wait_seconds` waits for it with progress notifications |
 | `exclude_path` | Exclude an already indexed file or folder and request a refresh; this only narrows access |
 | `cancel_index` | Stop indexing |
-| `get_config` / `set_config` | Read settings; change only search mode, preview, worker/load and refresh preferences. Roots, editor and all content/privacy controls require the local app or CLI |
+| `get_config` / `set_config` | Read settings; change only search mode, preview, worker/load, refresh and semantic search preferences. Roots, editor and all content/privacy controls require the local app or CLI |
 
 Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and each indexed file's text as `file:///path/to/file`. Prompts: `find_files` (find files about something and say what is in them) and `summarize_file` (with path completion). If the index is older than `autoRefreshMinutes`, the server updates it in the background, as the app does. The server reads only files that are in the index, and never changes them.
 
