@@ -588,7 +588,8 @@ describe("semantic index and search", () => {
     e.refresh(true)
     answer()
     const r = await pending
-    expect(r.strategy).toBe("semantic + words")
+    // The vectors predate the edit, so only word matches are trusted until the semantic index catches up.
+    expect(r.strategy).toBe("words")
     expect(r.hits.map((h) => h.display)).not.toContain("notes/release.txt")
     e.closeSemantic()
     rmSync(join(corpus.home, "notes/release.txt"))

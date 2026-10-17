@@ -1,5 +1,6 @@
 import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
+import { statSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
@@ -22,7 +23,7 @@ import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
-import { mainGeneration } from "../semantic/indexer.ts"
+import { helperVectorVersion, mainGeneration, semanticFingerprint } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -92,6 +93,8 @@ interface SearchOptions {
   budgetMs?: number
   /** Only these files (a part of a grouped query, narrowed by another part). */
   onlyIds?: Set<number>
+  /** A part of a grouped query: `limit` alone bounds it, as the query's `limit:` is for the combined results. */
+  branch?: boolean
 }
 
 /** One part of a grouped query: its hits, and whether they are all of its matches. */
@@ -270,7 +273,7 @@ export class SearchEngine {
     if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
-    const limit = q.filters.limit ?? opts.limit ?? 100
+    const limit = (opts.branch ? undefined : q.filters.limit) ?? opts.limit ?? 100
     const effective: Mode = q.forcedMode ?? mode
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
@@ -378,7 +381,7 @@ export class SearchEngine {
    */
   private async evaluateGroup(expr: QueryExpression, mode: Mode, opts: SearchOptions, deadline: number): Promise<GroupPart> {
     if (expr.op === "leaf") {
-      const r = await this.search(expr.text, mode, { ...opts, limit: BRANCH_LIMIT, budgetMs: Math.max(1, deadline - performance.now()) })
+      const r = await this.search(expr.text, mode, { ...opts, limit: BRANCH_LIMIT, branch: true, budgetMs: Math.max(1, deadline - performance.now()) })
       return {
         hits: new Map(r.hits.map((h) => [h.id, h])),
         complete: !r.partial && !r.error && r.total <= r.hits.length && r.hits.length < BRANCH_LIMIT,
@@ -422,15 +425,17 @@ export class SearchEngine {
 
   private async runFuzzy(q: ParsedQuery, limit: number, res: SearchResponse) {
     const query = fuzzyQueryText(q)
-    const names = this.nameMatches(q, limit, 0)
+    // A requested order applies to every match (`fuse` sorts them), not to the most relevant few.
+    const keep = q.filters.sort ? Math.max(this.catalog.size, limit) : limit
+    const names = this.nameMatches(q, keep, 0)
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [{ name: "names", weight: 1.3, items: names, source: "name" }]
     if (names.length < limit / 4) {
-      const typo = this.catalog.typo(query, q.filters, limit).map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions }))
+      const typo = this.catalog.typo(query, q.filters, keep).map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions }))
       lists.push({ name: "typo", weight: 0.9, items: typo, source: "name" })
     }
     // fzf operators ('exact ^prefix suffix$ !not) are about names only.
     const operators = parseFuzzyTerms(query).some((t) => t.kind !== "fuzzy" || t.negate)
-    if (!operators) lists.push({ name: "text", weight: 0.6, items: this.keywordMatches(q, limit, q.typing, true), source: "content" })
+    if (!operators) lists.push({ name: "text", weight: 0.6, items: this.keywordMatches(q, limit, q.typing, true, keep), source: "content" })
     res.strategy = operators ? "fuzzy names" : "fuzzy names + typo-tolerant text"
     this.fuse(lists, limit, res, q)
   }
@@ -470,10 +475,81 @@ export class SearchEngine {
   async warmSemantic(): Promise<void> {
     if (!this.config.semantic.enabled || !this.config.content.enabled || !this.db.filename) return
     if (this.embedQuery === undefined && !installedModel(GRANITE)) return
+    const fingerprint = this.vectorFingerprint(embedToolPath())
+    if (fingerprint === null) return
     const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename)))
-    const index = vectors.get(mainGeneration(this.db), getMeta(this.db, "change_seq") ?? "0")
+    const index = vectors.get(mainGeneration(this.db), getMeta(this.db, "change_seq") ?? "0", fingerprint)
     if (!index?.size || this.embedQuery !== undefined || !this.queryVectorFn()) return
     await this.queryEmbedder!.warm()
+  }
+
+  /** The helper's vector version, read once per helper binary: reading it starts the helper. */
+  private helperVersion: { tool: string; stamp: string; version: number } | null = null
+
+  /**
+   * The fingerprint stored vectors must have to compare with query vectors (see
+   * `semanticFingerprint`); null if the helper's version can't be read. Vectors supplied by
+   * `embedQuery` come from no helper here: undefined, nothing to check.
+   */
+  private vectorFingerprint(tool: string | null): string | null | undefined {
+    if (this.embedQuery !== undefined) return undefined
+    if (!tool) return null
+    let stamp: string
+    try {
+      const s = statSync(tool)
+      stamp = `${s.ino}:${s.size}:${s.mtimeMs}`
+    } catch {
+      return null
+    }
+    if (this.helperVersion?.tool !== tool || this.helperVersion.stamp !== stamp) {
+      const version = helperVectorVersion(tool)
+      if (version === null) return null
+      this.helperVersion = { tool, stamp, version }
+    }
+    return semanticFingerprint(this.helperVersion.version)
+  }
+
+  /**
+   * The Granite snapshot semantic search may use now: complete for the files as they are, and
+   * made by the model and helper that embed queries. Otherwise why not (`waiting`: for a pass).
+   */
+  private semanticIndex(): { index: VectorIndex } | { notice: string; waiting?: boolean } {
+    if (!this.config.semantic.enabled) return { notice: "Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches" }
+    if (!this.config.content.enabled) return { notice: "Semantic search needs file contents, which are off" }
+    const tool = embedToolPath()
+    const modelReady = this.embedQuery !== undefined ? !!this.embedQuery : !!installedModel(GRANITE)
+    const helperReady = this.embedQuery !== undefined ? !!this.embedQuery : !!tool
+    if (!modelReady) return { notice: "Semantic search needs its model: run `zsearch semantic install`. Showing word matches" }
+    if (!helperReady) return { notice: "Semantic search needs the embedding helper (zsearch-embed). Showing word matches" }
+    const fingerprint = this.vectorFingerprint(tool)
+    if (fingerprint === null) return { notice: "Semantic search could not read the embedding helper's version (zsearch-embed --version). Showing word matches" }
+    const sequence = getMeta(this.db, "change_seq") ?? "0"
+    const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:")))
+    const index = vectors.get(mainGeneration(this.db), sequence, fingerprint)
+    if (!index?.size || !index.isCompleteFor(sequence)) return { notice: "Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches", waiting: true }
+    return { index }
+  }
+
+  /** Which passages of a snapshot the user may read by content (1), for the settings and index as they are. */
+  private allowedRows: { index: VectorIndex; config: Config; revision: number; rows: Uint8Array } | null = null
+
+  private authorizedRows(index: VectorIndex): Uint8Array {
+    const cached = this.allowedRows
+    if (cached?.index === index && cached.config === this.config && cached.revision === this.revision) return cached.rows
+    const check = policyFor(crawlOptionsFor(this.config))
+    const byFile = new Map<number, number>()
+    const rows = new Uint8Array(index.size)
+    for (let row = 0; row < rows.length; row++) {
+      const file = Math.abs(index.file[row]!)
+      let ok = byFile.get(file)
+      if (ok === undefined) {
+        const i = this.catalog.indexOf(file)
+        byFile.set(file, (ok = i !== undefined && this.contentAuthorized(i, check) ? 1 : 0))
+      }
+      rows[row] = ok
+    }
+    this.allowedRows = { index, config: this.config, revision: this.revision, rows }
+    return rows
   }
 
   /** How semantic results are put together (benchmarks try others). */
@@ -485,6 +561,7 @@ export class SearchEngine {
     this.queryEmbedder = null
     this.vectors?.close()
     this.vectors = null
+    this.allowedRows = null
   }
 
   /**
@@ -496,7 +573,7 @@ export class SearchEngine {
     const notices: string[] = []
     const text = [...q.words, ...q.phrases].join(" ")
     const cat = this.catalog
-    const check = policyFor(crawlOptionsFor(this.config))
+    let check = policyFor(crawlOptionsFor(this.config))
     const usable = (id: number): number | undefined => {
       const i = cat.indexOf(id)
       return i !== undefined && cat.passes(i, q.filters) && !cat.isDir[i] && !semanticExcluded(cat.paths[i]!) ? i : undefined
@@ -505,27 +582,16 @@ export class SearchEngine {
     // Query only a complete, current Granite snapshot. Words remain available during indexing.
     let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
     // The helper embeds the query in its own process while the words below are looked up.
-    let embedding: { vector: Promise<Float32Array>; index: VectorIndex } | null = null
-    if (!this.config.semantic.enabled) notices.push("Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches")
-    else if (!this.config.content.enabled) notices.push("Semantic search needs file contents, which are off")
-    else {
-      const tool = embedToolPath()
-      const modelReady = this.embedQuery !== undefined ? !!this.embedQuery : !!installedModel(GRANITE)
-      const helperReady = this.embedQuery !== undefined ? !!this.embedQuery : !!tool
-      const sequence = getMeta(this.db, "change_seq") ?? "0"
-      const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:")))
-      const index = vectors.get(mainGeneration(this.db), sequence)
-      if (!modelReady) notices.push("Semantic search needs its model: run `zsearch semantic install`. Showing word matches")
-      else if (!helperReady) notices.push("Semantic search needs the embedding helper (zsearch-embed). Showing word matches")
-      else if (!index?.size || !index.isCompleteFor(sequence)) {
-        if (text.trim()) notices.push("Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches")
-      } else if (text.trim()) {
-        const embed = this.queryVectorFn()!
-        let vector: Promise<Float32Array>
-        try { vector = embed(text) } catch (err) { vector = Promise.reject(err) }
-        vector.catch(() => {})
-        embedding = { vector, index }
-      }
+    let embedding: Promise<Float32Array> | null = null
+    const snapshot = this.semanticIndex()
+    if (!("index" in snapshot)) {
+      if (!snapshot.waiting || text.trim()) notices.push(snapshot.notice)
+    } else if (text.trim()) {
+      const embed = this.queryVectorFn()!
+      let vector: Promise<Float32Array>
+      try { vector = embed(text) } catch (err) { vector = Promise.reject(err) }
+      vector.catch(() => {})
+      embedding = vector
     }
 
     // Words: the share of the query's words each file holds, in its name or folders, or its text.
@@ -590,7 +656,8 @@ export class SearchEngine {
       })
       for (const n of q.negated.flatMap((w) => foldTerm(w).match(/[\p{L}\p{N}]+/gu) ?? [])) {
         for (const id of matching("{name dirs}", n, false)) negatedNames.add(id)
-        for (const id of matching("body", n, false)) negatedText.add(id)
+        // Only text the user may read rules a file out: otherwise which files are left would tell its words.
+        if (this.config.content.enabled) for (const id of matching("body", n, false)) if (readable(id)) negatedText.add(id)
       }
     }
     const revision = this.revision
@@ -598,33 +665,31 @@ export class SearchEngine {
     lookUpWords()
 
     if (embedding) {
+      let vector: Float32Array | null = null
       try {
-        const vector = await embedding.vector
-        if (opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
-        const index = embedding.index
-        // Content authorization is checked below, only for the files it can change the results of.
-        best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale), (file) => usable(file) !== undefined, this.ranking)
+        vector = await embedding
       } catch (err) {
         notices.push(`Semantic search failed (${(err as Error).message}). Showing word matches`)
       }
+      if (vector && opts.cancelled?.()) { res.partial = true; res.strategy = "semantic"; return }
       // The worker may have taken in an index update or new settings while the query was
-      // embedded: the words found before it would match files by text they no longer hold.
+      // embedded: the words found before it would match files by text they no longer hold, and
+      // only a Granite snapshot of the files as they are now may answer.
+      if (this.config !== config) { check = policyFor(crawlOptionsFor(this.config)); contentOk.clear() }
       if (this.revision !== revision || this.config !== config) lookUpWords()
+      if (vector) {
+        const now = this.semanticIndex()
+        if ("index" in now) {
+          const index = now.index
+          // Passages the user may not read by content neither match nor set the scale of the others' scores.
+          const allowed = this.authorizedRows(index)
+          best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale.map((s, row) => s & allowed[row]!)), (file) => usable(file) !== undefined, this.ranking, allowed)
+        } else notices.push(now.notice)
+      }
     }
     for (const id of negatedNames) best.delete(id)
     for (const id of negatedText) best.delete(id)
-    // A file the user may not read by content has no meaning match. Those that stand out are
-    // checked now; the rest only matter if a word match makes them a candidate, or if no file
-    // would be left to say the query has meaning matches at all.
     const zGate = this.ranking.zGate ?? Z_GATE
-    let meaningful = false
-    for (const [file, b] of best) {
-      if (b.z < zGate) continue
-      if (readable(file)) meaningful = true
-      else best.delete(file)
-    }
-    if (!meaningful) for (const file of best.keys()) if (readable(file)) { meaningful = true; break }
-    if (!meaningful) best = new Map()
 
     const weighted = new Map<number, number>()
     if (best.size && !(this.ranking.strength > 0)) {
@@ -649,9 +714,7 @@ export class SearchEngine {
         for (const id of byName[t]!) if (candidate.has(id)) add(id, t)
         for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); add(id, t) }
       }
-      for (const id of candidate) if (best.has(id) && !readable(id)) best.delete(id)
     } else {
-      for (const [file] of best) if (!readable(file)) best.delete(file)
       const sets = terms.map((_, t) => {
         const has = new Set(byName[t])
         for (const id of byText[t]!) if (readable(id)) { has.add(id); bodyMatch.add(id) }
@@ -854,7 +917,8 @@ export class SearchEngine {
     return { expr: quoted.length === 1 ? quoted[0]! : `(${quoted.join(" AND ")})`, broad }
   }
 
-  private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false): Ranked[] {
+  /** The `limit` best matches, or `keep` of them with only the `limit` best (at least RANK_POOL) ranked by their text. */
+  private keywordMatches(q: ParsedQuery, limit: number, prefixLast: boolean, typos = false, keep = limit): Ranked[] {
     const groups = this.keywordGroups(q, prefixLast, typos)
     const ids = (expr: string | null): number[] => {
       if (!expr) return []
@@ -884,7 +948,7 @@ export class SearchEngine {
         matches = matches.filter((id) => byPlain.has(id) || groups.some((g) => g.check && holds(id, g)))
       }
     }
-    return this.rankMatches(matches, groups, q.filters, limit)
+    return this.rankMatches(matches, groups, q.filters, limit, keep)
   }
 
   /**
@@ -893,7 +957,7 @@ export class SearchEngine {
    * score, so this scores the file name and folders from the path, and the text itself for the
    * RANK_POOL best candidates by path score, then date.
    */
-  private rankMatches(ids: number[], groups: TermGroup[], filters: Filters, limit: number): Ranked[] {
+  private rankMatches(ids: number[], groups: TermGroup[], filters: Filters, limit: number, keep = limit): Ranked[] {
     const cat = this.catalog
     const check = policyFor(crawlOptionsFor(this.config))
     const idx: number[] = []
@@ -965,7 +1029,7 @@ export class SearchEngine {
       score.set(i, (score.get(i) ?? 0) + s)
     }
     pool.sort(byPathThenDate)
-    return [...pool, ...idx.slice(pool.length)].slice(0, limit).map((i) => ({ id: cat.ids[i]!, raw: score.get(i) ?? 0 }))
+    return [...pool, ...idx.slice(pool.length)].slice(0, keep).map((i) => ({ id: cat.ids[i]!, raw: score.get(i) ?? 0 }))
   }
 
   private fetchStmt: ReturnType<Database["query"]> | null = null

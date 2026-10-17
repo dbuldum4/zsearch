@@ -266,11 +266,13 @@ export class VectorIndex {
   }
 
   private uses: Int32Array | null = null
-  /** How many passages share this passage's text (its vector): boilerplate many files hold. */
-  sharing(row: number): number {
-    if (!this.uses) {
+  private usesAmong: ArrayLike<number> | null = null
+  /** How many passages share this passage's text (its vector): boilerplate many files hold. Only rows set in `among` count, if given. */
+  sharing(row: number, among: ArrayLike<number> | null = null): number {
+    if (!this.uses || this.usesAmong !== among) {
       this.uses = new Int32Array(this.distinct)
-      for (const k of this.vector) this.uses[k]!++
+      for (let i = 0; i < this.vector.length; i++) if (!among || among[i]) this.uses[this.vector[i]!]!++
+      this.usesAmong = among
     }
     return this.uses[this.vector[row]!] ?? 1
   }
@@ -371,12 +373,13 @@ export class SemanticVectors {
    * The vectors, if they belong to the main index as it is (`generation`, see `mainGeneration`):
    * after a rebuild, file ids mean other files until the next semantic pass.
    */
-  get(generation: string | null, completeSequence?: string): VectorIndex | null {
-    const index = this.load(completeSequence)
+  get(generation: string | null, completeSequence?: string, fingerprint?: string): VectorIndex | null {
+    const index = this.load(completeSequence, fingerprint)
     return index && generation !== null && this.generation === generation ? index : null
   }
 
-  private load(completeSequence?: string): VectorIndex | null {
+  /** `fingerprint`: the model and helper the vectors must have been made with (see `semanticFingerprint`). */
+  private load(completeSequence?: string, fingerprint?: string): VectorIndex | null {
     // Removed, or removed and made again (`zsearch semantic remove`, then install): an open
     // connection would go on reading the deleted file, so follow the file itself.
     const ino = fileIno(this.path)
@@ -391,6 +394,8 @@ export class SemanticVectors {
       // Do not load a growing Granite vector table just to discard it. Its completion
       // marker is cleared before indexing and published only after the entire pass.
       if (completeSequence !== undefined && getMeta(this.db, "complete_seq") !== completeSequence) return null
+      // Another model's or helper's vectors can't be compared with this one's query vectors.
+      if (fingerprint !== undefined && getMeta(this.db, "fingerprint") !== fingerprint) return null
       const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
       if (this.index && (completeSequence === undefined || this.index.completeSeq === completeSequence) && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()
@@ -424,11 +429,15 @@ function fileIno(path: string): number | null {
 
 /* ---------------------------------------------------- query vectors -- */
 
-/** Best authorized passage per file, discounted for length and shared boilerplate. */
-export function bestByFile(index: VectorIndex, z: Float64Array, usable: (file: number) => boolean, ranking: Ranking = RANKING): Map<number, { z: number; row: number; index: VectorIndex }> {
+/**
+ * Best authorized passage per file, discounted for length and shared boilerplate. `rows`: the
+ * passages that may be used at all (and count as sharing a passage's text), if not all of them.
+ */
+export function bestByFile(index: VectorIndex, z: Float64Array, usable: (file: number) => boolean, ranking: Ranking = RANKING, rows: ArrayLike<number> | null = null): Map<number, { z: number; row: number; index: VectorIndex }> {
   const best = new Map<number, { z: number; row: number; index: VectorIndex }>()
   const ok = new Map<number, boolean>()
   for (let row = 0; row < z.length; row++) {
+    if (rows && !rows[row]) continue
     const file = index.file[row]!
     const b = best.get(file)
     if (b && b.z >= z[row]!) continue
@@ -437,7 +446,7 @@ export function bestByFile(index: VectorIndex, z: Float64Array, usable: (file: n
     if (allowed) best.set(file, { z: z[row]!, row, index })
   }
   for (const [file, b] of best) {
-    b.z -= ranking.length * Math.log(Math.max(index.passages(file), 1)) + ranking.shared * Math.log(Math.max(index.sharing(b.row), 1))
+    b.z -= ranking.length * Math.log(Math.max(index.passages(file), 1)) + ranking.shared * Math.log(Math.max(index.sharing(b.row, rows), 1))
   }
   return best
 }
