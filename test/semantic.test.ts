@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
-import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, strongCount, VectorIndex } from "../src/semantic/search.ts"
+import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, RANKING, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
 import { CutWorker } from "../src/semantic/workers.ts"
@@ -101,6 +101,18 @@ describe("DigUp's ranking", () => {
     const lookup = rank({ best: new Map([[1, { z: 5, row: 0 }]]), coverage: new Map([[2, 1]]), lookup: true, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })
     expect(lookup[0]!.file).toBe(2)
     expect(queryTerms("how much did the plumber charge")).toEqual(["much", "plumber", "charge"])
+  })
+
+  test("with vectors, the file holding the query's rarer word ranks first among equal meanings", () => {
+    const best = new Map([[1, { z: 3, row: 0 }], [2, { z: 3, row: 1 }]])
+    // Each holds one of two words; file 2's is the rare one.
+    const coverage = new Map([[1, 0.5], [2, 0.5]])
+    const weighted = new Map([[1, 0.2], [2, 0.8]])
+    const opts = { best, coverage, weighted, lookup: false, wordWeight: 2, hinted: new Set<never>(), kindOf: () => "text" as const }
+    expect(rank(opts).map((x) => x.file)).toEqual([2, 1])
+    expect(rank({ ...opts, ranking: { ...RANKING, idf: false } }).map((x) => x.file)).toEqual([1, 2])
+    // Code and number lookups count every word the same.
+    expect(rank({ ...opts, lookup: true }).map((x) => x.file)).toEqual([1, 2])
   })
 
   test("without vectors, word matches follow coverage and keyword order, and long queries need only three words", () => {
@@ -212,6 +224,14 @@ describe("DigUp's ranking", () => {
     const q = parseQuery("s:red car*")
     expect(q.forcedMode).toBe("semantic")
     expect(q.words).toEqual(["red", "car*"])
+  })
+
+  test("a question in the semantic tab keeps its last word rather than filtering names by it", () => {
+    const semantic = parseQuery("when does my passport expire?", Date.now(), "semantic")
+    expect(semantic.filters.names).toBeUndefined()
+    expect(semantic.words).toEqual(["when", "does", "my", "passport", "expire?"])
+    // Find still reads it as a glob on names.
+    expect(parseQuery("expire?", Date.now(), "find").filters.names).toEqual([{ source: "^expire.$", flags: "i" }])
   })
 })
 
@@ -407,6 +427,9 @@ describe("semantic index and search", () => {
     expect(r.hits.some((h) => h.display === "Documents/credentials")).toBe(false)
     const pets = await engine().search("canine", "semantic")
     expect(pets.hits[0]!.display).toBe("notes/pets.md")
+    // A question mark is punctuation here, not a one-character wildcard on file names.
+    const question = await engine().search("where is my automobile?", "semantic")
+    expect(question.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
     // Lean proofs are for find, not for the semantic tab, even by their words.
     expect((await engine().search("kennel sofa", "semantic")).hits.some((h) => h.display.endsWith(".lean"))).toBe(false)
     expect((await engine().search("kennel_sofa", "find")).hits.map((h) => h.display)).toContain("proofs/Kennel.lean")
@@ -571,6 +594,38 @@ describe("semantic index and search", () => {
     rmSync(join(corpus.home, "notes/release.txt"))
     await new Indexer(db, config, { inProcess: true }).run()
     expect((await semantic()).status).toBe("done")
+  })
+
+  test("text in a names-only folder does not change how visible files rank", async () => {
+    corpus.write("notes/flowers.txt", "The zinnia bloomed in the garden.\n")
+    corpus.write("notes/animals.txt", "A quokka smiled at the camera.\n")
+    const restricted = join(corpus.home, "restricted")
+    const scoresWith = async (word: string) => {
+      // Code has no vectors: these files can only ever match by their text.
+      for (let i = 0; i < 10; i++) corpus.write(`restricted/r${i}.ts`, `export const word = "${word}"\n`)
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+      // Indexed while readable, then made names-only: the stored text stays behind.
+      const e = engine()
+      e.config = { ...config, namesOnly: [restricted] }
+      const r = await e.search("zinnia quokka", "semantic")
+      e.closeSemantic()
+      expect(r.strategy).toBe("semantic + words")
+      expect(r.hits.some((h) => h.display.startsWith("restricted/"))).toBe(false)
+      return Object.fromEntries(r.hits.filter((h) => h.display === "notes/flowers.txt" || h.display === "notes/animals.txt").map((h) => [h.display, h.score]))
+    }
+    try {
+      const unrelated = await scoresWith("marigold")
+      const shared = await scoresWith("zinnia")
+      expect(Object.keys(unrelated)).toHaveLength(2)
+      for (const [file, score] of Object.entries(unrelated)) expect(shared[file]).toBeCloseTo(score, 9)
+    } finally {
+      rmSync(restricted, { recursive: true, force: true })
+      rmSync(join(corpus.home, "notes/flowers.txt"))
+      rmSync(join(corpus.home, "notes/animals.txt"))
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
   })
 
   test("a big background run waits on power, and goes when asked", async () => {

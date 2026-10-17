@@ -2,7 +2,7 @@
 /** Small retrieval-quality evaluation with real Granite and package-document distractors.
  * bun scripts/semantic-eval.ts --stage=all --json=results.json [--pdf-dir=DIR] [--holdout | --audit] [--packages=N]
  * --word-vectors=FILE explicitly substitutes static vectors; reports label this as a stand-in.
- * --stage=words needs no model. --stage=all runs words and complete Granite.
+ * --stage=words needs no model. --stage=all runs words and complete Granite. --ranking=JSON overrides ranking weights.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
@@ -72,6 +72,8 @@ try {
   console.log(`${Object.keys(source).length + pdfs.length} files + ${packages} package documents; ${queries.length} ${args.has("audit") ? "audit" : args.has("holdout") ? "validation" : "tuning"} queries; ${vectors ? `stand-in (${basename(vectors)})` : "real Granite"}`)
   const run = async (label: string, model: TextEmbedder | null) => {
     const engine = new SearchEngine(db!, config)
+    // `--ranking='{"coverage":0.5,"idf":false}'`: try other weights than RANKING's.
+    if (args.get("ranking")) engine.ranking = { ...engine.ranking, ...JSON.parse(args.get("ranking")!) }
     engine.embedQuery = model ? async (text) => (await model.embedTexts([text])).vectors : null
     try {
       for (const q of queries) {

@@ -143,7 +143,8 @@ function tokenize(s: string): Token[] {
   return out
 }
 
-export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
+/** `mode`: the mode the query runs in unless its text forces another (a semantic query's `word?` is a word, not a glob). */
+export function parseQuery(raw: string, now = Date.now(), mode?: Mode): ParsedQuery {
   const filters = emptyFilters()
   const warnings: string[] = []
   let forcedMode: Mode | null = null
@@ -170,16 +171,17 @@ export function parseQuery(raw: string, now = Date.now()): ParsedQuery {
   // Remove filter tokens, keep the rest of the text verbatim (regexes care about spacing).
   const tokens = tokenize(s)
   const cut: [number, number][] = []
+  const semantic = (forcedMode ?? mode) === "semantic"
   for (const t of tokens) {
     if (t.quoted) continue
-    const proximity = !regex && forcedMode !== "fuzzy" && forcedMode !== "semantic" ? /^NEAR\/(\d+)$/.exec(t.text) : null
+    const proximity = !regex && forcedMode !== "fuzzy" && !semantic ? /^NEAR\/(\d+)$/.exec(t.text) : null
     if (proximity) {
       const distance = Number(proximity[1])
       if (distance > 1000) warnings.push("NEAR expects a word distance from 0 to 1000")
       else { near = distance; all = true; forcedMode = "find" }
       cut.push([t.start, t.end]); continue
     }
-    if (!regex && forcedMode !== "fuzzy" && forcedMode !== "semantic" && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
+    if (!regex && forcedMode !== "fuzzy" && !semantic && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
       ;(filters.names ??= []).push({ source: globPattern(t.text), flags: "i" }); cut.push([t.start, t.end]); continue
     }
     const m = /^(-?)([a-z]+):(.*)$/i.exec(t.text)

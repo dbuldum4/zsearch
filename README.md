@@ -108,7 +108,7 @@ Every passage is scored against the query on its model's scale. A file can be fo
 
 Granite is used after it finishes the current index, including every file and passage. During indexing, after an edit, or following cancellation, the semantic tab shows current word matches until Granite catches up. Interrupted indexing resumes from stored passages and reuses existing vectors. Lean proofs (`.lean`) and directories remain available in find and fuzzy, but are excluded from the semantic tab.
 
-`scripts/semantic-eval.ts` evaluates words-only and complete Granite with the installed model, package-document distractors, optional handbook PDFs and separate validation queries. Run `bun scripts/semantic-eval.ts --stage=all --pdf-dir=~/Downloads --json=results.json`; add `--holdout` for validation queries or `--audit` for audit queries. See [ranking choices and measured results](docs/semantic-ranking.md).
+`scripts/semantic-eval.ts` evaluates words-only and complete Granite with the installed model, package-document distractors, optional handbook PDFs and separate validation queries. Run `bun scripts/semantic-eval.ts --stage=all --pdf-dir=~/Downloads --json=results.json`; add `--holdout` for validation queries or `--audit` for audit queries. See [ranking choices and measured results](docs/semantic-ranking.md), and [results on public benchmarks](docs/public-benchmarks.md) (BEIR, LongEmbed, EnronQA; `scripts/bench-data.ts` fetches them, `scripts/semantic-bench.ts` runs them).
 
 Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
 

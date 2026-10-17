@@ -20,7 +20,7 @@ import { retryClock, type RetryClock } from "../util/clock.ts"
 import { availableParallelism } from "node:os"
 import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel } from "../semantic/model.ts"
-import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, Z_GATE } from "../semantic/search.ts"
+import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { mainGeneration } from "../semantic/indexer.ts"
 
@@ -266,7 +266,7 @@ export class SearchEngine {
   async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
-    const q = parseQuery(rawQuery)
+    const q = parseQuery(rawQuery, Date.now(), mode)
     if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
@@ -305,7 +305,7 @@ export class SearchEngine {
 
   private done(res: SearchResponse, t0: number): SearchResponse {
     const policyOpts = policyFor(crawlOptionsFor(this.config))
-    const metadataQuery = usesMetadata(parseQuery(res.query).filters)
+    const metadataQuery = usesMetadata(parseQuery(res.query, Date.now(), res.mode).filters)
     const returned = res.hits.length
     res.hits = res.hits.filter((hit) => {
       const policy = policyOpts(hit.path)
@@ -357,7 +357,7 @@ export class SearchEngine {
     const revision = this.revision, config = this.config
     const result = await this.evaluateGroup(expr, mode, opts, deadline)
     if (this.revision !== revision || this.config !== config) return this.done({ query, mode, resolved: mode, strategy: "grouped search interrupted", hits: [], total: 0, elapsedMs: 0, partial: true }, started)
-    const filters = parseQuery(query).filters
+    const filters = parseQuery(query, Date.now(), mode).filters
     const hits = [...result.hits.values()].sort((a, b) => filters.sort ? this.compareIds(a.id, b.id, filters.sort) : b.score - a.score)
     const notice = [...new Set(result.notices)].join("; ")
     return this.done({
@@ -616,9 +616,10 @@ export class SearchEngine {
     // A file the user may not read by content has no meaning match. Those that stand out are
     // checked now; the rest only matter if a word match makes them a candidate, or if no file
     // would be left to say the query has meaning matches at all.
+    const zGate = this.ranking.zGate ?? Z_GATE
     let meaningful = false
     for (const [file, b] of best) {
-      if (b.z < Z_GATE) continue
+      if (b.z < zGate) continue
       if (readable(file)) meaningful = true
       else best.delete(file)
     }
@@ -634,10 +635,19 @@ export class SearchEngine {
       for (let t = 0; t < terms.length; t++) for (const set of [byName[t]!, byText[t]!]) for (const id of set) share.set(id, (share.get(id) ?? 0) + 1)
       const candidate = new Set<number>()
       for (const [id, n] of share) if (n / terms.length >= gate - 1e-9) candidate.add(id)
-      for (const [file, b] of best) if (b.z >= Z_GATE) candidate.add(file)
+      for (const [file, b] of best) if (b.z >= zGate) candidate.add(file)
+      // Rare words count for more, as without vectors. Only text the user may read counts: otherwise
+      // a names-only folder's contents would shift visible files' order and give its words away.
+      const idf = terms.map((_, t) => {
+        let n = byName[t]!.size
+        for (const id of byText[t]!) if (readable(id)) n++
+        return Math.log(1 + Math.max(cat.paths.length, 1) / Math.max(n, 1))
+      })
+      const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
+      const add = (id: number, t: number) => { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) }
       for (let t = 0; t < terms.length; t++) {
-        for (const id of byName[t]!) if (candidate.has(id)) coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length)
-        for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length) }
+        for (const id of byName[t]!) if (candidate.has(id)) add(id, t)
+        for (const id of byText[t]!) if (candidate.has(id) && readable(id)) { bodyMatch.add(id); add(id, t) }
       }
       for (const id of candidate) if (best.has(id) && !readable(id)) best.delete(id)
     } else {
@@ -652,8 +662,8 @@ export class SearchEngine {
       const idfTotal = idf.reduce((a, b) => a + b, 0) || 1
       sets.forEach((has, t) => { for (const id of has) { coverage.set(id, (coverage.get(id) ?? 0) + 1 / terms.length); weighted.set(id, (weighted.get(id) ?? 0) + idf[t]! / idfTotal) } })
     }
-    for (const id of negatedNames) { coverage.delete(id); named.delete(id) }
-    for (const id of negatedText) coverage.delete(id)
+    for (const id of negatedNames) { coverage.delete(id); weighted.delete(id); named.delete(id) }
+    for (const id of negatedText) { coverage.delete(id); weighted.delete(id) }
 
     // Among word matches, keyword search's own order (how often and where the words are), when the ranking uses it.
     const strength = new Map<number, number>()
@@ -679,9 +689,10 @@ export class SearchEngine {
     // Code's word evidence counts half as much as prose. Compute its stage weight once.
     const codeCoverage = isLookup(terms) ? 1 : best.size ? (this.ranking.coverage ?? 1) : (this.ranking.keywordCoverage ?? 1)
     const codeWordWeight = this.ranking.words * codeCoverage * (isLookup(terms) ? 2 : 1)
+    const shares = wordShares(this.ranking, best.size > 0, isLookup(terms), coverage, weighted)
     for (const r of ranked) {
       const i = cat.indexOf(r.file)
-      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * codeWordWeight * (coverage.get(r.file) ?? 0) ** 1.5
+      if (i !== undefined && (cat.kinds[i] === "code" || cat.kinds[i] === "data")) r.score -= (WORD_WEIGHT - CODE_WORD_WEIGHT) * codeWordWeight * (shares.get(r.file) ?? 0) ** 1.5
     }
     if (q.filters.sort) ranked.sort((a, b) => this.compareIds(a.file, b.file, q.filters.sort!))
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
@@ -1338,7 +1349,7 @@ export class SearchEngine {
    * Throws on an invalid regex.
    */
   matchPattern(rawQuery: string, mode: Mode): { re: RegExp; folded: boolean } | null {
-    const q = parseQuery(rawQuery)
+    const q = parseQuery(rawQuery, Date.now(), mode)
     if ((q.forcedMode ?? mode) === "find") return q.text ? { re: this.buildRegex(q, q.regex).re, folded: false } : null
     const p = termsPattern(q.words, q.phrases, q.typing)
     return p ? { re: new RegExp(p, "giu"), folded: true } : null

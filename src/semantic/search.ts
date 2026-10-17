@@ -44,11 +44,19 @@ export interface Ranking {
   keywordStrength?: number
   /** Without model vectors, a long query's file is a word match with this many of its words (else half). */
   keywordCover?: number
+  /** How far a best passage must stand out to make its file a candidate (default `Z_GATE`). At -Infinity every file is ranked by its meaning, below-average ones too (benchmarks of the model alone). */
+  zGate?: number
+  /** With model vectors too, rare words count for more of a file's coverage, as they always do without. */
+  idf?: boolean
 }
 
+/**
+ * IDF-weighted coverage at 1.5 in the semantic stage (it was plain coverage at 0.5): measured on
+ * public benchmarks and the authored sets in docs/public-benchmarks.md.
+ */
 export const RANKING: Ranking = {
   fusion: "score", name: 2, namePower: 2, length: 0.7, shared: 0.5,
-  everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 0.5,
+  everyWord: 0, words: 1, meaning: 1, strength: 0, coverage: 1.5, idf: true,
   keywordName: 1, keywordCoverage: 1, keywordEveryWord: 0.5, keywordStrength: 0.5, keywordCover: 3,
 }
 /** DigUp's, as zsearch ranked before. */
@@ -161,6 +169,11 @@ export function coverageGate(R: Ranking, hasMeaning: boolean, terms: number): nu
   return hasMeaning ? 0.5 : Math.min(0.5, (R.keywordCover ?? Infinity) / Math.max(terms, 1))
 }
 
+/** The share of the query's words each file's score counts: rare words weighing more, except in code and number lookups. */
+export function wordShares(R: Ranking, hasMeaning: boolean, lookup: boolean, coverage: Map<number, number>, weighted?: Map<number, number>): Map<number, number> {
+  return !lookup && weighted?.size && (!hasMeaning || R.idf) ? weighted : coverage
+}
+
 /**
  * Score the candidates: files whose best passage stands out (`best`), and files holding at least
  * half of the query's words (`coverage`, 0..1). Finite name evidence helps find saved files
@@ -168,9 +181,9 @@ export function coverageGate(R: Ranking, hasMeaning: boolean, terms: number): nu
  * use separate weights; code and number lookups retain their exact-word preference.
  * Alternative benchmark pipelines can request rank fusion.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more, used without vectors. */ weighted?: Map<number, number> }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more (see `wordShares`). */ weighted?: Map<number, number> }): Ranked[] {
   const R = opts.ranking ?? RANKING
-  const zGate = opts.zGate ?? Z_GATE
+  const zGate = opts.zGate ?? R.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
   const coverageWeight = opts.lookup ? 1 : hasMeaning ? (R.coverage ?? 1) : (R.keywordCoverage ?? 1)
   const nameWeight = hasMeaning ? R.name : (R.keywordName ?? R.name)
@@ -183,14 +196,15 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   const candidates = new Set<number>()
   for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
   if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= gate) candidates.add(file)
+  const shares = wordShares(R, hasMeaning, opts.lookup, opts.coverage, opts.weighted)
   const out: Ranked[] = []
   for (const file of candidates) {
     const b = opts.best.get(file)
-    const words = (!hasMeaning && !opts.lookup && opts.weighted ? opts.weighted : opts.coverage).get(file) ?? 0
+    const words = shares.get(file) ?? 0
     const z = b?.z ?? 0
     const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
     // No word match automatically outranks a better semantic answer.
-    let score = meaningWeight * Math.max(z, 0) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
+    let score = meaningWeight * (zGate === -Infinity ? z : Math.max(z, 0)) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
     const kind = opts.kindOf(file)
     if (kind && opts.hinted.has(kind)) score += 1
     out.push({ file, score, row: b?.row ?? null, z: b?.z ?? null })
