@@ -322,6 +322,25 @@ function highlightRanges(s: string, ranges: [number, number][], hi: (s: string) 
 
 /* ------------------------------------------------------------------ index -- */
 
+/**
+ * The index for a run. A rebuild empties it in place rather than deleting it, as frontends may
+ * have it open; only a file that is no database, or a damaged one, is deleted and made again.
+ */
+function openIndexForRun(path: string, rebuild: boolean): Database {
+  let db: Database | null = null
+  try {
+    db = openDb(path)
+    if (rebuild) clearIndex(db)
+    return db
+  } catch (err) {
+    db?.close()
+    const code = (err as { code?: string }).code
+    if (!rebuild || (code !== "SQLITE_NOTADB" && code !== "SQLITE_CORRUPT")) throw err
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true })
+    return openDb(path)
+  }
+}
+
 async function cmdIndex(folders: string[], args: Args): Promise<number> {
   ensureDirs()
   const p = paths()
@@ -372,9 +391,7 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
       console.error(`zsearch: semantic search cannot run: ${blocked}`)
       return 1
     }
-    const db = openDb(p.db)
-    // Emptied in place rather than deleted: frontends may have the database open.
-    if (flag(args, "rebuild")) clearIndex(db)
+    const db = openIndexForRun(p.db, !!flag(args, "rebuild"))
     const quiet = flag(args, "quiet", "q") === true
     const tty = process.stderr.isTTY === true
     let lastLine = Date.now()

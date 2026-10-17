@@ -325,7 +325,7 @@ export class Catalog {
    * Fuzzy-match the query against display paths. Returns top `limit` entries.
    * `bias(i)` adds frecency/recency points.
    */
-  fuzzy(query: string, filters: Filters, limit: number, bias?: (i: number) => number): { idx: number; score: number; positions: number[] }[] {
+  fuzzy(query: string, filters: Filters, limit: number, bias?: (i: number) => number, withPositions = true): { idx: number; score: number; positions: number[] }[] {
     const terms = parseFuzzyTerms(query)
     if (!terms.length) return []
     const positive = terms.filter((t) => !t.negate)
@@ -359,7 +359,12 @@ export class Catalog {
     else for (let i = 0; i < this.size; i++) consider(i)
     this.cache = { terms, matches: Int32Array.from(matched) }
     // Positions (for highlighting) only for the winners.
-    return top.values().map(({ idx, score }) => ({ idx, score, positions: matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? [] }))
+    return top.values().map(({ idx, score }) => ({ idx, score, positions: withPositions ? (matchPath(this.display[idx]!, this.lower[idx]!, this.nameStart[idx]!, terms, true)?.positions ?? []) : [] }))
+  }
+
+  /** Highlights of a fuzzy match of `query` in entry `i`'s path; undefined if it does not match. */
+  positions(i: number, query: string): number[] | undefined {
+    return matchPath(this.display[i]!, this.lower[i]!, this.nameStart[i]!, parseFuzzyTerms(query), true)?.positions
   }
 
   /**

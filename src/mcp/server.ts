@@ -506,7 +506,8 @@ const STATE_SCHEMA = loose(
  */
 const REMOTE_SETTINGS = new Set(["autoRefreshMinutes", "workers", "indexLoad", "pauseOnLowPower", "pauseOnBattery", "defaultMode", "preview", "semantic.enabled", "semantic.declined", "semantic.code"])
 export const CONFIG_KEYS = configKeys().filter((key) => REMOTE_SETTINGS.has(key))
-const INDEX_KEYS = /^(roots|exclude|namesOnly|includeHidden|respectGitignore|followSymlinks|oneFileSystem|cloudContent|content\.)/
+/** Remote settings that take effect at the next index run, which reads files for semantic search. */
+const INDEX_KEYS = new Set(["semantic.enabled", "semantic.code"])
 
 function getKey(config: Config, key: string): unknown {
   return key.split(".").reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], config)
@@ -888,12 +889,8 @@ Give query (the same text or regex as in search) to mark the matching lines and 
       host.applyConfig(next)
       const value = getKey(next, key)
       const previous = getKey(before, key)
-      const reindexNeeded = INDEX_KEYS.test(key) && JSON.stringify(value) !== JSON.stringify(previous)
+      const reindexNeeded = INDEX_KEYS.has(key) && JSON.stringify(value) !== JSON.stringify(previous)
       const notes: string[] = []
-      if (key === "roots" || key === "namesOnly") {
-        const missing = (value as string[]).filter((r) => !existsSync(resolvePath(r)))
-        if (missing.length) notes.push(`These folders do not exist and will be skipped: ${missing.join(", ")}.`)
-      }
       if (reindexNeeded) notes.push("Call update_index to apply this to the index.")
       return { text: [`${key} = ${JSON.stringify(value)} (was ${JSON.stringify(previous)})`, ...notes].join("\n"), structured: { key, value, previous, reindexNeeded } }
     },

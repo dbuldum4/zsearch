@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { clearIndex, getMeta, openDb, setMeta } from "../src/index/db.ts"
 import { width, wrapLine } from "../src/tui/styled.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
 
@@ -39,6 +40,26 @@ describe("index --rebuild", () => {
       db.close()
     }
   }, 60000)
+
+  test("starts over from a file that is no database", async () => {
+    writeFileSync(join(corpus.home, ".zsearch-data", "index.db"), "not an SQLite database, ".repeat(64))
+    const r = await zs("index", "--rebuild", "-q")
+    expect({ code: r.code, err: r.code ? r.err : "" }).toEqual({ code: 0, err: "" })
+    expect((await zs("search", "pancakes")).out).toContain("pancakes")
+  }, 60000)
+
+  test("an emptied index does not look up to date", () => {
+    const db = openDb(":memory:")
+    try {
+      setMeta(db, "last_indexed_at", "123")
+      setMeta(db, "last_duration_ms", "4")
+      clearIndex(db)
+      expect(getMeta(db, "last_indexed_at")).toBeNull()
+      expect(getMeta(db, "last_duration_ms")).toBeNull()
+    } finally {
+      db.close()
+    }
+  })
 })
 
 describe("semantic install", () => {

@@ -6,6 +6,8 @@ import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine, type SearchResponse } from "../src/search/engine.ts"
 import type { Mode } from "../src/search/query.ts"
 import { literalRequirement, regexRequirements, type Req } from "../src/search/regex-plan.ts"
+import { byteTerms } from "../src/index/byte-terms.ts"
+import { indexTerms, MAX_TERM, uniqueTerms } from "../src/util/text.ts"
 import { makeCorpus, homeConfig } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -65,6 +67,14 @@ describe("words over 64 characters", () => {
     expect(names(await search("q".repeat(70)))).toEqual(["notes/long-word.txt"])
     expect(names(await search("qqq"))).toEqual(["notes/long-word.txt"])
     expect(names(await search("/q{80}/"))).toEqual(["notes/long-word.txt"])
+  })
+
+  test("runs longer than MAX_TERM stay out of the vocabulary", () => {
+    const text = `bytecode ${"a1".repeat(MAX_TERM)} end`
+    expect([...uniqueTerms(text)]).toEqual(["bytecode", "end"])
+    expect([...indexTerms(text).terms]).toEqual(["bytecode", "end"])
+    expect(byteTerms(new TextEncoder().encode(text), "max-term-test")!.report()).toEqual(["bytecode", "end"])
+    expect([...indexTerms(`x ${"b".repeat(MAX_TERM)} y`).terms]).toContain("b".repeat(MAX_TERM))
   })
 })
 

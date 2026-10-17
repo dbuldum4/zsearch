@@ -85,6 +85,8 @@ describe("grouped queries and sorting", () => {
     const e = new SearchEngine(db, config)
     const top = await e.search("qzvw sort:-size limit:1", "fuzzy")
     expect(names(top)).toEqual(["notes/q-z-v-w-larger.txt"])
+    // Highlights are worked out for the hits shown.
+    expect(top.hits[0]!.namePositions).toHaveLength(4)
     const more = await e.search("qzvw sort:-size limit:10", "fuzzy")
     expect(names(more)[0]).toBe("notes/q-z-v-w-larger.txt")
   })
@@ -188,6 +190,31 @@ describe("semantic snapshots", () => {
       if (env.ZSEARCH_EMBED === undefined) delete process.env.ZSEARCH_EMBED; else process.env.ZSEARCH_EMBED = env.ZSEARCH_EMBED
     }
     expect((await engine().search("automobile", "semantic")).strategy).toBe("semantic + words")
+  })
+
+  test("a helper whose version can't be read is not started for every search", async () => {
+    const models = join(work, "models")
+    mkdirSync(models, { recursive: true })
+    writeFileSync(join(models, GRANITE.files[0]!.name), "test model")
+    const runs = join(work, "version-runs")
+    const mute = join(work, "mute-embed")
+    writeFileSync(mute, `#!/bin/sh\necho run >> "${runs}"\nexit 1\n`)
+    chmodSync(mute, 0o755)
+    process.env.ZSEARCH_MODELS = models
+    process.env.ZSEARCH_EMBED = mute
+    const e = new SearchEngine(db, config)
+    try {
+      for (let i = 0; i < 3; i++) {
+        const r = await e.search("automobile", "semantic")
+        expect(r.strategy).toBe("words")
+        expect(r.notice).toContain("could not read the embedding helper's version")
+      }
+      expect(readFileSync(runs, "utf8").trim().split("\n")).toHaveLength(1)
+    } finally {
+      e.closeSemantic()
+      if (env.ZSEARCH_MODELS === undefined) delete process.env.ZSEARCH_MODELS; else process.env.ZSEARCH_MODELS = env.ZSEARCH_MODELS
+      if (env.ZSEARCH_EMBED === undefined) delete process.env.ZSEARCH_EMBED; else process.env.ZSEARCH_EMBED = env.ZSEARCH_EMBED
+    }
   })
 
   test("an index update during the query's embedding drops the outdated snapshot", async () => {

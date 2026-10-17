@@ -128,6 +128,11 @@ test("mcp: diagnostics follow current exclusions, and every advertised page can 
     expect(last.text).not.toContain("call again with offset")
     expect((await c.call("search", { query: "pagetoken", limit: 1, offset: 999 })).data.hits).toHaveLength(1)
     expect((await c.call("search", { query: "pagetoken", offset: 1000 })).isError).toBe(true)
+
+    // Semantic settings take effect at the next index run.
+    const code = await c.call("set_config", { key: "semantic.code", value: "true" })
+    expect(code.data.reindexNeeded).toBe(true)
+    expect(code.text).toContain("Call update_index")
   } finally {
     await c.close()
   }

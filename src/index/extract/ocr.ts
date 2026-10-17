@@ -54,7 +54,10 @@ function blankPage(page: string): boolean {
  * `tidy` would trim: `ocrBlankPages` needs them to see that those pages are there to read.
  */
 export function tidyPages(text: string): string {
-  const feeds = /\s*$/.exec(text)![0].split("\f").length - 1
+  // Counted back from the end: `/\s*$/` scans each run of white space to its end, which is
+  // quadratic in the run's length.
+  let feeds = 0
+  for (let i = text.length - 1; i >= 0 && /\s/.test(text[i]!); i--) if (text[i] === "\f") feeds++
   return tidy(text) + "\f".repeat(feeds)
 }
 

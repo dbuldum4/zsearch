@@ -127,7 +127,7 @@ function partText(part: Part, depth = 0): string {
     if (!boundary) return ""
     const b = boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     // Whatever follows the closing boundary is an epilogue, not a part.
-    const close = part.body.search(new RegExp(`(?:^|\\r?\\n)--${b}--`))
+    const close = part.body.search(new RegExp(`(?:^|\\r?\\n)--${b}--[ \\t]*(?:\\r?\\n|$)`))
     const pieces = (close >= 0 ? part.body.slice(0, close) : part.body).split(new RegExp(`\\r?\\n?--${b}\\s*\\r?\\n`))
     const subs = pieces.slice(1).map((p) => splitPart(p))
     if (mime === "multipart/alternative") {
@@ -156,8 +156,13 @@ function partText(part: Part, depth = 0): string {
  * part is decoded from its own bytes with its own charset. A string is taken as UTF-8.
  */
 export function extractEmail(input: Uint8Array | string): string {
+  // A byte-order mark is no part of the first header. A UTF-16 message is decoded whole first.
+  let data = input
+  if (typeof data === "string") data = data.replace(/^\ufeff/, "")
+  else if (hasUtf16Bom(data)) data = decodeText(data)
+  else if (data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf) data = data.subarray(3)
   // One char per byte, so a part's bytes can be recovered exactly before decoding its charset.
-  const src = typeof input === "string" ? Buffer.from(input).toString("latin1") : Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString("latin1")
+  const src = typeof data === "string" ? Buffer.from(data).toString("latin1") : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("latin1")
   // Apple Mail .emlx starts with a byte count line.
   const raw = /^\d+\s*\n/.test(src) ? src.replace(/^\d+\s*\n/, "") : src
   const part = splitPart(raw)

@@ -5,7 +5,7 @@
  * (see there).
  */
 import { isUtf8 } from "node:buffer"
-import { shortenBody, uniqueTerms } from "../util/text.ts"
+import { MAX_TERM, shortenBody, uniqueTerms } from "../util/text.ts"
 
 /**
  * Per byte: 0 between words, BAD for NUL (which extraction drops), else the byte the word holds:
@@ -170,7 +170,7 @@ export function byteTerms(buf: Uint8Array, run: string): ByteTerms | null {
           doneWide.add(t)
           fresh.push(t)
         }
-      } else if (markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
+      } else if (len <= MAX_TERM && markReported(out, at, len, wordHash[k]!)) fresh.push(latin1.decode(out.subarray(at, end)))
       at = end + 1
     }
     return fresh

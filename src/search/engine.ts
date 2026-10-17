@@ -27,6 +27,9 @@ import { helperVectorVersion, mainGeneration, semanticFingerprint } from "../sem
 
 type Source = "name" | "content"
 
+/** How long a helper whose version could not be read is left before it is asked again. */
+const HELPER_RETRY_MS = 60_000
+
 export interface SearchHit {
   id: number
   path: string
@@ -425,9 +428,11 @@ export class SearchEngine {
 
   private async runFuzzy(q: ParsedQuery, limit: number, res: SearchResponse) {
     const query = fuzzyQueryText(q)
-    // A requested order applies to every match (`fuse` sorts them), not to the most relevant few.
-    const keep = q.filters.sort ? Math.max(this.catalog.size, limit) : limit
-    const names = this.nameMatches(q, keep, 0)
+    // A requested order applies to every match (`fuse` picks the first), not to the most relevant
+    // few. Name highlights are then worked out for the hits shown only.
+    const sorted = !!q.filters.sort
+    const keep = sorted ? Math.max(this.catalog.size, limit) : limit
+    const names = this.nameMatches(q, keep, 0, !sorted)
     const lists: { name: string; weight: number; items: Ranked[]; source: Source }[] = [{ name: "names", weight: 1.3, items: names, source: "name" }]
     if (names.length < limit / 4) {
       const typo = this.catalog.typo(query, q.filters, keep).map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions }))
@@ -437,7 +442,11 @@ export class SearchEngine {
     const operators = parseFuzzyTerms(query).some((t) => t.kind !== "fuzzy" || t.negate)
     if (!operators) lists.push({ name: "text", weight: 0.6, items: this.keywordMatches(q, limit, q.typing, true, keep), source: "content" })
     res.strategy = operators ? "fuzzy names" : "fuzzy names + typo-tolerant text"
-    this.fuse(lists, limit, res, q)
+    const positions = (id: number) => {
+      const i = this.catalog.indexOf(id)
+      return i === undefined ? undefined : this.catalog.positions(i, query)
+    }
+    this.fuse(lists, limit, res, q, false, sorted ? positions : undefined)
   }
 
   /* ---------------------------------------------------------- semantic -- */
@@ -483,8 +492,11 @@ export class SearchEngine {
     await this.queryEmbedder!.warm()
   }
 
-  /** The helper's vector version, read once per helper binary: reading it starts the helper. */
-  private helperVersion: { tool: string; stamp: string; version: number } | null = null
+  /**
+   * The helper's vector version, read once per helper binary: reading it starts the helper, and
+   * can block for seconds. A failed read is tried again after HELPER_RETRY_MS, not on every search.
+   */
+  private helperVersion: { tool: string; stamp: string; version: number | null; at: number } | null = null
 
   /**
    * The fingerprint stored vectors must have to compare with query vectors (see
@@ -501,12 +513,12 @@ export class SearchEngine {
     } catch {
       return null
     }
-    if (this.helperVersion?.tool !== tool || this.helperVersion.stamp !== stamp) {
-      const version = helperVectorVersion(tool)
-      if (version === null) return null
-      this.helperVersion = { tool, stamp, version }
+    const known = this.helperVersion
+    if (known?.tool !== tool || known.stamp !== stamp || (known.version === null && Date.now() - known.at >= HELPER_RETRY_MS)) {
+      this.helperVersion = { tool, stamp, version: helperVectorVersion(tool), at: Date.now() }
     }
-    return semanticFingerprint(this.helperVersion.version)
+    const version = this.helperVersion!.version
+    return version === null ? null : semanticFingerprint(version)
   }
 
   /**
@@ -803,16 +815,16 @@ export class SearchEngine {
 
   /* ------------------------------------------------------------- names -- */
 
-  private nameMatches(q: ParsedQuery, limit: number, minQuality: number): Ranked[] {
+  private nameMatches(q: ParsedQuery, limit: number, minQuality: number, withPositions = true): Ranked[] {
     const query = fuzzyQueryText(q)
     if (!query.trim()) return []
     const terms = parseFuzzyTerms(query).filter((t) => !t.negate)
     const ideal = terms.reduce((s, t) => s + 22 * t.text.length + 24, 0)
-    const raw = this.catalog.fuzzy(query, q.filters, Math.max(limit * 2, 100), (i) => this.bias(i))
+    const raw = this.catalog.fuzzy(query, q.filters, Math.max(limit * 2, 100), (i) => this.bias(i), withPositions)
     return raw
       .filter((m) => minQuality === 0 || m.score >= ideal * minQuality)
       .slice(0, limit)
-      .map((m) => ({ id: this.catalog.ids[m.idx]!, positions: m.positions, raw: m.score }))
+      .map((m) => ({ id: this.catalog.ids[m.idx]!, positions: withPositions ? m.positions : undefined, raw: m.score }))
   }
 
   private now = Date.now()
@@ -1249,8 +1261,11 @@ export class SearchEngine {
     }
   }
 
-  /** Reciprocal-rank fusion of several ranked lists, then snippets for the winners. */
-  private fuse(lists: { name: string; weight: number; items: Ranked[]; source: Source }[], limit: number, res: SearchResponse, q: ParsedQuery, keepLines = false) {
+  /**
+   * Reciprocal-rank fusion of several ranked lists, then snippets for the winners.
+   * `namePositions`: highlights for the hits shown, when the lists' items have none of their own yet.
+   */
+  private fuse(lists: { name: string; weight: number; items: Ranked[]; source: Source }[], limit: number, res: SearchResponse, q: ParsedQuery, keepLines = false, namePositions?: (id: number) => number[] | undefined) {
     const K = 20
     const acc = new Map<number, { score: number; sources: Set<Source>; positions?: number[]; lines?: LineMatch[]; count: number }>()
     for (const list of lists) {
@@ -1272,10 +1287,9 @@ export class SearchEngine {
         const boost = i === undefined ? 0 : this.frecencyPoints(i) / 200 + this.recencyPoints(i) / 400
         return { id, e, score: e.score * (1 + boost) }
       })
-      .sort((a, b) => q.filters.sort ? this.compareIds(a.id, b.id, q.filters.sort) : b.score - a.score)
     const policyOpts = policyFor(crawlOptionsFor(this.config))
     const metadataQuery = usesMetadata(q.filters)
-    const top = ranked.filter(({ id, e }) => {
+    let top = ranked.filter(({ id, e }) => {
       const i = this.catalog.indexOf(id)
       if (i === undefined) return false
       const policy = policyOpts(this.catalog.paths[i]!)
@@ -1286,12 +1300,22 @@ export class SearchEngine {
       return e.sources.size > 0
     })
     res.total = Math.max(res.total, top.length)
-    top.length = Math.min(top.length, limit)
+    const sort = q.filters.sort
+    if (sort) {
+      // The lists may hold every match: pick the first `limit` rather than sort them all.
+      const first = new TopK<(typeof top)[number]>(limit, () => 0, (a, b) => this.compareIds(b.id, a.id, sort))
+      for (const t of limit > 0 ? top : []) first.add(t)
+      top = first.values()
+    } else {
+      top.sort((a, b) => b.score - a.score)
+      top.length = Math.min(top.length, limit)
+    }
     // Typo expansions are highlighted as whole words.
     const pattern = keepLines ? null : termsPattern(q.words, [...q.phrases, ...this.lastExpansions], q.typing)
     res.hits = top.map(({ id, e, score }, n) => {
       const h = this.hit(id, score, [...e.sources])
-      if (e.positions) h.namePositions = e.positions
+      const positions = namePositions?.(id) ?? e.positions
+      if (positions) h.namePositions = positions
       h.matchCount = e.count
       if (e.lines) h.lines = e.lines
       else if (pattern && e.sources.has("content") && n < SNIPPET_HITS) {

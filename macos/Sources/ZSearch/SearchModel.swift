@@ -318,7 +318,8 @@ final class SearchModel {
         }
     }
 
-    private func loadPreview() {
+    /// `focusLine`: the line to show rather than the hit's first match, as after a jump to another.
+    private func loadPreview(focusLine: Int? = nil) {
         guard let hit = selectedHit, let engine else {
             previewTask?.cancel()
             previewTask = nil
@@ -333,20 +334,23 @@ final class SearchModel {
         previewTask?.cancel()
         previewTask = nil
         previewKey = key
-        if let cached = previewCache[key] {
+        // The cache holds previews at the hit's first match only.
+        let focus = focusLine ?? key.focus
+        let cacheable = focus == key.focus
+        if cacheable, let cached = previewCache[key] {
             display(cached, for: key)
             prefetchAround()
             return
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
-        let request = Request.preview(file: hit.id, query: Self.sent(query), mode: mode, focusLine: hit.lines.first?.line)
+        let request = Request.preview(file: hit.id, query: Self.sent(query), mode: mode, focusLine: focus)
         let epoch = previewEpoch
         previewTask = Task { [weak self] in
             let reply = try? await engine.request(request)
             guard !Task.isCancelled, let self, self.previewKey == key, self.previewEpoch == epoch else { return }
             self.previewTask = nil
             guard case let .preview(p)? = reply else { return }
-            self.remember(p, for: key)
+            if cacheable { self.remember(p, for: key) }
             self.display(p, for: key)
             self.prefetchAround()
         }
@@ -419,9 +423,11 @@ final class SearchModel {
         previewEpoch += 1
         prefetchTask?.cancel()
         prefetchTask = nil
-        // The selection's preview, shown or still on its way, predates the change: ask again.
+        // The selection's preview, shown or still on its way, predates the change: ask again, at
+        // the match the pane shows.
+        let shown = preview?.id == selection ? preview?.focusLine : nil
         previewKey = nil
-        loadPreview()
+        loadPreview(focusLine: shown)
     }
 
     func moveSelection(by delta: Int) {

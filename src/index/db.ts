@@ -177,6 +177,8 @@ export function clearIndex(db: Database): void {
     db.exec("DELETE FROM vocab_chunks")
     db.exec("DELETE FROM removed")
     setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
+    // Empty until a run completes: it must not look up to date meanwhile.
+    db.exec("DELETE FROM meta WHERE key IN ('last_indexed_at', 'last_duration_ms')")
   })()
   compact(db)
 }

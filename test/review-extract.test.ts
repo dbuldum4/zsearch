@@ -91,6 +91,12 @@ describe("PDF OCR page selection", () => {
     expect(tidyPages("  first\fsecond\f \n\f")).toBe("first\fsecond\f\f")
   })
 
+  test("long runs of white space take linear time", () => {
+    const started = performance.now()
+    expect(tidyPages("a" + " \n".repeat(200_000) + "b\f\f")).toBe("a\n\nb\f\f")
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
   test("a text cover followed by scanned pages is OCR'd", async () => {
     const root = mkdtempSync(join(tmpdir(), "zsearch-ocr-pages-"))
     try {
@@ -143,5 +149,18 @@ describe("email", () => {
     const b64 = `Content-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: base64\n\n${Buffer.from("Zürich").toString("base64")}\n`
     expect(extractEmail(b64)).toBe("Zürich")
     expect(extractEmail(new TextEncoder().encode("Subject: Hi\n\nNo charset: Zürich"))).toBe("Subject: Hi\n\nNo charset: Zürich")
+  })
+
+  test("a byte-order mark does not hide the first header", () => {
+    const eml = 'Content-Type: multipart/alternative; boundary="b"\nSubject: Hello\n\n--b\nContent-Type: text/plain; charset=utf-8\n\nZürich body\n--b--\n'
+    const expected = "Subject: Hello\n\nZürich body"
+    expect(extractEmail(Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(eml)]))).toBe(expected)
+    expect(extractEmail("\ufeff" + eml)).toBe(expected)
+    expect(extractEmail(Uint8Array.from(Buffer.from("\ufeff" + eml, "utf16le")))).toBe(expected)
+  })
+
+  test("an inner boundary made of the outer one and -- does not close the outer part", () => {
+    const eml = 'Content-Type: multipart/mixed; boundary="abc"\n\n--abc\nContent-Type: multipart/alternative; boundary="abc--alt"\n\n--abc--alt\nContent-Type: text/plain\n\nInner body\n--abc--alt--\n--abc\nContent-Type: text/plain\n\nSecond part\n--abc--\n'
+    expect(extractEmail(eml)).toBe("Inner body\n\nSecond part")
   })
 })
