@@ -134,4 +134,22 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.settingRegex(false, in: "ext:md /a b/"), "ext:md a b")
         XCTAssertEqual(Q.settingRegex(false, in: "plain"), "plain")
     }
+
+    func testTurningRegexOffDoesNotExposeAnotherModeOrRegex() {
+        for (query, expected) in [
+            ("//budget//", "find:/budget/"),
+            ("ext:pdf //budget//g", "find:ext:pdf /budget/"),
+            ("re:re:budget", "find:re:budget"),
+            ("re:semantic:budget", "find:semantic:budget"),
+            ("re:all:/budget/", "find:all:/budget/"),
+            ("re:\tregex:budget", "find:\tregex:budget"),
+            ("re:/budget/ report", "find:/budget/ report"),
+            ("re://", "find://"),
+        ] {
+            let off = Q.settingRegex(false, in: query)
+            XCTAssertEqual(off, expected)
+            XCTAssertFalse(Q.isRegex(off))
+            XCTAssertEqual(Q.settingRegex(false, in: off), off)
+        }
+    }
 }

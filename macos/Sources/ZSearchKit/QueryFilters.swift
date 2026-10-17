@@ -27,6 +27,8 @@ public enum QueryFilters {
     static let modePrefixes = ["re:", "regex:", "find:", "exact:", "grep:", "fuzzy:", "f:", "semantic:", "meaning:", "s:"]
     /// JavaScript's flags, as accepted by src/search/query.ts, including multiline patterns.
     static let delimitedRegex = #"^/[\s\S]+/[dgimsuvy]*$"#
+    /// The engine also detects a leading /…/ before removing filters, even with trailing text.
+    static let leadingDelimitedRegex = #"^/[\s\S]*/[dgimsuvy]*(?:\s|$)"#
 
     struct Token {
         var range: Range<String.Index>
@@ -74,6 +76,8 @@ public enum QueryFilters {
         public var isRegex: Bool {
             if QueryFilters.regexPrefixes.contains(prefix.trimmingCharacters(in: .whitespaces).lowercased()) { return true }
             if !prefix.isEmpty { return false }
+            let lead = String(body.drop(while: { $0.isWhitespace }))
+            if lead.range(of: QueryFilters.leadingDelimitedRegex, options: .regularExpression) != nil { return true }
             let words = tokens.filter { $0.key == nil }
             guard let first = words.first, let last = words.last else { return false }
             let text = String(body[first.range.lowerBound..<last.range.upperBound])
@@ -150,14 +154,24 @@ public enum QueryFilters {
         // `re:/pattern/g` needs both removed, or it would still run as a regex.
         let plain = body.trimmingLeadingSpaces()
         let words = tokens(plain).filter { $0.key == nil }
-        guard let first = words.first, let last = words.last else { return plain }
+        guard let first = words.first, let last = words.last else { return literalQuery(plain) }
         let range = first.range.lowerBound..<last.range.upperBound
         let delimited = String(plain[range])
-        guard delimited.range(of: Self.delimitedRegex, options: .regularExpression) != nil else { return plain }
+        guard delimited.range(of: Self.delimitedRegex, options: .regularExpression) != nil else { return literalQuery(plain) }
         let pattern = delimited
             .replacingOccurrences(of: #"^/"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: #"/[dgimsuvy]*$"#, with: "", options: .regularExpression)
-        return plain.replacingCharacters(in: range, with: pattern)
+        return literalQuery(plain.replacingCharacters(in: range, with: pattern))
+    }
+
+    /// Removing regex syntax can expose more syntax (`//budget//` becomes `/budget/`, or
+    /// `re:re:budget` becomes `re:budget`). Force literal mode only when needed to keep it off.
+    private static func literalQuery(_ query: String) -> String {
+        let lead = query.drop(while: { $0.isWhitespace }).lowercased()
+        if isRegex(query) || lead.hasPrefix("all:") || modePrefixes.contains(where: { lead.hasPrefix($0) }) {
+            return "find:" + query
+        }
+        return query
     }
 
     // MARK: - Tokens
