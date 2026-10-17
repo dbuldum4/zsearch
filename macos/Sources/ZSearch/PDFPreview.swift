@@ -20,11 +20,19 @@ private struct PDFKey: Hashable {
 }
 
 /// Opened PDFs, kept for the few most recent files so moving back and forth through the results
-/// doesn't reopen them, with where each preview's matches are on their pages. Both are made off
-/// the main thread by `load`; the view only puts them on screen.
+/// doesn't reopen them. `load` opens a file and finds its matches off the main thread, before the
+/// document is shown. That reads the text of the pages it needs, which PDFKit keeps with the
+/// document, so highlighting them on screen afterwards is quick.
 @MainActor
 final class PDFDocuments {
     static let shared = PDFDocuments()
+
+    /// What `load` makes: the document, and the matches of the preview it was opened for.
+    private struct Opened {
+        let document: PDFDocument
+        let preview: FilePreview
+        let marks: PDFMarks
+    }
 
     private var cache: [PDFKey: PDFDocument] = [:]
     private var order: [PDFKey] = []
@@ -32,11 +40,10 @@ final class PDFDocuments {
     /// have been read halfway through a save).
     private var failed: [PDFKey: Date] = [:]
     private static let retryAfter: TimeInterval = 30
-    private var opening: [PDFKey: Task<Handover<PDFDocument?>, Never>] = [:]
+    private var opening: [PDFKey: Task<Handover<Opened?>, Never>] = [:]
     private let limit = 4
     /// Recent previews' matches, newest last.
     private var recentMarks: [(preview: FilePreview, marks: PDFMarks)] = []
-    private let reader = PDFReader()
 
     /// The document for a preview, if `load` opened it.
     func document(for p: FilePreview) -> PDFDocument? {
@@ -54,9 +61,12 @@ final class PDFDocuments {
         recentMarks.last { $0.preview == p }?.marks
     }
 
+    /// An open document counts as ready for any preview of its file. Once it may be on screen it
+    /// is only used on the main thread, where the view finds the matches of another query or
+    /// match; the pages read for the earlier ones need not be read again.
     func state(of p: FilePreview) -> DocumentState {
         let key = PDFKey(p)
-        if cache[key] != nil { return marks(for: p) == nil ? .unknown : .ready }
+        if cache[key] != nil { return .ready }
         if let at = failed[key], Date().timeIntervalSince(at) < Self.retryAfter { return .failed }
         return .unknown
     }
@@ -65,50 +75,31 @@ final class PDFDocuments {
     /// opened (gone, damaged, or password-protected) is marked failed.
     func load(_ p: FilePreview) async {
         let key = PDFKey(p)
-        if cache[key] == nil {
-            let task = opening[key] ?? Task.detached(priority: .userInitiated) {
-                let doc = PDFDocument(url: URL(fileURLWithPath: key.path))
-                return Handover(value: doc.flatMap { !$0.isLocked && $0.pageCount > 0 ? $0 : nil })
+        guard cache[key] == nil else { return }
+        let task = opening[key] ?? Task.detached(priority: .userInitiated) {
+            guard let doc = PDFDocument(url: URL(fileURLWithPath: key.path)), !doc.isLocked, doc.pageCount > 0 else {
+                return Handover<Opened?>(value: nil)
             }
-            opening[key] = task
-            let doc = await task.value.value
-            opening[key] = nil
-            guard let doc else {
-                if failed.count > 64 { failed.removeAll() }
-                failed[key] = Date()
-                return
-            }
-            failed[key] = nil
-            if cache.updateValue(doc, forKey: key) == nil { order.append(key) }
-            while order.count > limit { cache[order.removeFirst()] = nil }
+            return Handover<Opened?>(value: Opened(document: doc, preview: p, marks: PDFMatching.marks(for: p, in: doc)))
         }
-        guard marks(for: p) == nil, let found = await reader.marks(for: p, key: key) else { return }
-        recentMarks.append((p, found))
+        opening[key] = task
+        let opened = await task.value.value
+        opening[key] = nil
+        guard let opened else {
+            if failed.count > 64 { failed.removeAll() }
+            failed[key] = Date()
+            return
+        }
+        failed[key] = nil
+        // Another load of the same file (for another preview) waited on the same task.
+        guard cache[key] == nil else { return }
+        cache[key] = opened.document
+        order.append(key)
+        while order.count > limit { cache[order.removeFirst()] = nil }
+        recentMarks.append((opened.preview, opened.marks))
         if recentMarks.count > 8 { recentMarks.removeFirst() }
     }
 }
-
-/// Reads the text of PDFs for `PDFMatching`, on its own copies of the documents: a PDFDocument
-/// shown on screen is only touched on the main thread.
-private actor PDFReader {
-    private var documents: [PDFKey: PDFDocument] = [:]
-    private var order: [PDFKey] = []
-
-    func marks(for p: FilePreview, key: PDFKey) -> PDFMarks? {
-        let doc: PDFDocument
-        if let cached = documents[key] {
-            doc = cached
-        } else {
-            guard let opened = PDFDocument(url: URL(fileURLWithPath: key.path)), !opened.isLocked, opened.pageCount > 0 else { return nil }
-            doc = opened
-            documents[key] = doc
-            order.append(key)
-            while order.count > 2 { documents[order.removeFirst()] = nil }
-        }
-        return PDFMatching.marks(for: p, in: doc)
-    }
-}
-
 /// Where the focused match is: its page, how far that is from the page the indexed text's page
 /// breaks point to, and its place on the page when it could be found there.
 struct PDFFocus: Sendable, Equatable {

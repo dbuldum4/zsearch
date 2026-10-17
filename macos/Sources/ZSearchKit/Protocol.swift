@@ -436,50 +436,49 @@ public struct Envelope: Hashable, Sendable {
     public var id: Int?
     public var message: Message
 
+    private struct Head: Decodable {
+        var id: Int?
+        var type: String
+    }
+
+    private struct ResultsBody: Decodable { var response: SearchResponse }
+    private struct PreviewBody: Decodable { var preview: FilePreview }
+    private struct PreviewsBody: Decodable { var previews: [FilePreview] }
+    private struct StatsBody: Decodable { var stats: IndexStats }
+    private struct ConfigBody: Decodable { var config: Config }
+    private struct ProgressBody: Decodable { var progress: IndexProgress }
+    private struct ErrorBody: Decodable { var error: String }
+    private struct SemanticBody: Decodable { var status: SemanticStatus }
     private struct RefreshedBody: Decodable {
         var files: Int
         var changed: Bool
     }
 
-    /// The whole line, read in one pass: the `type` picks how the rest is decoded. A results or
-    /// preview line can be hundreds of kilobytes, and every search waits for it.
-    private struct Line: Decodable {
-        var envelope: Envelope
-
-        enum CodingKeys: String, CodingKey {
-            case id, type, response, preview, previews, stats, config, error, progress, status
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            let type = try c.decode(String.self, forKey: .type)
-            let message: Message
-            switch type {
-            case "ready": message = .ready(try Ready(from: decoder))
-            case "results": message = .results(try c.decode(SearchResponse.self, forKey: .response))
-            case "preview": message = .preview(try c.decode(FilePreview.self, forKey: .preview))
-            case "previews": message = .previews(try c.decode([FilePreview].self, forKey: .previews))
-            case "stats": message = .stats(try c.decode(IndexStats.self, forKey: .stats))
-            case "config": message = .config(try c.decode(Config.self, forKey: .config))
-            case "cancelled": message = .cancelled
-            case "ok": message = .ok
-            case "error": message = .error(try c.decode(String.self, forKey: .error))
-            case "indexProgress": message = .indexProgress(try c.decode(IndexProgress.self, forKey: .progress))
-            case "indexDone": message = .indexDone(try IndexDone(from: decoder))
-            case "estimate": message = .estimate(try EstimateReply(from: decoder))
-            case "semantic": message = .semantic(try c.decode(SemanticStatus.self, forKey: .status))
-            case "semanticDownload": message = .semanticDownload(try DownloadProgress(from: decoder))
-            case "refreshed":
-                let r = try RefreshedBody(from: decoder)
-                message = .refreshed(files: r.files, changed: r.changed)
-            default: message = .unknown(type: type)
-            }
-            envelope = Envelope(id: try c.decodeIfPresent(Int.self, forKey: .id), message: message)
-        }
-    }
-
     /// Decode one line of `zsearch serve` output.
     public static func decode(_ line: Data) throws -> Envelope {
-        try JSONDecoder().decode(Line.self, from: line).envelope
+        let d = JSONDecoder()
+        let head = try d.decode(Head.self, from: line)
+        let message: Message
+        switch head.type {
+        case "ready": message = .ready(try d.decode(Ready.self, from: line))
+        case "results": message = .results(try d.decode(ResultsBody.self, from: line).response)
+        case "preview": message = .preview(try d.decode(PreviewBody.self, from: line).preview)
+        case "previews": message = .previews(try d.decode(PreviewsBody.self, from: line).previews)
+        case "stats": message = .stats(try d.decode(StatsBody.self, from: line).stats)
+        case "config": message = .config(try d.decode(ConfigBody.self, from: line).config)
+        case "cancelled": message = .cancelled
+        case "ok": message = .ok
+        case "error": message = .error(try d.decode(ErrorBody.self, from: line).error)
+        case "indexProgress": message = .indexProgress(try d.decode(ProgressBody.self, from: line).progress)
+        case "indexDone": message = .indexDone(try d.decode(IndexDone.self, from: line))
+        case "estimate": message = .estimate(try d.decode(EstimateReply.self, from: line))
+        case "semantic": message = .semantic(try d.decode(SemanticBody.self, from: line).status)
+        case "semanticDownload": message = .semanticDownload(try d.decode(DownloadProgress.self, from: line))
+        case "refreshed":
+            let r = try d.decode(RefreshedBody.self, from: line)
+            message = .refreshed(files: r.files, changed: r.changed)
+        default: message = .unknown(type: head.type)
+        }
+        return Envelope(id: head.id, message: message)
     }
 }
