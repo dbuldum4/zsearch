@@ -19,7 +19,7 @@ The semantic index records, for each file, what its passages were made from: siz
 
 Files that should have vectors and don't (new, changed since, or partly embedded) are pending. A pending file that holds enough of the query's words to be a word candidate gets a stand-in meaning score of `2.0 × coverage` (the meaning gate times the plain share of the query's words it holds), then the usual word, name and kind evidence. Holding every word, it ranks above files with the same words that stand out less than the gate by meaning, and below files that stand out more; holding half, it gets half that. With nothing pending, results are exactly those of a completed pass.
 
-Responses carry `semantic: { files, current, pending, matched }` (`matched`: pending files among the results), and while files are pending the strategy line reads `semantic + words · 9,812 of 9,830 files current; 18 pending matched by words`. The Mac app, terminal app and CLI show that line as they show any strategy.
+Responses carry `semantic: { files, current, pending, matched }` (`matched`: pending files among the results), and while files are pending the strategy line reads `semantic + words · 9,812 of 9,830 files current; 18 pending, 3 found by words` (without the last part when this search found none of them). The Mac app, terminal app and CLI show that line as they show any strategy.
 
 ## Words only
 

@@ -820,7 +820,8 @@ export class SearchEngine {
       const { files, current, pending } = usableNow
       const matched = ranked.reduce((n, r) => n + (pending.has(r.file) ? 1 : 0), 0)
       res.semantic = { files, current, pending: pending.size, matched }
-      if (best.size && pending.size) res.strategy += ` · ${current.toLocaleString("en-US")} of ${files.toLocaleString("en-US")} files current; ${pending.size.toLocaleString("en-US")} pending matched by words`
+      const amount = (n: number) => n.toLocaleString("en-US")
+      if (best.size && pending.size) res.strategy += ` · ${amount(current)} of ${amount(files)} files current; ${amount(pending.size)} pending${matched ? `, ${amount(matched)} found by words` : ""}`
     }
     if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
     const pattern = termsPattern(q.words, q.phrases, q.typing)

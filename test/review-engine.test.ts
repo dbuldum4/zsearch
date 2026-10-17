@@ -232,7 +232,7 @@ describe("semantic snapshots", () => {
     const r = await pending
     e.closeSemantic()
     try {
-      expect(r.strategy).toEndWith("1 pending matched by words")
+      expect(r.strategy).toEndWith("files current; 1 pending")
       expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
       expect(names(r)).not.toContain("notes/dogwalk.txt")
       expect(r.hits.flatMap((h) => h.lines).some((l) => l.text.includes("revenue"))).toBe(false)

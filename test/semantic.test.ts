@@ -541,13 +541,15 @@ describe("semantic index and search", () => {
     corpus.write("notes/errands.txt", "Errands for Saturday: walk the puppy, then groceries and laundry.\n")
     await new Indexer(db, config, { inProcess: true }).run()
     const r = await e.search("puppy", "semantic")
-    expect(r.strategy).toMatch(/^semantic \+ words · \d+ of \d+ files current; 1 pending matched by words$/)
+    expect(r.strategy).toMatch(/^semantic \+ words · \d+ of \d+ files current; 1 pending, 1 found by words$/)
     expect(r.notice).toBeUndefined()
     expect(r.semantic).toMatchObject({ pending: 1, matched: 1 })
     expect(r.semantic!.current).toBe(r.semantic!.files - 1)
     expect(r.hits.map((h) => h.display).slice(0, 2)).toEqual(["notes/pets.md", "notes/errands.txt"])
     const canine = await e.search("canine", "semantic")
-    expect(canine.strategy).toStartWith("semantic + words")
+    // The pending file isn't among these results: nothing is said to be found by its words.
+    expect(canine.strategy).toMatch(/^semantic \+ words · \d+ of \d+ files current; 1 pending$/)
+    expect(canine.semantic).toMatchObject({ pending: 1, matched: 0 })
     expect(canine.hits[0]!.display).toBe("notes/pets.md")
     expect(canine.hits.some(h => h.display === "notes/errands.txt")).toBe(false)
     expect((await semantic()).status).toBe("done")
@@ -638,7 +640,7 @@ describe("semantic index and search", () => {
     answer()
     const r = await pending
     // The note's vectors predate the edit: it is left to its words until the semantic index catches up.
-    expect(r.strategy).toEndWith("1 pending matched by words")
+    expect(r.strategy).toEndWith("files current; 1 pending")
     expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
     expect(r.hits.map((h) => h.display)).not.toContain("notes/release.txt")
     e.closeSemantic()
