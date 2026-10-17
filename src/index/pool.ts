@@ -1,7 +1,8 @@
 import type { ExtractOptions } from "./extract/index.ts"
 import { type ExtractJob, type ExtractReply, JOBS_AT_ONCE, processJob } from "./extract-job.ts"
 import { workerUrl } from "../util/workers.ts"
-import { DOCUMENT_EXTS, OCR_EXTS } from "../kinds.ts"
+import { DOCUMENT_EXTS, OCR_EXTS, TRANSCRIBE_EXTS } from "../kinds.ts"
+import { TRANSCRIPTION_TIMEOUT_MS } from "./extract/transcribe.ts"
 
 /** Messages to an extraction worker: its options once, then batches of jobs. */
 export type ExtractWorkerIn = { opts: ExtractOptions; backgroundDisk: boolean } | { jobs: ExtractJob[] }
@@ -65,7 +66,7 @@ export class ExtractPool {
         if (this.owner.get(id) !== w) return
         this.started.add(id)
         const job = this.assigned.get(w)?.get(id)
-        const timeout = this.opts.fileTimeoutMs ?? (job?.ext === "pdf" && this.opts.ocrTool ? 600_000 : 60_000)
+        const timeout = this.opts.fileTimeoutMs ?? (job && TRANSCRIBE_EXTS.has(job.ext) ? TRANSCRIPTION_TIMEOUT_MS + 5000 : job?.ext === "pdf" && this.opts.ocrTool ? 600_000 : 60_000)
         this.timers.set(id, setTimeout(() => this.replace(w, "timed out"), timeout))
       } else if (ev.data.status === "error" && ev.data.error.startsWith("PDF parsing timed out")) this.replace(w, ev.data.error)
       else this.finish(w, ev.data)
@@ -172,9 +173,10 @@ export class ExtractPool {
     for (const w of this.workers) if (load(w) < load(best)) best = w
     const doc = slow(job.ext)
     if (doc) {
-      const w = this.affinity.get(job.ext)
+      const affinity = TRANSCRIBE_EXTS.has(job.ext) ? "speech" : job.ext
+      const w = this.affinity.get(affinity)
       if (w && this.free(w)) best = w
-      else this.affinity.set(job.ext, best)
+      else this.affinity.set(affinity, best)
       this.docs.set(best, this.docs.get(best)! + 1)
     }
     this.assigned.get(best)!.set(job.id, job)
@@ -221,5 +223,5 @@ export class ExtractPool {
 
 /** Documents and images (read with OCR) can take seconds each, against microseconds for text. */
 function slow(ext: string): boolean {
-  return DOCUMENT_EXTS.has(ext) || OCR_EXTS.has(ext)
+  return DOCUMENT_EXTS.has(ext) || OCR_EXTS.has(ext) || TRANSCRIBE_EXTS.has(ext)
 }

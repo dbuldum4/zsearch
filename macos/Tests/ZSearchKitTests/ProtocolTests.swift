@@ -3,6 +3,22 @@ import XCTest
 @testable import ZSearchKit
 
 final class ProtocolTests: XCTestCase {
+    func testSpeechSettingsDecodeOlderEnginesAndEncodeOptOut() throws {
+        let old = try JSONDecoder().decode(ContentConfig.self, from: Data(#"{"enabled":true}"#.utf8))
+        XCTAssertNil(old.transcribe)
+        XCTAssertNil(old.transcriptionLocale)
+        let current = try JSONDecoder().decode(ContentConfig.self, from: Data(#"{"enabled":true,"transcribe":false,"transcriptionLocale":"tr-TR"}"#.utf8))
+        XCTAssertEqual(current.transcribe, false)
+        XCTAssertEqual(current.transcriptionLocale, "tr-TR")
+        let request = Request.setConfig(ConfigPatch(content: ContentConfig(enabled: true, transcribe: false)))
+        let data = try request.encoded(id: 1)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let patch = try XCTUnwrap(json["config"] as? [String: Any])
+        let content = try XCTUnwrap(patch["content"] as? [String: Any])
+        XCTAssertEqual(content["transcribe"] as? Bool, false)
+        XCTAssertNil(content["transcriptionLocale"])
+    }
+
     /// Output recorded from `zsearch serve` (see Fixtures/serve-transcript.jsonl).
     func transcript() throws -> [Envelope] {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "serve-transcript", withExtension: "jsonl", subdirectory: "Fixtures"))

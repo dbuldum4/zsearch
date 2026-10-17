@@ -72,6 +72,7 @@ jobs:
         run: |
           dist/zsearch.app/Contents/Helpers/zsearch doctor | grep -F 'zsearch.app/Contents/Helpers/zsearch-ocr'
           dist/zsearch.app/Contents/Helpers/zsearch doctor | grep -F 'zsearch.app/Contents/Helpers/zsearch-embed'
+          dist/zsearch.app/Contents/Helpers/zsearch-transcribe --version | grep -F 'Apple SpeechAnalyzer'
           dist/zsearch.app/Contents/Helpers/zsearch-embed --version | grep -F 'vectors 2'
           bun test --timeout 60000 test/ocr.test.ts
         env:

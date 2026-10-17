@@ -23,7 +23,7 @@ import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
 import { acquireLock, lockHolder } from "./index/lock.ts"
 import { KIND_BADGE } from "./kinds.ts"
-import { ocrToolPath, pdftotextPath } from "./platform.ts"
+import { ocrToolPath, pdftotextPath, transcriptionToolPath } from "./platform.ts"
 import { SearchEngine, type SearchHit } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "./util/text.ts"
@@ -664,6 +664,8 @@ function cmdDoctor(): number {
   console.log(`${ok(!!pdf)} pdftotext ${pdf ?? "not found — using the built-in PDF reader (slower); install poppler for speed"}`)
   const ocr = ocrToolPath()
   console.log(`${ok(!!ocr)} OCR ${ocr ?? "not available — images and scanned PDF pages are indexed by name only (the Mac app has it)"}`)
+  const speech = transcriptionToolPath()
+  console.log(`${ok(!!speech)} on-device transcription ${speech ?? "not available — needs the Mac app on macOS 26+; audio/video stay searchable by name"}`)
   const sem = semanticStatus(loadConfig(), p.db)
   console.log(`${ok(!!sem.helper)} embedding helper ${sem.helper ?? "not found — semantic search needs zsearch-embed (in the Mac app; scripts/build-embed.sh builds it)"}`)
   console.log(`${ok(sem.model.ready)} semantic model ${sem.model.ready ? tildify(sem.modelDir) : "not downloaded (zsearch semantic install)"}`)

@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync, accessSync, constants, statSync, realpathSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { release } from "node:os"
 import { home, paths } from "./config.ts"
 
 export const isMac = process.platform === "darwin"
@@ -291,4 +292,15 @@ export function ocrToolPath(): string | null {
 export function pdftotextPath(): string | null {
   if (/^(1|true|yes|on)$/i.test(process.env.ZSEARCH_NO_PDFTOTEXT ?? "")) return null
   return findTool("pdftotext")
+}
+
+/** Apple SpeechAnalyzer needs macOS 26+. The helper checks device/language support itself. */
+export function transcriptionToolPath(): string | null {
+  const env = process.env.ZSEARCH_TRANSCRIBE
+  if (env !== undefined) return env && env !== "0" ? which(env) : null
+  if (!isMac) return null
+  // Darwin 25 is macOS 26. Older Macs keep their audio/video files searchable by name.
+  if (Number(release().split(".")[0]) < 25) return null
+  const bundled = join(dirname(process.execPath), "zsearch-transcribe")
+  return existsSync(bundled) ? bundled : null
 }

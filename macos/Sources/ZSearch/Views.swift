@@ -258,6 +258,7 @@ struct PreviewPane: View {
     @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
     /// Images show themselves unless the reader picked the text OCR read from them.
     @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
+    @AppStorage(AppSettings.mediaShowsTranscript) private var mediaShowsTranscript = true
 
     /// Bumped when a document this pane waited on is ready (see `PreviewPreparation`).
     @State private var documentsLoaded = 0
@@ -284,6 +285,8 @@ struct PreviewPane: View {
             let ebook = EbookPreviewView.handles(p)
             // Images, video and audio, and other files without text: Quick Look shows them.
             let visual = p.contentAllowed != false && pdf == nil && word == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
+            let media = p.kind == "audio" || p.kind == "video"
+            let visualShowsText = media ? mediaShowsTranscript : imageShowsText
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -328,9 +331,9 @@ struct PreviewPane: View {
                         .fixedSize()
                         .help("Show a reflowed excerpt, or the line-numbered text zsearch read from the book")
                     } else if visual, p.message == nil {
-                        Picker("Show", selection: $imageShowsText) {
+                        Picker("Show", selection: media ? $mediaShowsTranscript : $imageShowsText) {
                             Text(p.kind == "image" ? "Image" : "File").tag(false)
-                            Text("Text").tag(true)
+                            Text(media ? "Transcript" : "Text").tag(true)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
@@ -348,7 +351,7 @@ struct PreviewPane: View {
                     DocumentPreviewView(preview: p, document: word)
                 } else if ebook, !ebookShowsText {
                     EbookPreviewView(preview: p)
-                } else if visual, !imageShowsText || p.message != nil {
+                } else if visual, !visualShowsText || p.message != nil {
                     QuickLookView(url: URL(fileURLWithPath: p.path))
                 } else if let message = p.message {
                     Text(message)

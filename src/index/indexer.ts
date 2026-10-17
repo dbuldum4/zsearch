@@ -1,8 +1,8 @@
 import type { Database, Statement } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import { type Config, home, resolvePath } from "../config.ts"
-import { extOf, kindOf, type Kind, OCR_EXTS } from "../kinds.ts"
-import { ocrToolPath } from "../platform.ts"
+import { extOf, kindOf, type Kind, OCR_EXTS, TRANSCRIBE_EXTS } from "../kinds.ts"
+import { ocrToolPath, transcriptionToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlStats, crawl } from "./crawler.ts"
 import { compactIndex, ContentState, decompressText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta } from "./db.ts"
@@ -118,6 +118,7 @@ export class Indexer {
   private cpu: CpuBudget
   /** The OCR helper, when this run reads images and scanned pages. */
   private ocrTool: string | null
+  private transcriptionTool: string | null
   /** Files the scan found gone, removed from the index at the end of the run. */
   private removed = new Set<number>()
   /** Someone asked for the run while it waited on power: it waits no more. */
@@ -147,6 +148,7 @@ export class Indexer {
     this.share = loadShare(config.indexLoad)
     this.cpu = new CpuBudget(this.share)
     this.ocrTool = config.content.enabled && config.content.ocr ? ocrToolPath() : null
+    this.transcriptionTool = config.content.enabled && config.content.transcribe ? transcriptionToolPath() : null
     const now = Date.now()
     this.progress = {
       phase: "starting",
@@ -353,9 +355,17 @@ export class Indexer {
         .filter(({ path, entry }) => entry.dev === e.dev && entry.size === e.size && entry.mtime === e.mtime && !existsSync(path))
     }
     const visited = new Set<number>()
-    const contentPolicy = JSON.stringify([this.config.content, this.config.cloudContent, this.ocrTool])
+    const { transcribe, transcriptionLocale, ...ordinaryContent } = this.config.content
+    const contentPolicy = JSON.stringify([ordinaryContent, this.config.cloudContent, this.ocrTool])
     const previousPolicy = getMeta(this.db, "content_policy")
     const policyChanged = previousPolicy !== null && previousPolicy !== contentPolicy
+    // A helper becoming available retries just media, without re-extracting every document.
+    const speechPolicy = JSON.stringify([this.transcriptionTool, transcribe, transcriptionLocale])
+    const speechChanged = getMeta(this.db, "transcription_policy") !== speechPolicy
+    // Offline asset downloads and temporary speech-service failures can recover later.
+    // Back off across live refreshes instead of retrying every file event.
+    const retrySpeech = Date.now() - Number(getMeta(this.db, "transcription_attempt_at") ?? "0") >= 60 * 60_000
+    let attemptedSpeech = false
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }
     const crawlOpts = crawlOptionsFor(this.config)
@@ -401,11 +411,11 @@ export class Indexer {
       const storedSource = sourcePath === e.path ? "" : sourcePath
       // Keys and password files are kept by name, with a note saying why their text is not.
       const secret = !e.isDir && contentOn && secretFile(e.path)
-      const wants = !e.isDir && contentOn && !secret && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata)
+      const wants = !e.isDir && contentOn && !secret && !e.namesOnly && !e.offline && wantsContent(ext, kind, this.ocrTool !== null, this.config.content.metadata, this.transcriptionTool !== null)
       const idle = secret ? ContentState.Skipped : ContentState.None
       const idleNote = secret ? SECRET_NOTE : null
       const moved = !existing.has(e.path) && e.ino && existing.size ? movedFrom(e) : undefined
-      if (moved?.length === 1 && !visited.has(moved[0]!.entry.id) && moved[0]!.entry.kind === kind && moved[0]!.entry.state === ContentState.Indexed && wants && !policyChanged) {
+      if (moved?.length === 1 && !visited.has(moved[0]!.entry.id) && moved[0]!.entry.kind === kind && moved[0]!.entry.state === ContentState.Indexed && wants && !policyChanged && (!TRANSCRIBE_EXTS.has(ext) || !speechChanged)) {
         const old = moved[0]!; visited.add(old.entry.id); this.progress.updated++
         batch.push(() => {
           const body = this.storedBody(old.entry.id)
@@ -422,10 +432,11 @@ export class Indexer {
         const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir && prev.sourcePath === storedSource && (!prev.ino || (prev.ino === e.ino && prev.dev === e.dev))
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
-          if (wants && (prev.state === ContentState.None || policyChanged))
+          if (wants && (prev.state === ContentState.None || policyChanged || (TRANSCRIBE_EXTS.has(ext) && (speechChanged || (retrySpeech && prev.state === ContentState.Error)))))
             batch.push(() => {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
               waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+              if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
             })
           else if (!wants && prev.state !== idle) batch.push(() => this.dropContent(prev.id, e.path, idle, idleNote))
           continue
@@ -435,7 +446,10 @@ export class Indexer {
           if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, idle, idleNote)
           this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, prev.id)
           if (secret) this.st.setState.run(idle, 0, idleNote, prev.id)
-          if (wants) waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+          if (wants) {
+            waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+            if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
+          }
         })
       } else {
         this.progress.added++
@@ -447,7 +461,10 @@ export class Indexer {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
             if (secret) this.st.setState.run(idle, 0, idleNote, Number(lastInsertRowid))
-          } else waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+          } else {
+            waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+            if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
+          }
         })
       }
       if (batch.length >= 2000 || Date.now() - lastCommit > 250) commit()
@@ -464,7 +481,7 @@ export class Indexer {
     for (const [path, ex] of existing) {
       if (visited.has(ex.id)) continue
       if (missingRoots.some((r) => under(path, r))) {
-        if (policyChanged && ex.state === ContentState.Indexed) stale.push({ id: ex.id, path })
+        if ((policyChanged || (speechChanged && TRANSCRIBE_EXTS.has(extOf(path)))) && ex.state === ContentState.Indexed) stale.push({ id: ex.id, path })
         continue
       }
       removed.push(ex.id)
@@ -474,6 +491,9 @@ export class Indexer {
     this.db.transaction(() => {
       for (const s of stale) this.dropContent(s.id, s.path, ContentState.None, null)
       setMeta(this.db, "content_policy", contentPolicy)
+      setMeta(this.db, "transcription_policy", speechPolicy)
+      // New recordings must not postpone the retry window for older failed recordings.
+      if (attemptedSpeech && retrySpeech) setMeta(this.db, "transcription_attempt_at", String(Date.now()))
     }).immediate()
     this.progress.removed = removed.length
     return removed
@@ -503,7 +523,7 @@ export class Indexer {
     else
       this.pool = new ExtractPool(
         size,
-        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000, policy: crawlOptionsFor(this.config), contentEnabled: c.enabled, metadata: c.metadata, ocrTool: this.ocrTool },
+        { maxTextBytes: c.maxTextMB * 1024 * 1024, maxDocBytes: c.maxDocumentMB * 1024 * 1024, maxChars: c.maxChars, pdfTimeoutMs: 60_000, policy: crawlOptionsFor(this.config), contentEnabled: c.enabled, metadata: c.metadata, ocrTool: this.ocrTool, transcriptionTool: this.transcriptionTool, transcriptionLocale: c.transcriptionLocale, transcriptionRun: this.runId },
         JOBS_PER_WORKER,
         this.opts.inProcess,
         this.share < 1,
@@ -542,6 +562,8 @@ export class Indexer {
     this.earlyFound += files.length
     const pool = this.poolFor(this.earlyFound)
     for (const p of files) {
+      // Speech is expensive: finish documents first and transcribe only one recording at a time.
+      if (TRANSCRIBE_EXTS.has(p.ext)) continue
       // Images wait for the content phase, which reads them last.
       if (OCR_EXTS.has(p.ext) && p.kind === "image") continue
       // Only what the workers have room for: a file queued behind a slow document could not go
@@ -616,6 +638,7 @@ export class Indexer {
       const isImage = (p: Pending) => OCR_EXTS.has(p.ext) && p.kind === "image"
       pending = pending.filter((p) => !isImage(p)).concat(pending.filter(isImage))
     }
+    pending = pending.filter((p) => !TRANSCRIBE_EXTS.has(p.ext)).concat(pending.filter((p) => TRANSCRIBE_EXTS.has(p.ext)))
     const pool = this.poolFor(pending.length)
 
     // Resolved by the next finished job, or when the writer catches up. Promise.race over every
@@ -691,6 +714,7 @@ export class Indexer {
     const launch = (reply: Promise<ExtractReply>) => {
       const i = next++
       const job = pending[i]!
+      if (TRANSCRIBE_EXTS.has(job.ext)) { this.progress.current = job.path; this.emit(true) }
       active++
       inflightBytes += cost(job)
       reply.then((r) => {
@@ -714,11 +738,11 @@ export class Indexer {
     this.early.clear()
     this.earlyBytes = 0
     // A big pass waits while the computer is in Low Power Mode, hot or (optionally) on battery.
-    const power = pending.length >= BIG_RUN ? this.opts.power : undefined
+    const bigRun = pending.length >= BIG_RUN
     let ok = false
     try {
       while ((next < pending.length || active) && !sink.failed) {
-        const waiting = this.powerWait(power)
+        const waiting = this.powerWait(bigRun || TRANSCRIBE_EXTS.has(pending[next]?.ext ?? "") ? this.opts.power : undefined)
         if (waiting !== this.progress.waiting) {
           this.progress.waiting = waiting
           // The writer's open transaction would hold this write up until it timed out: it is
@@ -738,8 +762,10 @@ export class Indexer {
         if (!behind && !throttled && !waiting && pool.capacity >= Math.min(refill, pending.length - next)) {
           while (next < pending.length && pool.capacity > 0 && !this.aborted) {
             const job = pending[next]!
+            if (TRANSCRIBE_EXTS.has(job.ext) && active) break
             if (active && inflightBytes + cost(job) > MAX_INFLIGHT_BYTES) break
             launch(this.extract(pool, job))
+            if (TRANSCRIBE_EXTS.has(job.ext)) break
           }
         }
         if (this.aborted) break

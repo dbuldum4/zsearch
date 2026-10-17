@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { chmodSync, closeSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { makeCorpus } from "./helpers/corpus.ts"
 
@@ -52,6 +52,29 @@ function server(env: Record<string, string> = {}, data = ".zsearch-data") {
   const reply = (id: number) => until((m) => m.id === id)
   return { proc, send, until, reply }
 }
+
+test("serve: opting out of transcription cancels the active recording", async () => {
+  const media = corpus.write("speech/meeting.wav", "stand-in audio")
+  const marker = join(corpus.home, "speech-started")
+  const helper = corpus.write("speech-helper", `#!${process.execPath}\nimport { writeFileSync } from "node:fs"\nif (process.argv[2] === "--prepare") { console.log('{"ready":true}'); process.exit(0) }\nwriteFileSync(${JSON.stringify(marker)}, "started")\nsetInterval(() => {}, 1000)\n`)
+  chmodSync(helper, 0o700)
+  const s = server({ ZSEARCH_TRANSCRIBE: helper }, ".speech-index")
+  try {
+    await s.until((m) => m.type === "ready")
+    s.send({ id: 1, type: "setConfig", config: { roots: [media], autoRefreshMinutes: 0, liveUpdates: false, semantic: { enabled: false } } })
+    await s.reply(1)
+    s.send({ id: 2, type: "index" })
+    await s.reply(2)
+    const deadline = Date.now() + 10_000
+    while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(10)
+    expect(existsSync(marker)).toBe(true)
+    s.send({ id: 3, type: "setConfig", config: { content: { transcribe: false } } })
+    expect((await s.reply(3)).type).toBe("config")
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("cancelled")
+    s.proc.stdin.end()
+    expect(await s.proc.exited).toBe(0)
+  } finally { s.proc.kill() }
+}, 30_000)
 
 test("serve: index, search, preview and stats over JSON lines", async () => {
   const s = server()

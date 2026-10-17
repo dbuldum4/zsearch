@@ -5,6 +5,7 @@ import { type Config, resolvePath } from "../config.ts"
 import { cloudFolders, onlyChildren, SKIP_DIR_NAMES, systemExcludes, systemNamesOnly } from "../platform.ts"
 import type { CrawlOptions } from "./crawler.ts"
 import { secretFile } from "./secrets.ts"
+import { extOf, TRANSCRIBE_EXTS } from "../kinds.ts"
 
 export function under(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : prefix + "/")
@@ -47,6 +48,7 @@ export function crawlOptionsFor(config: Config): CrawlOptions {
   return {
     roots, includeHidden: config.includeHidden, respectGitignore: config.respectGitignore,
     followSymlinks: config.followSymlinks, oneFileSystem: config.oneFileSystem,
+    transcribe: config.content.transcribe,
     excludePatterns: config.exclude.filter((p) => !(p.startsWith("/") || p.startsWith("~"))),
     // User exclusions always win, even when they equal a configured root.
     excludePaths: [...systemExcludes().filter((e) => !roots.some((r) => under(r, e)) && !realRoots.some((r) => under(r, canonical(e)))), ...userAbs],
@@ -131,8 +133,10 @@ export function policyFor(opts: CrawlOptions) {
     if (!passes(path, root, st.isDirectory()) || (real !== path && !passes(real, targetRoot, st.isDirectory()))) return deny("file is excluded by current settings")
     const offline = st.size > 4096 && st.blocks === 0
     const secret = secretFile(path) || secretFile(real)
-    const content = !offline && !secret && !namesOnly.some((p) => under(path, p) || under(real, p))
-    return { allowed: true, content, real, ...(!content ? { reason: secret ? "key or password file: indexed by name only" : "contents are disabled for this folder" } : {}) }
+    const speechOff = opts.transcribe === false && (TRANSCRIBE_EXTS.has(extOf(path)) || TRANSCRIBE_EXTS.has(extOf(real)))
+    const restricted = offline || secret || namesOnly.some((p) => under(path, p) || under(real, p))
+    const content = !restricted && !speechOff
+    return { allowed: true, content, real, ...(!content ? { reason: secret ? "key or password file: indexed by name only" : speechOff && !restricted ? "speech transcription is disabled in settings" : "contents are disabled for this folder" } : {}) }
   }
   const decisions = new Map<string, ReturnType<typeof evaluate>>()
   return (path: string) => {

@@ -5,7 +5,9 @@ import { join } from "node:path"
 import { pathPolicy } from "../policy.ts"
 import type { CrawlOptions } from "../crawler.ts"
 import { bytesHoldPrivateKey, notKeynote, onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../secrets.ts"
-import { DOCUMENT_EXTS, OCR_EXTS, TEXTUAL_KINDS, type Kind } from "../../kinds.ts"
+import { DOCUMENT_EXTS, OCR_EXTS, TEXT_EXPORT_EXTS, TEXTUAL_KINDS, TRANSCRIBE_EXTS, type Kind } from "../../kinds.ts"
+import { transcribe } from "./transcribe.ts"
+import { extractPim } from "./pim.ts"
 import { binaryStrings, extractDoc, extractPpt, extractRtf, extractXls, isOle2 } from "./legacy.ts"
 import { extractDocx, extractEpub, extractFlatOdf, extractOdf, extractPptx, extractXlsx } from "./office.ts"
 import { ocrImage, type OcrMemo } from "./ocr.ts"
@@ -26,6 +28,9 @@ export interface ExtractOptions {
   metadata?: boolean
   /** The OCR helper, when images and scanned pages are to be read (see `ocrToolPath`). */
   ocrTool?: string | null
+  transcriptionTool?: string | null
+  transcriptionLocale?: string
+  transcriptionRun?: string
 }
 
 export const DEFAULT_EXTRACT: ExtractOptions = {
@@ -43,8 +48,8 @@ type ExtractResult =
 type RawExtractResult = ExtractResult | { status: "bytes"; bytes: Uint8Array }
 
 /** Does this file get its contents read at all? Images only with `ocr`. */
-export function wantsContent(ext: string, kind: Kind, ocr = false, metadata = false): boolean {
-  return DOCUMENT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || (metadata && kind === "image") || ext === "mbox" || (ocr && OCR_EXTS.has(ext))
+export function wantsContent(ext: string, kind: Kind, ocr = false, metadata = false, speech = false): boolean {
+  return DOCUMENT_EXTS.has(ext) || TEXT_EXPORT_EXTS.has(ext) || TEXTUAL_KINDS.has(kind) || kind === "other" || (metadata && kind === "image") || ext === "mbox" || (ocr && OCR_EXTS.has(ext)) || (speech && TRANSCRIBE_EXTS.has(ext))
 }
 
 // Files are read synchronously: extraction runs on worker threads, where blocking is fine, and
@@ -99,6 +104,14 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
     if (!policy.allowed || !policy.content) return { status: "skip", reason: "unsupported" }
     path = policy.real!
   }
+  if (TRANSCRIBE_EXTS.has(ext)) {
+    if (!opts.transcriptionTool) return { status: "skip", reason: "unsupported" }
+    if (!size) return { status: "skip", reason: "empty" }
+    // Media are streamed by AVFoundation, not loaded into memory or limited by document size.
+    const r = await transcribe(opts.transcriptionTool, path, opts.transcriptionLocale ?? "", opts.maxChars, undefined, opts.transcriptionRun)
+    const result = finish(r.text, opts.maxChars)
+    return result.status === "ok" ? { ...result, truncated: result.truncated || r.truncated } : result
+  }
   if (DOCUMENT_EXTS.has(ext)) {
     if (size > opts.maxDocBytes) return { status: "skip", reason: "too-large" }
     if (size === 0) return { status: "skip", reason: "empty" }
@@ -120,6 +133,7 @@ export async function extractRaw(path: string, size: number, ext: string, kind: 
   }
   const buf = await readFile(path, opts.maxTextBytes)
   if (looksBinary(buf)) return { status: "skip", reason: "binary" }
+  if (TEXT_EXPORT_EXTS.has(ext)) return finish(extractPim(decodeText(buf), ext), opts.maxChars)
   if (bytesHoldPrivateKey(buf)) {
     // Keys are cut out of the text; a file that is all key is a key file.
     const text = redactPrivateKeys(decodeText(buf))
@@ -151,15 +165,18 @@ async function extractDocument(path: string, ext: string, opts: ExtractOptions, 
     case "docx":
     case "docm":
     case "dotx":
+    case "dotm":
       return ooxml(buf, extractDocx)
     case "xlsx":
     case "xlsm":
     case "xltx":
+    case "xltm":
       return ooxml(buf, (b) => extractXlsx(b, opts.maxChars))
     case "pptx":
     case "pptm":
     case "ppsx":
     case "potx":
+    case "potm":
       return ooxml(buf, extractPptx)
     case "odt":
     case "ott":
@@ -182,6 +199,13 @@ async function extractDocument(path: string, ext: string, opts: ExtractOptions, 
     case "xls":
     case "ppt":
       return legacy(buf, ext, opts.maxChars)
+    case "dot":
+      return legacy(buf, "doc", opts.maxChars)
+    case "xlt":
+      return legacy(buf, "xls", opts.maxChars)
+    case "pot":
+    case "pps":
+      return legacy(buf, "ppt", opts.maxChars)
     case "eml":
     case "emlx":
       return extractEmail(buf)

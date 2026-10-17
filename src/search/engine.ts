@@ -1374,6 +1374,7 @@ export class SearchEngine {
     const policy = pathPolicy(row.path, crawlOptionsFor(this.config))
     if (!policy.allowed) return { ...base, contentAllowed: false, message: policy.reason }
     if (row.is_dir) return this.folderPreview(base)
+    if (this.config.content.enabled && policy.reason === "speech transcription is disabled in settings") return { ...base, contentAllowed: true, message: policy.reason }
     if (!this.config.content.enabled || !policy.content || (row.source_path && row.source_path !== policy.real)) return { ...base, contentAllowed: false, message: policy.reason ?? "file contents are disabled in settings" }
     // Found to hold only keys when it was read: names-only like a key file's path, so no app
     // renders it from disk either.

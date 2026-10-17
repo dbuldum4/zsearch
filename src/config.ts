@@ -15,6 +15,10 @@ export interface ContentConfig {
   metadata: boolean
   /** Read the text in images and scanned PDF pages, where the OCR helper is available (Mac app). */
   ocr: boolean
+  /** Transcribe audio and video locally where the Mac speech helper is available. */
+  transcribe: boolean
+  /** Spoken language (BCP 47); empty uses the Mac's current locale. */
+  transcriptionLocale: string
 }
 
 /** Semantic search (the semantic tab), with Granite, which the app downloads when it starts. See src/semantic. */
@@ -90,7 +94,7 @@ export function defaultConfig(): Config {
     followSymlinks: false,
     oneFileSystem: false,
     cloudContent: false,
-    content: { enabled: true, metadata: false, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000, ocr: true },
+    content: { enabled: true, metadata: false, maxDocumentMB: 64, maxTextMB: 8, maxChars: 2_000_000, ocr: true, transcribe: true, transcriptionLocale: "" },
     autoRefreshMinutes: 60,
     liveUpdates: true,
     workers: 0,
@@ -181,6 +185,7 @@ const CONFIG_RULES: Record<string, (v: unknown) => string | null> = {
   "content.maxDocumentMB": (v) => Number.isFinite(v) && Number(v) > 0 ? null : "must be more than 0",
   "content.maxTextMB": (v) => Number.isFinite(v) && Number(v) > 0 ? null : "must be more than 0",
   "content.maxChars": (v) => Number.isInteger(v) && Number(v) > 0 ? null : "must be a whole number above 0",
+  "content.transcriptionLocale": (v) => typeof v === "string" && /^(?:[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*)?$/.test(v) && v.length <= 64 ? null : "must be a language code such as en-US, or empty for the system language",
 }
 
 export function configKeys(): string[] {

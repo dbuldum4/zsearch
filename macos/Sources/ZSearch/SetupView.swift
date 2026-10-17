@@ -79,6 +79,10 @@ struct SetupView: View {
             }
             .padding(.leading, 20)
             Toggle("Read the text inside files (PDF, Office, code, …)", isOn: $readContents)
+            Text("On supported Macs with macOS 26+, this also transcribes audio and video on-device. Apple may download speech language assets. You can turn transcription off in Settings › Index.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text("macOS may ask to let zsearch read your Documents and Downloads folders. The index stays on this Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

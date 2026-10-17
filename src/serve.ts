@@ -178,10 +178,13 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "config", config })
       case "setConfig": {
         // A patch: settings it leaves out keep their current values.
+        const wasTranscribing = config.content.enabled && config.content.transcribe
         config = validateConfigPatch(loadConfig(), msg.config)
         saveConfig(config)
         client.setConfig(config)
         watcher.update(config)
+        // Opting out stops an in-flight helper as well as hiding already stored transcripts.
+        if (wasTranscribing && (!config.content.enabled || !config.content.transcribe)) index?.cancel()
         return send({ id, type: "config", config })
       }
       case "index":
@@ -215,8 +218,8 @@ export async function serve(version: string): Promise<number> {
       case "semanticStatus":
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       case "semanticInstall": {
-        // Semantic search's models: the only time zsearch goes online. The app asks when it
-        // starts, unless semantic search was turned off.
+        // Semantic search's models. Apple may separately download speech assets on first use.
+        // The app asks when it starts, unless semantic search was turned off.
         if (downloading.run) return send({ id, type: "error", error: "the model is already downloading" })
         downloading.run = new AbortController()
         try {
