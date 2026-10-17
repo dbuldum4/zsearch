@@ -72,7 +72,7 @@ struct SplitPanes<Left: View, Right: View>: View {
 /// rebuilding a SwiftUI row per line, and the matching line is centered without an animated jump.
 struct PreviewTextView: NSViewRepresentable {
     let preview: FilePreview
-    @AppStorage(AppSettings.wrapTextPreviews) private var wrapTextPreviews = true
+    var wrapTextPreviews: Bool
 
     final class Coordinator {
         var shown: FilePreview?

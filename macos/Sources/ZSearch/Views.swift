@@ -28,7 +28,7 @@ struct ContentView: View {
                 SplitPanes {
                     ResultsList()
                 } right: {
-                    PreviewPane()
+                    PreviewPane(isPanel: isPanel)
                 }
             }
             Divider()
@@ -250,7 +250,10 @@ enum FileIcons {
 }
 
 struct PreviewPane: View {
+    var isPanel = false
     @Environment(SearchModel.self) private var model
+    @AppStorage(AppSettings.wrapTextPreviews) private var wrapTextPreviews = true
+    @AppStorage(AppSettings.wrapPanelTextPreviews) private var wrapPanelTextPreviews = true
     /// PDFs show their pages unless the reader picked the extracted text instead, here or in Settings.
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     /// Word documents show their formatting unless the reader picked the extracted text instead.
@@ -358,7 +361,7 @@ struct PreviewPane: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    PreviewTextView(preview: p)
+                    PreviewTextView(preview: p, wrapTextPreviews: isPanel ? wrapPanelTextPreviews : wrapTextPreviews)
                 }
             }
             .task(id: Showing(preview: p, pdfShowsText: pdfShowsText, documentShowsText: documentShowsText)) {
