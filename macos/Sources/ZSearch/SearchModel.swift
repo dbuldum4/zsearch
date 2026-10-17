@@ -306,7 +306,7 @@ final class SearchModel {
             guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
-            if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice { return }
+            if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice, current.error == r.error { return }
             response = r
             if let id = selection, r.hits.contains(where: { $0.id == id }) {
                 loadPreview()
@@ -419,11 +419,9 @@ final class SearchModel {
         previewEpoch += 1
         prefetchTask?.cancel()
         prefetchTask = nil
-        // The selection's preview was requested before the change: ask again.
-        if previewTask != nil {
-            previewKey = nil
-            loadPreview()
-        }
+        // The selection's preview, shown or still on its way, predates the change: ask again.
+        previewKey = nil
+        loadPreview()
     }
 
     func moveSelection(by delta: Int) {
