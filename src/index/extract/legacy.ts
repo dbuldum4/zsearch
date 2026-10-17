@@ -249,7 +249,7 @@ function cleanWordText(s: string): string {
 /* ------------------------------------------------------------------ .xls -- */
 
 /** Text of a BIFF8 workbook: sheet names, shared strings and numeric cells. */
-export function extractXls(buf: Uint8Array): string {
+export function extractXls(buf: Uint8Array, maxChars = 2_000_000): string {
   const cfb = new Cfb(buf)
   const wb = cfb.read("Workbook") ?? cfb.read("Book")
   if (!wb) throw new Error("not an Excel workbook (no Workbook stream)")
@@ -266,8 +266,11 @@ export function extractXls(buf: Uint8Array): string {
   const cells: string[][] = []
   let sheet = -1
   let lastRow = -1
+  // Cells can repeat one long shared string many times: stop expanding them once the text is long enough.
+  let total = 0
   const push = (row: number, value: string) => {
-    if (!value) return
+    if (!value || total >= maxChars) return
+    total += value.length + 1
     const list = cells[sheet]!
     if (lastRow >= 0 && row !== lastRow) list.push("\n")
     else if (list.length) list.push("\t")

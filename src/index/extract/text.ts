@@ -67,8 +67,9 @@ function decodeQuotedPrintable(s: string): Uint8Array {
       bytes.push(parseInt(src.slice(i + 1, i + 3), 16))
       i += 2
     } else {
+      // Bodies are read one char per byte (see `extractEmail`), so codes below 0x100 are bytes.
       const code = src.charCodeAt(i)
-      if (code < 0x80) bytes.push(code)
+      if (code < 0x100) bytes.push(code)
       else for (const b of new TextEncoder().encode(c)) bytes.push(b)
     }
   }
@@ -76,17 +77,18 @@ function decodeQuotedPrintable(s: string): Uint8Array {
 }
 
 function decodeCharset(bytes: Uint8Array, charset: string | undefined): string {
-  const cs = (charset || "utf-8").toLowerCase()
+  const cs = (charset ?? "").toLowerCase()
+  if (!cs || cs === "us-ascii") return decodeText(bytes)
   try {
-    return new TextDecoder((cs === "us-ascii" ? "utf-8" : cs) as never).decode(bytes)
+    return new TextDecoder(cs as never).decode(bytes)
   } catch {
     return decodeText(bytes)
   }
 }
 
-/** RFC 2047 encoded words in headers. */
+/** RFC 2047 encoded words in headers. `v` is one char per byte, like the rest of the message. */
 function decodeHeader(v: string): string {
-  return v
+  return decodeText(Buffer.from(v, "latin1"))
     .replace(/\?=\s+=\?/g, "?==?")
     .replace(/=\?([^?]+)\?([bBqQ])\?([^?]*)\?=/g, (_, cs: string, enc: string, data: string) => {
       const bytes = enc.toUpperCase() === "B" ? Uint8Array.from(Buffer.from(data, "base64")) : decodeQuotedPrintable(data.replace(/_/g, " "))
@@ -123,7 +125,10 @@ function partText(part: Part, depth = 0): string {
   if (mime.startsWith("multipart/") && depth < 8) {
     const boundary = param(ctype, "boundary")
     if (!boundary) return ""
-    const pieces = part.body.split(new RegExp(`\\r?\\n?--${boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:--)?\\s*\\r?\\n`))
+    const b = boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    // Whatever follows the closing boundary is an epilogue, not a part.
+    const close = part.body.search(new RegExp(`(?:^|\\r?\\n)--${b}--`))
+    const pieces = (close >= 0 ? part.body.slice(0, close) : part.body).split(new RegExp(`\\r?\\n?--${b}\\s*\\r?\\n`))
     const subs = pieces.slice(1).map((p) => splitPart(p))
     if (mime === "multipart/alternative") {
       const plain = subs.find((s) => (s.headers.get("content-type") ?? "text/plain").toLowerCase().startsWith("text/plain"))
@@ -141,13 +146,18 @@ function partText(part: Part, depth = 0): string {
   let bytes: Uint8Array
   if (enc === "base64") bytes = Uint8Array.from(Buffer.from(part.body.replace(/\s+/g, ""), "base64"))
   else if (enc === "quoted-printable") bytes = decodeQuotedPrintable(part.body)
-  else bytes = new TextEncoder().encode(part.body)
+  else bytes = Buffer.from(part.body, "latin1")
   const text = decodeCharset(bytes, param(ctype, "charset"))
   return mime === "text/html" ? htmlText(text) : text
 }
 
-/** Headers (subject, from, to, date) followed by the readable body. */
-export function extractEmail(src: string): string {
+/**
+ * Headers (subject, from, to, date) followed by the readable body. Pass the file's bytes: each
+ * part is decoded from its own bytes with its own charset. A string is taken as UTF-8.
+ */
+export function extractEmail(input: Uint8Array | string): string {
+  // One char per byte, so a part's bytes can be recovered exactly before decoding its charset.
+  const src = typeof input === "string" ? Buffer.from(input).toString("latin1") : Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString("latin1")
   // Apple Mail .emlx starts with a byte count line.
   const raw = /^\d+\s*\n/.test(src) ? src.replace(/^\d+\s*\n/, "") : src
   const part = splitPart(raw)

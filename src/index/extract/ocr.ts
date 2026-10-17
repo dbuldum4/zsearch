@@ -50,20 +50,30 @@ function blankPage(page: string): boolean {
 }
 
 /**
+ * `tidy` for a PDF's text, keeping the form feeds before trailing pages without text, which
+ * `tidy` would trim: `ocrBlankPages` needs them to see that those pages are there to read.
+ */
+export function tidyPages(text: string): string {
+  const feeds = /\s*$/.exec(text)![0].split("\f").length - 1
+  return tidy(text) + "\f".repeat(feeds)
+}
+
+/**
  * Fill in the pages of a PDF's text that have no text of their own (scanned pages) with what
- * OCR reads on them. `text` has a form feed between pages; pages that already have text keep it.
+ * OCR reads on them. `text` has a form feed between pages, trailing empty pages included (see
+ * `tidyPages`); pages that already have text keep it.
  */
 export async function ocrBlankPages(tool: string, path: string, text: string, timeoutMs: number, memo?: OcrMemo): Promise<string> {
   const pages = text.split("\f")
   // Pages at the end without text leave no form feed behind, so the helper looks at every page
   // without text of its own, and returns all pages (empty where it did not read one).
-  if (!pages.some(blankPage)) return text
+  if (!pages.some(blankPage)) return tidy(text)
   let read: string[]
   try {
     read = (await memoOcr(memo, tool, ["pdf", path, "--max-pages", String(OCR_MAX_PAGES)], Math.min(540_000, Math.max(timeoutMs, OCR_MAX_PAGES * 5000)), true)).split("\f")
   } catch {
     // The text the PDF has is still worth keeping.
-    return text
+    return tidy(text)
   }
   const n = Math.max(pages.length, read.length)
   const out: string[] = []

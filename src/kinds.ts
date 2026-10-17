@@ -81,8 +81,8 @@ export function extOf(name: string): string {
   return name.slice(dot + 1).toLowerCase()
 }
 
-/** Well-known extensionless file names. */
-const NAMED: Record<string, Kind> = {
+/** Well-known extensionless file names. No prototype, so names like `constructor` find nothing. */
+const NAMED: Record<string, Kind> = Object.assign(Object.create(null), {
   makefile: "code",
   gnumakefile: "code",
   dockerfile: "code",
@@ -104,7 +104,7 @@ const NAMED: Record<string, Kind> = {
   changelog: "text",
   notice: "text",
   todo: "text",
-}
+})
 
 export function kindOf(name: string, isDir = false): Kind {
   if (isDir) return name.endsWith(".app") ? "app" : "folder"
@@ -181,8 +181,8 @@ export const KIND_BADGE: Record<Kind, string> = {
   other: "FILE",
 }
 
-/** Aliases accepted by `type:` filters. */
-export const KIND_ALIASES: Record<string, Kind[]> = {
+/** Aliases accepted by `type:` filters. No prototype, so `type:constructor` is unknown. */
+export const KIND_ALIASES: Record<string, Kind[]> = Object.assign(Object.create(null), {
   dir: ["folder"],
   dirs: ["folder"],
   folder: ["folder"],
@@ -238,7 +238,7 @@ export const KIND_ALIASES: Record<string, Kind[]> = {
   app: ["app"],
   binary: ["app"],
   other: ["other"],
-}
+})
 
 /**
  * Files semantic search leaves to find and fuzzy: Lean proofs (and Lean's build files), whose

@@ -178,10 +178,10 @@ async function extractDocument(path: string, ext: string, opts: ExtractOptions, 
     case "doc":
     case "xls":
     case "ppt":
-      return legacy(buf, ext)
+      return legacy(buf, ext, opts.maxChars)
     case "eml":
     case "emlx":
-      return extractEmail(decodeText(buf))
+      return extractEmail(buf)
     case "ipynb":
       return extractNotebook(decodeText(buf))
     default:
@@ -195,11 +195,11 @@ function ooxml(buf: Uint8Array, fn: (b: Uint8Array) => string): string {
   throw new Error("not a valid Office file")
 }
 
-function legacy(buf: Uint8Array, ext: string): string {
+function legacy(buf: Uint8Array, ext: string, maxChars: number): string {
   if (isOle2(buf)) {
     try {
       if (ext === "doc") return extractDoc(buf)
-      if (ext === "xls") return extractXls(buf)
+      if (ext === "xls") return extractXls(buf, maxChars)
       return extractPpt(buf)
     } catch (err) {
       if (/encrypted|corrupt piece table|size budget|allocation table|bad (?:mini )?sector size/.test((err as Error).message)) throw err
