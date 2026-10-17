@@ -24,6 +24,7 @@ import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { helperVectorVersion, mainGeneration, semanticFingerprint } from "../semantic/indexer.ts"
+import { diagnose, type SearchDiagnosis } from "./diagnose.ts"
 
 type Source = "name" | "content"
 
@@ -59,6 +60,8 @@ export interface SearchResponse {
   partial: boolean
   notice?: string
   error?: string
+  /** Why nothing matched, and what would (see `diagnose`): only on responses without hits. */
+  diagnosis?: SearchDiagnosis
 }
 
 export interface PreviewLine {
@@ -98,6 +101,8 @@ interface SearchOptions {
   onlyIds?: Set<number>
   /** A part of a grouped query: `limit` alone bounds it, as the query's `limit:` is for the combined results. */
   branch?: boolean
+  /** Explain an empty result (see `diagnose`). Off for the searches that explaining runs. */
+  explain?: boolean
 }
 
 /** One part of a grouped query: its hits, and whether they are all of its matches. */
@@ -270,6 +275,15 @@ export class SearchEngine {
   /* ------------------------------------------------------------ public -- */
 
   async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
+    const res = await this.searchOnce(rawQuery, mode, opts)
+    if (!res.hits.length && !res.error && !opts.branch && opts.explain !== false) {
+      const diagnosis = await diagnose(this, res, opts.cancelled)
+      if (diagnosis) res.diagnosis = diagnosis
+    }
+    return res
+  }
+
+  private async searchOnce(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
     const q = parseQuery(rawQuery, Date.now(), mode)
@@ -302,11 +316,24 @@ export class SearchEngine {
     } catch (err) {
       res.error = (err as Error).message
     }
-    if (!res.error && !res.hits.length && !q.regex && q.words.length && effective !== "semantic") {
-      const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
-      if (alternatives.some((w, i) => w !== q.words[i])) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
+    if (!res.error && !res.hits.length && effective !== "semantic") {
+      const alternatives = this.similarWords(q)
+      if (alternatives) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
     }
     return this.done(res, t0)
+  }
+
+  /** The query's words with similar indexed words the user may read in place of unknown ones, or null if none. */
+  similarWords(q: ParsedQuery): string[] | null {
+    if (q.regex || !q.words.length) return null
+    const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
+    return alternatives.some((w, i) => w !== q.words[i]) ? alternatives : null
+  }
+
+  /** Semantic search is on and set up, but its index is not complete for the current files yet. */
+  semanticWaiting(): boolean {
+    const snapshot = this.semanticIndex()
+    return "waiting" in snapshot && snapshot.waiting === true
   }
 
   private done(res: SearchResponse, t0: number): SearchResponse {
@@ -358,7 +385,7 @@ export class SearchEngine {
   }
 
   private async searchExpression(expr: QueryExpression, query: string, mode: Mode, opts: SearchOptions, started: number): Promise<SearchResponse> {
-    if (expr.op === "leaf") { const res = await this.search(expr.text, mode, opts); res.query = query; return res }
+    if (expr.op === "leaf") { const res = await this.search(expr.text, mode, { ...opts, explain: false }); res.query = query; return res }
     const deadline = performance.now() + (opts.budgetMs ?? 2500)
     const revision = this.revision, config = this.config
     const result = await this.evaluateGroup(expr, mode, opts, deadline)

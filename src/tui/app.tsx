@@ -4,6 +4,7 @@ import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMo
 import { type Config, manualIndexing, tildify } from "../config.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
+import { explainDiagnosis } from "../search/diagnose.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
 import { MODES, type Mode } from "../search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "../util/text.ts"
@@ -499,6 +500,9 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
+    // Indexing has a line of its own below, whichever process runs it.
+    for (const line of explainDiagnosis(r.diagnosis && { ...r.diagnosis, indexing: false })) lines.push([{ text: `  ${line}`, fg: t().text }])
+    if (r.diagnosis?.indexing && !indexing()) lines.push([{ text: "  Another zsearch process is indexing — more results may appear shortly.", fg: t().subtle }])
     lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : mode() === "fuzzy" ? "  Tip: press Tab to semantic search." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines

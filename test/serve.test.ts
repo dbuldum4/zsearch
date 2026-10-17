@@ -130,6 +130,12 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
     [999_999, 1],
   ])
 
+  // An empty result says what would match.
+  s.send({ id: 43, type: "search", query: "pancakes type:pdf", mode: "find" })
+  const empty = (await s.reply(43)).response as { hits: unknown[]; diagnosis?: { filters?: { filter: string; query: string }[] } }
+  expect(empty.hits).toEqual([])
+  expect(empty.diagnosis?.filters?.map((f) => [f.filter, f.query])).toEqual([["type", "pancakes"]])
+
   // Rebuilding empties the index in place and indexes again.
   s.send({ id: 41, type: "index", rebuild: true })
   expect(await s.reply(41)).toEqual({ id: 41, type: "ok" })

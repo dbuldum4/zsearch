@@ -41,6 +41,8 @@ public struct SearchResponse: Decodable, Hashable, Sendable {
     public var partial: Bool
     public var notice: String?
     public var error: String?
+    /// Why nothing matched, on responses without hits. Nil from older engines.
+    public var diagnosis: SearchDiagnosis?
 }
 
 public struct PreviewLine: Decodable, Hashable, Sendable {
