@@ -170,6 +170,7 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Ctrl-Shift-O</kbd> | Cycle name, size, date and path sorting |
 | <kbd>Ctrl-Shift-T</kbd> | Fold the preview around matches |
 | <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> / <kbd>Alt-3</kbd> | Switch between find, fuzzy and semantic |
+| <kbd>Alt-↑</kbd> / <kbd>Alt-↓</kbd> | Step back / forward through searches you opened results from |
 | <kbd>Ctrl-T</kbd> | Show or hide the preview |
 | <kbd>Shift-↑</kbd> <kbd>Shift-↓</kbd>, <kbd>Ctrl-D</kbd> <kbd>Ctrl-U</kbd>, wheel over the preview | Scroll the preview |
 | <kbd>Ctrl-F</kbd> / <kbd>Ctrl-B</kbd> | Jump to the next or previous match in the preview |
@@ -180,6 +181,21 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Esc</kbd> | Clear the query; press again to quit |
 
 Files you open through zsearch rank higher next time (frecency), and recently modified files get a small boost.
+
+**Saved searches and history.** A search you open a result from (<kbd>Enter</kbd>, <kbd>Ctrl-E</kbd> or <kbd>Ctrl-O</kbd>, and the same in the Mac app) is kept in the search history, newest first, once per query, up to 50; typing alone keeps nothing. <kbd>Alt-↑</kbd> brings back the query and mode of earlier ones. To keep a search under a name, use the bookmark menu next to the Mac app's search field (⌘S), or the command line:
+
+```sh
+zsearch saved add "Recent invoices" invoice type:pdf mtime:<30d
+zsearch saved add "Large downloads" in:~/Downloads size:>100mb sort:-size
+zsearch saved add "Project notes" -m fuzzy notes
+zsearch saved                        # list them
+zsearch saved run "recent invoices"  # print its matches, with `search`'s options (-l, --json, ...)
+zsearch saved rename "Project notes" Notes
+zsearch saved rm notes
+zsearch history                      # recent searches; `zsearch history clear` forgets them
+```
+
+Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case, and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them.
 
 ## Indexing
 
@@ -365,6 +381,8 @@ zsearch estimate [folders...]   how long a first index takes, roughly (--docs, -
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256
 zsearch exclude <path>          exclude an indexed file or folder and update
+zsearch saved [list|add|rename|rm|run]  saved searches: a query with its filters, sorting and mode
+zsearch history [clear]         searches you opened results from
 zsearch semantic [status|install|remove]  semantic search: download the model (--no-images), or delete it
 zsearch doctor                  check SQLite/FTS5, pdftotext, OCR, the embedding helper and the index
 zsearch reset                   delete the index

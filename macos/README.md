@@ -22,6 +22,7 @@ zsearch.app/Contents/
 - **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
 - **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
 - **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It opens a floating search panel on the screen with the pointer, which goes away when you open a file, press Esc or click elsewhere; "The shortcut opens" in Settings switches it to the main window. It uses `RegisterEventHotKey`, which needs no accessibility permission.
+- **Saved searches and history.** The bookmark menu next to the search field saves the search (⌘S) under a name, with its filters, sorting and mode, and runs saved and recent searches; **Manage Saved Searches…** renames and deletes them. A search joins Recent Searches when you open, reveal or edit a result from it. The engine keeps both, shared with the terminal app and `zsearch saved`.
 - **Sorting and exclusions.** Click name, size, date or path to sort; click again for descending order. The result context menu excludes a file/folder, copies all paths, or folds the preview around matches.
 - **Live refresh.** Native file events trigger a debounced refresh while the engine runs. ⌘R updates, ⌘. cancels and ⇧⌘I rebuilds. The engine retries one unexpected exit after a short delay.
 - **Dock menu** to update or stop indexing, and **open at login**.
@@ -105,5 +106,8 @@ Each line is one JSON object. Requests may carry a numeric `id`, and the reply c
 | `{"id":4,"type":"config"}` / `{"type":"setConfig","config":{"roots":["~"]}}` | `config` (the fields sent are changed, the rest kept; saved) |
 | `{"id":5,"type":"index"}` (`"rebuild":true` to start from empty) / `{"type":"cancelIndex"}` | `ok`, then `indexProgress` events and one `indexDone` |
 | `{"type":"opened","path":"/…"}` | `ok` (records the open for ranking) |
+| `{"id":7,"type":"searches"}` | `searches`: `saved` (`name`, `query`, `mode`) by name, and `recent` (`query`, `mode`, `at` in ms) newest first |
+| `{"type":"saveSearch","name":"Invoices","query":"invoice type:pdf","mode":"find"}` / `{"type":"renameSearch","name":"Invoices","to":"Bills"}` / `{"type":"deleteSearch","name":"Bills"}` | `searches`, or `error`. Names match without regard to case: saving replaces a search of the same name, renaming onto another one fails |
+| `{"type":"rememberSearch","query":"budget","mode":"find"}` / `{"type":"clearRecent"}` | `searches` (a search a result was opened from; the history keeps 50, once per query) |
 
 Events without an `id`: `ready` (first line: version, `firstRun`, config), `indexProgress`, `indexDone`, `refreshed`, and `error` for unreadable input. Match ranges are `[start, end)` offsets in UTF-16 code units (JavaScript string indices). `highlightRuns` in ZSearchKit converts them. The engine exits when stdin closes.

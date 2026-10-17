@@ -10,6 +10,7 @@ import { copyToClipboard, editorCommand, isTerminalEditor, openWithDefault, reve
 import { SearchClient, type StatsReply } from "../search/client.ts"
 import type { Preview, SearchResponse } from "../search/engine.ts"
 import type { Mode } from "../search/query.ts"
+import { loadSearches, type RecentSearch, rememberSearch } from "../searches.ts"
 
 export interface SearchService {
   search(query: string, mode: Mode, limit?: number): Promise<SearchResponse | null>
@@ -49,6 +50,10 @@ export interface Services {
   edit(path: string, line: number | undefined, suspend: () => Promise<void>, resume: () => Promise<void>): Promise<string | null>
   /** Copy to the clipboard. Resolves with where it went, or null if nowhere. */
   copy(text: string, renderer: CliRenderer): Promise<"host" | "terminal" | null>
+  /** Keep a search a result was opened from, for Alt-↑/↓ (see src/searches.ts). */
+  rememberSearch?(query: string, mode: Mode): void
+  /** Searches kept by `rememberSearch`, here or in another frontend: newest first. */
+  recentSearches?(): RecentSearch[]
   /** Release resources held by the services. */
   dispose?(): Promise<void>
 }
@@ -106,6 +111,11 @@ export function realServices(config: Config): Services {
     estimate: estimateInBackground,
     open: openWithDefault,
     reveal: revealInFileManager,
+    rememberSearch: (query, mode) => {
+      // History is a convenience: a file it cannot write must not stop the file opening.
+      try { rememberSearch(query, mode) } catch { /* not kept */ }
+    },
+    recentSearches: () => loadSearches().recent,
     async copy(text, renderer) {
       try {
         // OpenTUI's clipboard: native pasteboard/Wayland/X11, and OSC 52 for remote terminals.

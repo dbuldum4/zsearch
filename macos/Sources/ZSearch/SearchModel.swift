@@ -231,6 +231,7 @@ final class SearchModel {
             Task {
                 await refreshStats()
                 await refreshSemantic()
+                await refreshSearches()
                 // Semantic search's Granite model downloads when the app starts, unless it was turned off.
                 // The semantic-only app always downloads it: it has no other way to search.
                 if let s = semantic, !s.declined || Edition.semanticOnly, !s.model.ready { installSemantic() }
@@ -452,6 +453,83 @@ final class SearchModel {
         focusRequest += 1
     }
 
+    // MARK: - Saved searches and history
+
+    /// Saved searches and the searches results were opened from, as the engine keeps them.
+    private(set) var searches = Searches()
+    /// Asks the main window for a name to save the current search under.
+    var savingSearch = false
+    /// Shows the saved searches, to rename or delete them.
+    var managingSearches = false
+
+    func refreshSearches() async {
+        guard let engine else { return }
+        if case let .searches(s)? = try? await engine.request(.searches) { searches = s }
+    }
+
+    /// `quietly`: a failure is not worth a notice.
+    private func changeSearches(_ request: Request, done: String? = nil, quietly: Bool = false) {
+        guard let engine else { return }
+        Task {
+            do {
+                switch try await engine.request(request) {
+                case let .searches(s):
+                    searches = s
+                    if let done { show(done) }
+                case let .error(text):
+                    if !quietly { show(text) }
+                default:
+                    break
+                }
+            } catch {
+                if !quietly { show(error.localizedDescription) }
+            }
+        }
+    }
+
+    func promptSaveSearch() {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return show("Type a search to save it") }
+        // The prompt belongs to the main window.
+        if QuickPanel.shared.isKey { showMainWindow() }
+        savingSearch = true
+    }
+
+    func manageSearches() {
+        if QuickPanel.shared.isKey { showMainWindow() }
+        managingSearches = true
+    }
+
+    func saveSearch(named name: String) {
+        let name = SavedSearches.normalized(name)
+        changeSearches(.saveSearch(name: name, query: query, mode: mode), done: "Saved “\(name)”")
+    }
+
+    func renameSearch(_ saved: SavedSearch, to name: String) {
+        changeSearches(.renameSearch(name: saved.name, to: SavedSearches.normalized(name)))
+    }
+
+    func deleteSearch(_ saved: SavedSearch) {
+        changeSearches(.deleteSearch(name: saved.name))
+    }
+
+    func clearRecentSearches() {
+        changeSearches(.clearRecent)
+    }
+
+    /// Search again as before: the query, with its filters and sorting, in its mode.
+    func restore(query: String, mode: Mode) {
+        // The mode first: the query's search waits as long as the mode needs.
+        if !Edition.semanticOnly { self.mode = mode }
+        self.query = query
+        requestSearchFocus()
+    }
+
+    /// A result was opened: keep the search it came from in the history.
+    private func rememberSearch() {
+        guard SavedSearches.shouldRemember(query: query, mode: mode, recent: searches.recent) else { return }
+        changeSearches(.rememberSearch(query: query, mode: mode), quietly: true)
+    }
+
     // MARK: - Indexing and settings
 
     var indexIsStale: Bool {
@@ -649,6 +727,7 @@ final class SearchModel {
         QuickPanel.shared.fileOpened()
         NSWorkspace.shared.open(URL(fileURLWithPath: hit.path))
         if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
+        rememberSearch()
     }
 
     func openSelected() {
@@ -658,6 +737,7 @@ final class SearchModel {
     func reveal(_ hit: SearchHit) {
         QuickPanel.shared.fileOpened()
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.path)])
+        rememberSearch()
     }
 
     func revealSelected() {
@@ -733,6 +813,7 @@ final class SearchModel {
             try process.run()
             QuickPanel.shared.fileOpened()
             if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
+            rememberSearch()
         } catch {
             show("Could not open \(app.name): \(error.localizedDescription)")
         }

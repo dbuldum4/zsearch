@@ -17,6 +17,7 @@ import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
+import { clearRecent, deleteSearch, loadSearches, rememberSearch, renameSearch, saveSearch, type Searches } from "./searches.ts"
 import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/manage.ts"
 import { downloadModels } from "./semantic/model.ts"
 
@@ -36,6 +37,12 @@ type ServeIn =
   | { id?: number; type: "semanticInstall" }
   | { id?: number; type: "semanticCancelInstall" }
   | { id?: number; type: "semanticRemove" }
+  | { id?: number; type: "searches" }
+  | { id?: number; type: "saveSearch"; name: string; query: string; mode?: Mode }
+  | { id?: number; type: "renameSearch"; name: string; to: string }
+  | { id?: number; type: "deleteSearch"; name: string }
+  | { id?: number; type: "rememberSearch"; query: string; mode?: Mode }
+  | { id?: number; type: "clearRecent" }
 
 type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
@@ -53,6 +60,7 @@ type ServeOut =
   | { type: "refreshed"; files: number; changed: boolean }
   | { id?: number; type: "semantic"; status: SemanticStatus }
   | { type: "semanticDownload"; file: string; received: number; total: number }
+  | ({ id?: number; type: "searches" } & Searches)
 
 /** Progress events are throttled to this interval; the last one before `indexDone` always goes out. */
 const PROGRESS_MS = 100
@@ -252,6 +260,18 @@ export async function serve(version: string): Promise<number> {
         removeSemantic(p.db)
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       }
+      case "searches":
+        return send({ id, type: "searches", ...loadSearches() })
+      case "saveSearch":
+        return send({ id, type: "searches", ...saveSearch(String(msg.name ?? ""), String(msg.query ?? ""), mode(msg.mode)) })
+      case "renameSearch":
+        return send({ id, type: "searches", ...renameSearch(String(msg.name ?? ""), String(msg.to ?? "")) })
+      case "deleteSearch":
+        return send({ id, type: "searches", ...deleteSearch(String(msg.name ?? "")) })
+      case "rememberSearch":
+        return send({ id, type: "searches", ...rememberSearch(String(msg.query ?? ""), mode(msg.mode)) })
+      case "clearRecent":
+        return send({ id, type: "searches", ...clearRecent() })
       default:
         return send({ id, type: "error", error: `unknown request type "${(msg as { type?: unknown }).type}"` })
     }

@@ -4,6 +4,7 @@ import { indexStats, openDb } from "../../src/index/db.ts"
 import { Indexer } from "../../src/index/indexer.ts"
 import type { StatsReply } from "../../src/search/client.ts"
 import { SearchEngine } from "../../src/search/engine.ts"
+import type { RecentSearch } from "../../src/searches.ts"
 import type { IndexHandle, SearchService, Services } from "../../src/tui/services.ts"
 
 /** Services backed by in-process engines, recording side effects for assertions. */
@@ -11,7 +12,7 @@ export function testServices(config: Config, opts: { firstRun?: boolean; dbPath?
   const dbPath = opts.dbPath ?? paths().db
   const db: Database = openDb(dbPath)
   let engine = new SearchEngine(db, config)
-  const calls = { open: [] as string[], reveal: [] as string[], edit: [] as { path: string; line?: number }[], copy: [] as string[], saved: [] as Config[], indexRuns: 0 }
+  const calls = { open: [] as string[], reveal: [] as string[], edit: [] as { path: string; line?: number }[], copy: [] as string[], saved: [] as Config[], indexRuns: 0, recent: [] as RecentSearch[] }
   const search: SearchService = {
     async search(query, mode, limit) {
       return engine.search(query, mode, { limit })
@@ -64,6 +65,10 @@ export function testServices(config: Config, opts: { firstRun?: boolean; dbPath?
       calls.copy.push(text)
       return "host"
     },
+    rememberSearch(query, mode) {
+      calls.recent = [{ query, mode, at: Date.now() }, ...calls.recent.filter((r) => r.query !== query)]
+    },
+    recentSearches: () => calls.recent,
   }
   return {
     services,
