@@ -7,15 +7,23 @@ Semantic search uses one pinned model: IBM's `granite-embedding-small-english-r2
 - Extract text once in the main index. A worker cuts stored text into passages while Granite embeds the previous batch. The helper sorts and packs passages into model calls.
 - Hash each exact document prompt and embed it once. Copies, moves, rebuilds and unchanged passages reuse their stored vectors. The existing Granite database path and vector fingerprint are preserved.
 - Commit progress as files finish. Long files get their first 40 passages before the rest. Cancellation and helper failures leave committed vectors available to the next indexing run.
-- Publish the completion marker only after every file and passage has been processed. Search checks that marker against the current main-index sequence and generation before loading vectors. Partial or stale snapshots use current word matches without starting a query helper. A completed replacement becomes searchable immediately, even within the normal vector reload interval.
+- Search uses the vectors of each file whose text is as it was embedded, and ranks the rest by their words (see [While Granite catches up](#while-granite-catches-up)). Snapshots made by another model or helper, or for an earlier build of the main index, are not used at all. Publish the completion marker only after every file and passage has been processed: a completed pass becomes searchable immediately, even within the normal vector reload interval; a pass still running is reloaded at most every 15 seconds.
 - Normalize cosine similarities per query. Each file takes its best passage, discounted by `0.7 * log(passages)` and `0.5 * log(shared copies)`. A squared filename/folder coverage boost adds at most 2, and body-word coverage adds at most 3, rarer words counting for more (by IDF, as without vectors). Files still need half of the query's words, counted plainly, to be candidates by words. Code and number lookups retain their stronger exact-word preference and count every word the same.
 - Enforce file filters and content authorization. Directories and Lean proofs stay out of semantic results. Saved-name lookups show document headings; natural-language results show the matching passage.
 
-Digit-only passages deliberately have no vectors and still count as processed. A referenced vector that is missing makes a snapshot unusable.
+Digit-only passages deliberately have no vectors and still count as processed. A referenced vector that is missing makes that file pending.
+
+## While Granite catches up
+
+The semantic index records, for each file, what its passages were made from: size, modification time, text length, title and, for recordings, the transcription language. At search time a file's vectors count only if the file is still one the semantic pass would embed under the current settings (indexed text, content allowed for its folder, not a key or password file, not excluded, code only with `semantic.code`, recordings only with transcription on) and that record matches it and every passage is stored. Other files' passages neither match nor set the scale of meaning scores, so a deleted, excluded, names-only, changed or no longer embedded file is never shown by an old vector, before or after the next pass.
+
+Files that should have vectors and don't (new, changed since, or partly embedded) are pending. A pending file that holds enough of the query's words to be a word candidate gets a stand-in meaning score of `2.0 × coverage` (the meaning gate times the plain share of the query's words it holds), then the usual word, name and kind evidence. Holding every word, it ranks above files with the same words that stand out less than the gate by meaning, and below files that stand out more; holding half, it gets half that. With nothing pending, results are exactly those of a completed pass.
+
+Responses carry `semantic: { files, current, pending, matched }` (`matched`: pending files among the results), and while files are pending the strategy line reads `semantic + words · 9,812 of 9,830 files current; 18 pending matched by words`. The Mac app, terminal app and CLI show that line as they show any strategy.
 
 ## Words only
 
-Until Granite completes, results come from word matches. They are ordered by body-word coverage (rarer words counting for more, by IDF), the filename/folder boost, and up to 0.5 from keyword search's BM25 order of the query's content words. A query with more than six content words needs only three of them to match.
+Without usable vectors (semantic search off, no model or helper, vectors of another model or helper, a rebuilt main index, or no file current yet), results come from word matches alone, without starting a query helper. They are ordered by body-word coverage (rarer words counting for more, by IDF), the filename/folder boost, and up to 0.5 from keyword search's BM25 order of the query's content words. A query with more than six content words needs only three of them to match.
 
 On BEIR SciFact (5,183 abstracts, 300 dev queries; `bun scripts/semantic-bench.ts --dataset=DIR --no-granite`), words-only nDCG@10 rose from 0.465 to 0.612 and recall@100 from 0.590 to 0.794. On the development sets below, words-only nDCG@10 went from 0.723 to 0.731 (tuning), 0.529 to 0.570 (validation) and stayed 0.850 (audit). Granite-stage ranking is unchanged.
 

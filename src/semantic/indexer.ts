@@ -141,7 +141,7 @@ export function textSig(size: number, mtime: number, len: number, title: string)
   return `t:${size}:${mtime}:${len}:${title}`
 }
 
-interface Candidate {
+export interface Candidate {
   id: number
   path: string
   name: string
@@ -360,25 +360,8 @@ export class SemanticIndexer {
     this.opts.onCommit?.()
   }
 
-  /** The files that should have vectors, with what their vectors depend on. */
   private candidates(): Candidate[] {
-    const kinds = new Set(TEXT_KINDS)
-    if (this.config.semantic.code) for (const k of CODE_KINDS) kinds.add(k)
-    // One checker for them all: it resolves the roots and exclusions once, not once a file.
-    const policy = policyFor(crawlOptionsFor(this.config))
-    const out: Candidate[] = []
-    const rows = this.main
-      .query("SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0")
-      .all(ContentState.Indexed) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
-    for (const r of rows) {
-      if (!kinds.has(r.kind) || semanticExcluded(r.path)) continue
-      const p = policy(r.path)
-      if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) {
-        const speech = r.kind === "audio" || r.kind === "video" ? `:speech:${this.config.content.transcriptionLocale}` : ""
-        out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)) + speech, mtime: r.mtime, len: r.len })
-      }
-    }
-    return out
+    return semanticCandidates(this.main, this.config)
   }
 
   /* ----------------------------------------------------------- text -- */
@@ -516,6 +499,29 @@ export class SemanticIndexer {
     p.file.from = p.to
     p.file.total = p.total
   }
+}
+
+/**
+ * The files that should have vectors, with what their vectors depend on (`sig`). Search uses a
+ * file's stored vectors only while it is one of these with the same `sig`. `policy`: a checker
+ * to share with other checks of the same settings.
+ */
+export function semanticCandidates(main: Database, config: Config, policy = policyFor(crawlOptionsFor(config))): Candidate[] {
+  const kinds = [...TEXT_KINDS, ...(config.semantic.code ? CODE_KINDS : [])]
+  const out: Candidate[] = []
+  // Searches ask for these after every index change: most indexed files can be code, left out here rather than read.
+  const rows = main
+    .query(`SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0 AND kind IN (${kinds.map(() => "?").join(", ")})`)
+    .all(ContentState.Indexed, ...kinds) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
+  for (const r of rows) {
+    if (semanticExcluded(r.path)) continue
+    const p = policy(r.path)
+    if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) {
+      const speech = r.kind === "audio" || r.kind === "video" ? `:speech:${config.content.transcriptionLocale}` : ""
+      out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)) + speech, mtime: r.mtime, len: r.len })
+    }
+  }
+  return out
 }
 
 /** Run Granite once; unavailable configurations skip without creating an index. */

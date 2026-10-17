@@ -23,7 +23,7 @@ import { Embedder, embedToolPath } from "../semantic/helper.ts"
 import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
-import { helperVectorVersion, mainGeneration, semanticFingerprint } from "../semantic/indexer.ts"
+import { helperVectorVersion, mainGeneration, semanticCandidates, semanticFingerprint } from "../semantic/indexer.ts"
 
 type Source = "name" | "content"
 
@@ -59,6 +59,20 @@ export interface SearchResponse {
   partial: boolean
   notice?: string
   error?: string
+  /** Semantic searches that used Granite: how much of the collection its vectors covered. */
+  semantic?: SemanticCoverage
+}
+
+/**
+ * Files Granite should cover, and how many it does as they are now. Pending files (new, changed
+ * since they were embedded, or partly embedded) are ranked by their words until a pass catches up.
+ */
+export interface SemanticCoverage {
+  files: number
+  current: number
+  pending: number
+  /** Pending files among this search's results. */
+  matched: number
 }
 
 export interface PreviewLine {
@@ -207,6 +221,17 @@ class TextCache {
 type TermGroup = { expr: string; terms: string[]; prefix: boolean; check?: RegExp }
 
 type Ranked = { id: number; positions?: number[]; lines?: LineMatch[]; count?: number; raw?: number }
+
+/** See `SearchEngine.usableRows`. */
+type UsableRows = {
+  rows: Uint8Array
+  /** Rows set in `rows`. */
+  count: number
+  /** Files that should have vectors, those whose vectors are current, and the others. */
+  files: number
+  current: number
+  pending: Set<number>
+}
 
 export class SearchEngine {
   readonly catalog = new Catalog()
@@ -522,10 +547,11 @@ export class SearchEngine {
   }
 
   /**
-   * The Granite snapshot semantic search may use now: complete for the files as they are, and
-   * made by the model and helper that embed queries. Otherwise why not (`waiting`: for a pass).
+   * The Granite snapshot semantic search may use now: made by the model and helper that embed
+   * queries, for this build of the main index, with vectors for some of the files as they are
+   * (`usableRows`). Otherwise why not (`waiting`: for a pass).
    */
-  private semanticIndex(): { index: VectorIndex } | { notice: string; waiting?: boolean } {
+  private semanticIndex(): { index: VectorIndex; usable: UsableRows } | { notice: string; waiting?: boolean } {
     if (!this.config.semantic.enabled) return { notice: "Semantic search is off: turn it on with `zsearch semantic install` (or in the app's settings). Showing word matches" }
     if (!this.config.content.enabled) return { notice: "Semantic search needs file contents, which are off" }
     const tool = embedToolPath()
@@ -538,30 +564,43 @@ export class SearchEngine {
     const sequence = getMeta(this.db, "change_seq") ?? "0"
     const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:")))
     const index = vectors.get(mainGeneration(this.db), sequence, fingerprint)
-    if (!index?.size || !index.isCompleteFor(sequence)) return { notice: "Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches", waiting: true }
-    return { index }
+    const usable = index?.size ? this.usableRows(index) : null
+    if (!index || !usable?.count) return { notice: "Granite is not ready for the current files: semantic indexing finishes with the next index update. Showing word matches", waiting: true }
+    return { index, usable }
   }
 
-  /** Which passages of a snapshot the user may read by content (1), for the settings and index as they are. */
-  private allowedRows: { index: VectorIndex; config: Config; revision: number; rows: Uint8Array } | null = null
+  private usable: (UsableRows & { index: VectorIndex; config: Config; revision: number; stamp: string }) | null = null
 
-  private authorizedRows(index: VectorIndex): Uint8Array {
-    const cached = this.allowedRows
-    if (cached?.index === index && cached.config === this.config && cached.revision === this.revision) return cached.rows
+  /**
+   * Which passages of a snapshot may answer now (1): those of files the user may read by content
+   * whose vectors were made from their text as it is (`semanticCandidates`), for the settings
+   * and index as they are. The vectors of a file deleted, excluded, made names-only, changed, or
+   * no longer embedded under the settings never answer, whether or not a pass has caught up.
+   */
+  private usableRows(index: VectorIndex): UsableRows {
+    // `revision` follows changes made by other connections only: an index run on this one counts too.
+    const stamp = `${getMeta(this.db, "change_seq") ?? 0}:${(this.db.query("SELECT COALESCE(MAX(n), 0) AS n FROM removed").get() as { n: number }).n}`
+    const cached = this.usable
+    if (cached?.index === index && cached.config === this.config && cached.revision === this.revision && cached.stamp === stamp) return cached
     const check = policyFor(crawlOptionsFor(this.config))
+    const current = new Set<number>()
+    const pending = new Set<number>()
+    for (const c of semanticCandidates(this.db, this.config, check)) (index.madeFrom(c.id) === c.sig ? current : pending).add(c.id)
     const byFile = new Map<number, number>()
     const rows = new Uint8Array(index.size)
+    let count = 0
     for (let row = 0; row < rows.length; row++) {
       const file = Math.abs(index.file[row]!)
       let ok = byFile.get(file)
       if (ok === undefined) {
         const i = this.catalog.indexOf(file)
-        byFile.set(file, (ok = i !== undefined && this.contentAuthorized(i, check) ? 1 : 0))
+        byFile.set(file, (ok = current.has(file) && i !== undefined && this.contentAuthorized(i, check) ? 1 : 0))
       }
       rows[row] = ok
+      count += ok
     }
-    this.allowedRows = { index, config: this.config, revision: this.revision, rows }
-    return rows
+    this.usable = { index, config: this.config, revision: this.revision, stamp, rows, count, files: current.size + pending.size, current: current.size, pending }
+    return this.usable
   }
 
   /** How semantic results are put together (benchmarks try others). */
@@ -573,13 +612,14 @@ export class SearchEngine {
     this.queryEmbedder = null
     this.vectors?.close()
     this.vectors = null
-    this.allowedRows = null
+    this.usable = null
   }
 
   /**
    * Semantic search with finite word, filename and model evidence: files whose best passage
-   * stands out for the query, and files holding at least half of its words. Without the model, or
-   * before files have vectors, only the words count, and a notice says why.
+   * stands out for the query, and files holding at least half of its words. Files waiting for
+   * vectors are ranked by their words alongside the others (see `rank`). Without the model, or
+   * before any file has current vectors, only the words count, and a notice says why.
    */
   private async runSemantic(q: ParsedQuery, limit: number, res: SearchResponse, opts: SearchOptions) {
     const notices: string[] = []
@@ -591,8 +631,9 @@ export class SearchEngine {
       return i !== undefined && cat.passes(i, q.filters) && !cat.isDir[i] && !semanticExcluded(cat.paths[i]!) ? i : undefined
     }
 
-    // Query only a complete, current Granite snapshot. Words remain available during indexing.
+    // Query Granite's vectors of files as they are; words stand in for the rest.
     let best = new Map<number, { z: number; row: number; index: VectorIndex }>()
+    let usableNow: UsableRows | null = null
     // The helper embeds the query in its own process while the words below are looked up.
     let embedding: Promise<Float32Array> | null = null
     const snapshot = this.semanticIndex()
@@ -693,8 +734,9 @@ export class SearchEngine {
         const now = this.semanticIndex()
         if ("index" in now) {
           const index = now.index
-          // Passages the user may not read by content neither match nor set the scale of the others' scores.
-          const allowed = this.authorizedRows(index)
+          usableNow = now.usable
+          // Passages the user may not read by content, or of files changed since, neither match nor set the scale of the others' scores.
+          const allowed = now.usable.rows
           best = bestByFile(index, meaning(index.score(vector), index.modality, index.setsScale.map((s, row) => s & allowed[row]!)), (file) => usable(file) !== undefined, this.ranking, allowed)
         } else notices.push(now.notice)
       }
@@ -760,6 +802,7 @@ export class SearchEngine {
       wordWeight: WORD_WEIGHT,
       hinted: kindHints(text),
       kindOf: (file) => { const i = cat.indexOf(file); return i === undefined ? undefined : cat.kinds[i] },
+      pending: best.size ? usableNow?.pending : undefined,
     })
     // Code's word evidence counts half as much as prose. Compute its stage weight once.
     const codeCoverage = isLookup(terms) ? 1 : best.size ? (this.ranking.coverage ?? 1) : (this.ranking.keywordCoverage ?? 1)
@@ -773,6 +816,12 @@ export class SearchEngine {
     else ranked.sort((a, b) => b.score - a.score || a.file - b.file)
     res.total = ranked.length
     res.strategy = best.size ? "semantic + words" : "words"
+    if (usableNow) {
+      const { files, current, pending } = usableNow
+      const matched = ranked.reduce((n, r) => n + (pending.has(r.file) ? 1 : 0), 0)
+      res.semantic = { files, current, pending: pending.size, matched }
+      if (best.size && pending.size) res.strategy += ` · ${current.toLocaleString("en-US")} of ${files.toLocaleString("en-US")} files current; ${pending.size.toLocaleString("en-US")} pending matched by words`
+    }
     if (notices.length) res.notice = [res.notice, ...notices].filter(Boolean).join("; ")
     const pattern = termsPattern(q.words, q.phrases, q.typing)
     res.hits = ranked.slice(0, limit).map((r, n) => {

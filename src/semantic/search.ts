@@ -1,7 +1,8 @@
 /**
- * Semantic retrieval over a complete, current Granite index. Each file takes its best
- * normalized passage score, discounted for length and shared boilerplate. Finite name
- * and word evidence helps find saved files without hiding better semantic answers.
+ * Semantic retrieval over Granite's vectors of files whose text is as it was embedded. Each file
+ * takes its best normalized passage score, discounted for length and shared boilerplate. Finite
+ * name and word evidence helps find saved files without hiding better semantic answers; files
+ * still waiting for vectors are ranked by their words.
  */
 import type { Database } from "bun:sqlite"
 import { statSync } from "node:fs"
@@ -11,7 +12,7 @@ import { scoreAll } from "./blas.ts"
 import { queryPrompt } from "./chunk.ts"
 import type { TextEmbedder } from "./helper.ts"
 import { SCALE_PASSAGES } from "./indexer.ts"
-import { getMeta, openSemanticDb, vectorValues } from "./store.ts"
+import { getMeta, openSemanticDb, readableSchema, vectorValues } from "./store.ts"
 
 /** A file's best passage must stand out by this many deviations to count as a meaning match. */
 export const Z_GATE = 2.0
@@ -180,8 +181,13 @@ export function wordShares(R: Ranking, hasMeaning: boolean, lookup: boolean, cov
  * without letting incidental body words overwhelm semantic answers. Keyword-only searches
  * use separate weights; code and number lookups retain their exact-word preference.
  * Alternative benchmark pipelines can request rank fusion.
+ *
+ * `pending`: files waiting for vectors (new, or changed since theirs were made). They can't stand
+ * out by meaning yet, so their words stand in: a pending word match counts as a meaning match at
+ * the gate, scaled by the share of the query's words it holds. Holding them all, it ranks above
+ * files with the same words that stand out less and below those that stand out more.
  */
-export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more (see `wordShares`). */ weighted?: Map<number, number> }): Ranked[] {
+export function rank(opts: { best: Map<number, { z: number; row: number }>; named?: Map<number, number>; strength?: Map<number, number>; coverage: Map<number, number>; lookup: boolean; wordWeight: number; hinted: Set<Kind>; kindOf: (file: number) => Kind | undefined; zGate?: number; ranking?: Ranking; terms?: number; /** Coverage with rare words counting for more (see `wordShares`). */ weighted?: Map<number, number>; pending?: Set<number> }): Ranked[] {
   const R = opts.ranking ?? RANKING
   const zGate = opts.zGate ?? R.zGate ?? Z_GATE
   const hasMeaning = opts.best.size > 0
@@ -193,6 +199,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   const gate = coverageGate(R, hasMeaning, opts.terms ?? 1)
   const [meaningWeight, baseWordsWeight] = opts.lookup ? [0.5 * R.meaning, opts.wordWeight * 2 * R.words] : [R.meaning, opts.wordWeight * R.words]
   const wordsWeight = baseWordsWeight * coverageWeight
+  const pendingGate = Number.isFinite(zGate) ? zGate : Z_GATE
   const candidates = new Set<number>()
   for (const [file, b] of opts.best) if (b.z >= zGate) candidates.add(file)
   if (R.words > 0) for (const [file, share] of opts.coverage) if (share >= gate) candidates.add(file)
@@ -201,7 +208,7 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
   for (const file of candidates) {
     const b = opts.best.get(file)
     const words = shares.get(file) ?? 0
-    const z = b?.z ?? 0
+    const z = b?.z ?? (opts.pending?.has(file) ? pendingGate * (opts.coverage.get(file) ?? 0) : 0)
     const name = (nameWeight * (opts.named?.get(file) ?? 0) ** namePower + strength * (opts.strength?.get(file) ?? 0)) * R.words
     // No word match automatically outranks a better semantic answer.
     let score = meaningWeight * (zGate === -Infinity ? z : Math.max(z, 0)) + wordsWeight * words ** 1.5 + name + (words >= 1 - 1e-9 ? everyWord * R.words : 0)
@@ -235,6 +242,10 @@ export class VectorIndex {
   dim = 0
   complete = true
   completeSeq: string | null = null
+  /** The model and helper the vectors were made with (see `semanticFingerprint`). */
+  fingerprint: string | null = null
+  /** What each file's passages were made from (see `semanticCandidates`), for files with every passage and its vector here. */
+  private sigs = new Map<number, string>()
   /** Passages: file id (negative for an image's own vector), number, place in the text, and vector. */
   file = new Int32Array(0)
   start = new Int32Array(0)
@@ -248,6 +259,11 @@ export class VectorIndex {
 
   get size(): number {
     return this.file.length
+  }
+
+  /** What `file`'s vectors were made from, if all of them are here: they stand for its text only while it is the same. */
+  madeFrom(file: number): string | undefined {
+    return this.sigs.get(file)
   }
 
   /** Granite is usable only after every passage of the current snapshot is committed. */
@@ -309,7 +325,13 @@ export class VectorIndex {
     }
     v.distinct = k
     const rows = db.query("SELECT file, n, hash, start, end FROM passages").values() as [number, number, Uint8Array, number, number][]
-    const keep = rows.filter((r) => index.has(Buffer.from(r[2]).toString("hex")))
+    // Files with a passage whose vector is missing: their best passage can't be known.
+    const missing = new Set<number>()
+    const keep = rows.filter((r) => {
+      if (index.has(Buffer.from(r[2]).toString("hex"))) return true
+      missing.add(r[0])
+      return false
+    })
     const n = keep.length
     v.file = new Int32Array(n)
     v.start = new Int32Array(n)
@@ -328,9 +350,11 @@ export class VectorIndex {
       v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
     })
     v.completeSeq = getMeta(db, "complete_seq")
+    v.fingerprint = getMeta(db, "fingerprint")
     v.complete = !!v.completeSeq && keep.length === rows.length
-    for (const [upto, total] of db.query("SELECT upto, total FROM files").values() as [number, number][]) {
+    for (const [file, sig, upto, total] of db.query("SELECT file, sig, upto, total FROM files").values() as [number, string, number, number][]) {
       if (upto !== total) v.complete = false
+      else if (!missing.has(file)) v.sigs.set(file, sig)
     }
     return v
   }
@@ -356,8 +380,10 @@ export class VectorIndex {
 }
 
 /**
- * The semantic index for searches, reloaded when the indexer has changed it (at most every few
- * seconds while an index run writes to it).
+ * The semantic index for searches, reloaded when the indexer has changed it: at once when a pass
+ * completes, otherwise at most every few seconds, and every `partialReloadMs` while a pass is
+ * still writing to it (a large index takes a while to load, and the files embedded since are
+ * still found by their words).
  */
 export class SemanticVectors {
   private db: Database | null = null
@@ -367,19 +393,22 @@ export class SemanticVectors {
   private generation: string | null = null
   private ino: number | null = null
 
-  constructor(private path: string, private minReloadMs = 3000) {}
+  constructor(private path: string, private minReloadMs = 3000, private partialReloadMs = 15_000) {}
 
   /**
    * The vectors, if they belong to the main index as it is (`generation`, see `mainGeneration`):
-   * after a rebuild, file ids mean other files until the next semantic pass.
+   * after a rebuild, file ids mean other files until the next semantic pass. They may be from a
+   * pass that hasn't finished, or from before the files' latest changes: which files they still
+   * stand for is the caller's to check (`VectorIndex.madeFrom`). `sequence`: the main index's
+   * change sequence, which a completed pass is published for.
    */
-  get(generation: string | null, completeSequence?: string, fingerprint?: string): VectorIndex | null {
-    const index = this.load(completeSequence, fingerprint)
+  get(generation: string | null, sequence: string, fingerprint?: string): VectorIndex | null {
+    const index = this.load(sequence, fingerprint)
     return index && generation !== null && this.generation === generation ? index : null
   }
 
   /** `fingerprint`: the model and helper the vectors must have been made with (see `semanticFingerprint`). */
-  private load(completeSequence?: string, fingerprint?: string): VectorIndex | null {
+  private load(sequence: string, fingerprint?: string): VectorIndex | null {
     // Removed, or removed and made again (`zsearch semantic remove`, then install): an open
     // connection would go on reading the deleted file, so follow the file itself.
     const ino = fileIno(this.path)
@@ -391,13 +420,17 @@ export class SemanticVectors {
       this.ino = ino
     }
     try {
-      // Do not load a growing Granite vector table just to discard it. Its completion
-      // marker is cleared before indexing and published only after the entire pass.
-      if (completeSequence !== undefined && getMeta(this.db, "complete_seq") !== completeSequence) return null
+      if (!readableSchema(this.db)) return null
       // Another model's or helper's vectors can't be compared with this one's query vectors.
-      if (fingerprint !== undefined && getMeta(this.db, "fingerprint") !== fingerprint) return null
+      const stored = getMeta(this.db, "fingerprint")
+      if (fingerprint !== undefined && stored !== fingerprint) return null
       const dv = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version
-      if (this.index && (completeSequence === undefined || this.index.completeSeq === completeSequence) && (dv === this.version || Date.now() - this.loadedAt < this.minReloadMs)) return this.index
+      if (this.index && this.index.fingerprint === stored) {
+        if (dv === this.version) return this.index
+        const published = getMeta(this.db, "complete_seq") === sequence
+        const wait = !published ? this.partialReloadMs : this.index.isCompleteFor(sequence) ? this.minReloadMs : 0
+        if (Date.now() - this.loadedAt < wait) return this.index
+      }
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()
       this.db.transaction(() => {
         this.index = hasTables ? VectorIndex.load(this.db!) : new VectorIndex()
@@ -405,9 +438,10 @@ export class SemanticVectors {
       })()
       this.version = dv
       this.loadedAt = Date.now()
+      if (fingerprint !== undefined && this.index!.fingerprint !== fingerprint) return null
     } catch {
-      // Being rebuilt, or removed: complete Granite must not fall back to a stale snapshot.
-      if (completeSequence !== undefined) return null
+      // Being rebuilt, or removed.
+      return null
     }
     return this.index
   }

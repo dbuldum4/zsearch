@@ -89,6 +89,15 @@ function migrate(db: Database) {
   })()
 }
 
+/**
+ * Whether searches can read this file's vectors as they are: a read-only connection doesn't
+ * migrate it. Version 2 differs from 3 only in how the vectors table is laid out.
+ */
+export function readableSchema(db: Database): boolean {
+  const version = getMeta(db, "schema_version")
+  return version === String(SCHEMA_VERSION) || version === "2"
+}
+
 export function getMeta(db: Database, key: string): string | null {
   const row = db.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null
   return row?.value ?? null

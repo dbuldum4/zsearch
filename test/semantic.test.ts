@@ -14,7 +14,7 @@ import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk
 import { Embedder } from "../src/semantic/helper.ts"
 import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
-import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, RANKING, strongCount, VectorIndex } from "../src/semantic/search.ts"
+import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, RANKING, SemanticVectors, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
 import { cutFile } from "../src/semantic/cut.ts"
 import { CutWorker } from "../src/semantic/workers.ts"
@@ -124,6 +124,19 @@ describe("DigUp's ranking", () => {
     expect(rank({ best: none, coverage: new Map([[1, 1 / 4]]), terms: 4, lookup: false, wordWeight: 2, hinted: new Set(), kindOf: () => "text" })).toEqual([])
   })
 
+  test("files waiting for vectors rank by their words, between stronger and weaker meaning matches", () => {
+    const best = new Map([[1, { z: 5, row: 0 }], [2, { z: 1, row: 1 }]])
+    const coverage = new Map([[1, 1], [2, 1], [3, 1], [4, 0.5]])
+    const opts = { best, coverage, terms: 2, lookup: false, wordWeight: 2, hinted: new Set<never>(), kindOf: () => "text" as const }
+    expect(rank(opts).map((r) => r.file)).toEqual([1, 2, 3, 4])
+    // Holding every word, a pending file counts as standing out just at the gate; half of them, half that.
+    const pending = rank({ ...opts, pending: new Set([3, 4]) })
+    expect(pending.map((r) => r.file)).toEqual([1, 3, 2, 4])
+    expect(pending.find((r) => r.file === 3)).toMatchObject({ row: null, z: null })
+    // Nothing pending: the same scores as without.
+    expect(rank({ ...opts, pending: new Set() })).toEqual(rank(opts))
+  })
+
   test("Granite readiness requires the current sequence and passage completion", () => {
     const index = new VectorIndex()
     index.completeSeq = "12"
@@ -145,9 +158,40 @@ describe("DigUp's ranking", () => {
       db.query("INSERT INTO passages VALUES (1, 0, ?, 0, 10)").run(hash)
       db.query("INSERT INTO vectors VALUES (?, ?)").run(hash, packVector(new Float32Array([1, 0]), 0, 2))
       expect(VectorIndex.load(db).isCompleteFor("12")).toBe(true)
+      expect(VectorIndex.load(db).madeFrom(1)).toBe("sig")
+      db.exec("UPDATE files SET upto = 1")
+      // Partly embedded: its vectors don't stand for the file yet.
+      expect(VectorIndex.load(db).madeFrom(1)).toBeUndefined()
+      db.exec("UPDATE files SET upto = 2")
       db.exec("DELETE FROM vectors")
       expect(VectorIndex.load(db).isCompleteFor("12")).toBe(false)
+      expect(VectorIndex.load(db).madeFrom(1)).toBeUndefined()
     } finally { db.close() }
+  })
+
+  test("stored vectors are read only in a known layout, of the same model, for the same main index", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-store-"))
+    try {
+      const path = join(dir, "index.semantic.db")
+      const db = openSemanticDb(path)!
+      setMeta(db, "fingerprint", "granite")
+      setMeta(db, "generation", "key:1")
+      db.exec("INSERT INTO files VALUES (1, 'sig', 1, 1, NULL)")
+      const hash = new Uint8Array(16)
+      db.query("INSERT INTO passages VALUES (1, 0, ?, 0, 10)").run(hash)
+      db.query("INSERT INTO vectors VALUES (?, ?)").run(hash, packVector(new Float32Array([1, 0]), 0, 2))
+      // No pass has completed: the vectors are still read, for search to check file by file.
+      const vectors = new SemanticVectors(path, 0, 0)
+      expect(vectors.get("key:1", "5", "granite")?.madeFrom(1)).toBe("sig")
+      expect(vectors.get("key:2", "5", "granite")).toBeNull()
+      expect(vectors.get("key:1", "5", "another model")).toBeNull()
+      setMeta(db, "schema_version", "1")
+      expect(vectors.get("key:1", "5", "granite")).toBeNull()
+      vectors.close()
+      db.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("Granite's strong concepts stay eligible without a second model", () => {
@@ -488,7 +532,7 @@ describe("semantic index and search", () => {
     }
   })
 
-  test("edits invalidate Granite until it catches up, while current word matches remain", async () => {
+  test("an edited file is ranked by its words until Granite catches up, while the others keep their meaning", async () => {
     corpus.write("notes/errands.txt", "Errands for Saturday: groceries and laundry.\n")
     await new Indexer(db, config, { inProcess: true }).run()
     expect((await semantic()).status).toBe("done")
@@ -497,10 +541,15 @@ describe("semantic index and search", () => {
     corpus.write("notes/errands.txt", "Errands for Saturday: walk the puppy, then groceries and laundry.\n")
     await new Indexer(db, config, { inProcess: true }).run()
     const r = await e.search("puppy", "semantic")
-    expect(r.strategy).toBe("words")
-    expect(r.notice).toContain("Granite is not ready")
-    expect(r.hits.some((h) => h.display === "notes/errands.txt")).toBe(true)
-    expect((await e.search("canine", "semantic")).hits.some(h => h.display === "notes/errands.txt")).toBe(false)
+    expect(r.strategy).toMatch(/^semantic \+ words · \d+ of \d+ files current; 1 pending matched by words$/)
+    expect(r.notice).toBeUndefined()
+    expect(r.semantic).toMatchObject({ pending: 1, matched: 1 })
+    expect(r.semantic!.current).toBe(r.semantic!.files - 1)
+    expect(r.hits.map((h) => h.display).slice(0, 2)).toEqual(["notes/pets.md", "notes/errands.txt"])
+    const canine = await e.search("canine", "semantic")
+    expect(canine.strategy).toStartWith("semantic + words")
+    expect(canine.hits[0]!.display).toBe("notes/pets.md")
+    expect(canine.hits.some(h => h.display === "notes/errands.txt")).toBe(false)
     expect((await semantic()).status).toBe("done")
     // A completed replacement is available immediately to the same engine.
     expect((await e.search("canine", "semantic")).hits.some(h => h.display === "notes/errands.txt")).toBe(true)
@@ -588,8 +637,9 @@ describe("semantic index and search", () => {
     e.refresh(true)
     answer()
     const r = await pending
-    // The vectors predate the edit, so only word matches are trusted until the semantic index catches up.
-    expect(r.strategy).toBe("words")
+    // The note's vectors predate the edit: it is left to its words until the semantic index catches up.
+    expect(r.strategy).toEndWith("1 pending matched by words")
+    expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
     expect(r.hits.map((h) => h.display)).not.toContain("notes/release.txt")
     e.closeSemantic()
     rmSync(join(corpus.home, "notes/release.txt"))
@@ -597,6 +647,123 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("a changed file's old vectors are never used for it, and its new words find it", async () => {
+    corpus.write("notes/carpool.txt", "Carpool rota: the sedan picks everyone up at eight.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    const e = engine()
+    expect((await e.search("automobile", "semantic")).hits.map((h) => h.display)).toContain("notes/carpool.txt")
+    corpus.write("notes/carpool.txt", "Carpool rota cancelled: we take the train and bring quinoa salad.\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    // Searches see the index as its other connections do.
+    e.refresh(true)
+    const r = await e.search("automobile", "semantic")
+    expect(r.strategy).toStartWith("semantic + words")
+    expect(r.hits.length).toBeGreaterThan(0)
+    expect(r.hits.map((h) => h.display)).not.toContain("notes/carpool.txt")
+    const words = await e.search("quinoa", "semantic")
+    expect(words.strategy).toStartWith("semantic + words")
+    expect(words.hits[0]!.display).toBe("notes/carpool.txt")
+    expect(words.hits[0]!.lines[0]!.text).toContain("quinoa")
+    expect(words.semantic).toMatchObject({ pending: 1, matched: 1 })
+    e.closeSemantic()
+    rmSync(join(corpus.home, "notes/carpool.txt"))
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+  })
+
+  test("vectors of deleted, excluded, names-only and no longer embedded files never answer", async () => {
+    corpus.write("notes/fleet.txt", "Fleet vehicle: a sedan.\n")
+    corpus.write("private/garage-log.txt", "Took the sedan in for new tyres.\n")
+    corpus.write("code/cars.py", "# The sedan drives the whole fleet\nclass Sedan:\n    pass\n")
+    const withCode = { ...config, semantic: { ...config.semantic, code: true } }
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await new SemanticIndexer(db, withCode, tool, { embedder: fakeEmbedder, vectorVersion: 1 }).run()).status).toBe("done")
+    const e = engine()
+    // Every search below still ranks the other files by meaning (no file holds the word): none
+    // is shown by a stale vector, and none sends the rest back to words.
+    const shown = async (settings: Config) => {
+      e.config = settings
+      const r = await e.search("automobile", "semantic")
+      expect(r.strategy).toStartWith("semantic + words")
+      expect(r.hits.length).toBeGreaterThan(0)
+      return r.hits.map((h) => h.display)
+    }
+    try {
+      expect(await shown(withCode)).toEqual(expect.arrayContaining(["notes/fleet.txt", "private/garage-log.txt", "code/cars.py"]))
+      // Code is embedded only with semantic.code on.
+      expect(await shown(config)).not.toContain("code/cars.py")
+      expect(await shown({ ...withCode, exclude: ["private/"] })).not.toContain("private/garage-log.txt")
+      expect(await shown({ ...withCode, namesOnly: [join(corpus.home, "private")] })).not.toContain("private/garage-log.txt")
+      // Deleted: before the index has noticed, and after.
+      rmSync(join(corpus.home, "notes/fleet.txt"))
+      expect(await shown(withCode)).not.toContain("notes/fleet.txt")
+      await new Indexer(db, config, { inProcess: true }).run()
+      e.refresh(true)
+      expect(await shown(withCode)).not.toContain("notes/fleet.txt")
+    } finally {
+      e.closeSemantic()
+      rmSync(join(corpus.home, "notes/fleet.txt"), { force: true })
+      rmSync(join(corpus.home, "private"), { recursive: true, force: true })
+      rmSync(join(corpus.home, "code/cars.py"), { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
+
+  test("a recording's transcript stops answering as soon as transcription is turned off", async () => {
+    const speech = join(work, "speech-helper")
+    writeFileSync(speech, `#!${process.execPath}
+if (process.argv[2] === "--prepare") process.exit(0)
+if (!process.argv[3]?.endsWith("memo.wav")) { console.error("not a memo"); process.exit(1) }
+console.log(JSON.stringify({ start: 0, text: "The sedan, washed." }))
+console.log(JSON.stringify({ complete: true, truncated: false }))
+`, { mode: 0o700 })
+    const previous = process.env.ZSEARCH_TRANSCRIBE
+    process.env.ZSEARCH_TRANSCRIBE = speech
+    let e: SearchEngine | null = null
+    try {
+      corpus.write("Music/memo.wav", "stand-in recording")
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+      e = engine()
+      expect((await e.search("automobile", "semantic")).hits.map((h) => h.display)).toContain("Music/memo.wav")
+      e.config = { ...config, content: { ...config.content, transcribe: false } }
+      const r = await e.search("automobile", "semantic")
+      expect(r.strategy).toStartWith("semantic + words")
+      expect(r.hits.map((h) => h.display)).not.toContain("Music/memo.wav")
+    } finally {
+      e?.closeSemantic()
+      if (previous === undefined) delete process.env.ZSEARCH_TRANSCRIBE; else process.env.ZSEARCH_TRANSCRIBE = previous
+      rmSync(join(corpus.home, "Music/memo.wav"), { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
+
+  test("with every file current, an unfinished pass ranks exactly as a finished one", async () => {
+    expect((await semantic()).status).toBe("done")
+    const queries = ["automobile", "canine", "vacation trip", "K7Q2LM", "handbook", "where is my automobile?"]
+    const searchAll = async () => {
+      const e = engine()
+      const out = []
+      try { for (const q of queries) out.push({ ...(await e.search(q, "semantic")), elapsedMs: 0 }) } finally { e.closeSemantic() }
+      return out
+    }
+    const finished = await searchAll()
+    for (const r of finished) {
+      expect(r.strategy).toBe("semantic + words")
+      expect(r.semantic).toMatchObject({ pending: 0, matched: 0 })
+      expect(r.semantic!.current).toBe(r.semantic!.files)
+    }
+    expect(finished[0]!.hits.length).toBeGreaterThan(0)
+    // A pass has started (as an index run begins with) but has nothing new: every file's vectors still hold.
+    const s = store()
+    setMeta(s, "complete_seq", "")
+    s.close()
+    expect(await searchAll()).toEqual(finished)
+    expect((await semantic()).status).toBe("done")
+  })
   test("text in a names-only folder does not change how visible files rank", async () => {
     corpus.write("notes/flowers.txt", "The zinnia bloomed in the garden.\n")
     corpus.write("notes/animals.txt", "A quokka smiled at the camera.\n")
