@@ -143,6 +143,7 @@ struct PanelShortcuts: View {
             Button("Copy Path") { model.copySelectedPath() }.keyboardShortcut("c", modifiers: [.command, .shift])
         }
         Group {
+            Button("Search Field") { model.requestSearchFocus() }.keyboardShortcut("l")
             if !Edition.semanticOnly {
                 Button("Find") { model.mode = .find }.keyboardShortcut("1")
                 Button("Fuzzy") { model.mode = .fuzzy }.keyboardShortcut("2")

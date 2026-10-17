@@ -75,6 +75,49 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.clearingFilters("re:x+ in:~/Code"), "re:x+")
     }
 
+    func testRecognizesAndClearsEveryEngineFilter() {
+        for filter in ["created:today", "tag:work", "name:*.pdf", "sort:-date", "case:on", "word:on", "diacritics:off", "near:3", "fold:on"] {
+            let query = "budget \(filter)"
+            XCTAssertTrue(Q.hasFilters(query), filter)
+            XCTAssertEqual(Q.clearingFilters(query), "budget", filter)
+        }
+        let query = #"budget ext:pdf tag:"annual report" -created:today name:*.pdf case:on"#
+        XCTAssertEqual(Q.clearingFilters(query), "budget")
+        XCTAssertEqual(Q.clearingFilters(#""tag:work" in:"~/Reports tag:work" budget"#), #""tag:work" budget"#)
+    }
+
+    func testSortPreservesQuotedTextAndPaths() {
+        for query in [#""sort:name""#, #"in:"~/Reports sort:2026" budget"#, #"tag:"sort:name annual" budget"#] {
+            let ascending = Q.togglingSort("name", in: query)
+            XCTAssertEqual(ascending, query + " sort:name")
+            let descending = Q.togglingSort("name", in: ascending)
+            XCTAssertEqual(descending, query + " sort:-name")
+            XCTAssertEqual(Q.togglingSort("name", in: descending), ascending)
+        }
+        XCTAssertEqual(Q.togglingSort("date", in: "re:budget sort:name"), "re:budget sort:date")
+        XCTAssertEqual(Q.togglingSort("name", in: "budget sort:size sort:date"), "budget sort:name")
+    }
+
+    func testFoldPreservesQuotedTextAndPaths() {
+        let query = #"in:"~/Reports fold:on" "fold:on""#
+        XCTAssertEqual(Q.togglingFold(in: query), query + " fold:on")
+        XCTAssertEqual(Q.togglingFold(in: query + " fold:on"), query + " fold:off")
+        XCTAssertEqual(Q.togglingFold(in: "budget fold:TRUE"), "budget fold:off")
+    }
+
+    func testRegexFlagsMatchTheEngine() {
+        for flags in ["", "d", "g", "i", "m", "s", "u", "v", "y", "gims"] {
+            let query = "/budget/\(flags) ext:pdf tag:work"
+            XCTAssertTrue(Q.isRegex(query), flags)
+            XCTAssertEqual(Q.settingRegex(false, in: query), "budget ext:pdf tag:work", flags)
+            XCTAssertEqual(Q.settingRegex(false, in: "re:" + query), "budget ext:pdf tag:work", flags)
+        }
+        XCTAssertFalse(Q.isRegex("/budget/x"))
+        XCTAssertEqual(Q.settingRegex(false, in: "/budget/x"), "/budget/x")
+        XCTAssertTrue(Q.isRegex("/first\nsecond/g"))
+        XCTAssertEqual(Q.settingRegex(false, in: "ext:pdf /first\nsecond/g"), "ext:pdf first\nsecond")
+    }
+
     func testRegexToggle() {
         XCTAssertFalse(Q.isRegex("budget"))
         XCTAssertTrue(Q.isRegex("re:fo+"))
@@ -90,5 +133,23 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.settingRegex(false, in: "/fo+/i ext:md"), "fo+ ext:md")
         XCTAssertEqual(Q.settingRegex(false, in: "ext:md /a b/"), "ext:md a b")
         XCTAssertEqual(Q.settingRegex(false, in: "plain"), "plain")
+    }
+
+    func testTurningRegexOffDoesNotExposeAnotherModeOrRegex() {
+        for (query, expected) in [
+            ("//budget//", "find:/budget/"),
+            ("ext:pdf //budget//g", "find:ext:pdf /budget/"),
+            ("re:re:budget", "find:re:budget"),
+            ("re:semantic:budget", "find:semantic:budget"),
+            ("re:all:/budget/", "find:all:/budget/"),
+            ("re:\tregex:budget", "find:\tregex:budget"),
+            ("re:/budget/ report", "find:/budget/ report"),
+            ("re://", "find://"),
+        ] {
+            let off = Q.settingRegex(false, in: query)
+            XCTAssertEqual(off, expected)
+            XCTAssertFalse(Q.isRegex(off))
+            XCTAssertEqual(Q.settingRegex(false, in: off), off)
+        }
     }
 }

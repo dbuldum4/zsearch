@@ -63,6 +63,10 @@ final class SearchModel {
     /// started with, so it applies the changes counted up to its start and no later ones.
     @ObservationIgnored private var settingsRevision = 0
     @ObservationIgnored private var indexedRevision = 0
+    /// A saved setup or exclusion requested a full update while another run was still using old settings.
+    @ObservationIgnored private var indexAfterCurrentRun = false
+    /// Stop also invalidates indexing requested by a save whose engine reply is still in flight.
+    @ObservationIgnored private var indexCancellationGeneration = 0
 
     let activity = IndexActivity()
 
@@ -185,6 +189,8 @@ final class SearchModel {
     }
 
     func stop() {
+        indexAfterCurrentRun = false
+        indexCancellationGeneration += 1
         engineRestartTask?.cancel()
         engineRestartTask = nil
         generation += 1
@@ -201,6 +207,8 @@ final class SearchModel {
     }
 
     private func engineExited(_ error: EngineError) {
+        indexAfterCurrentRun = false
+        indexCancellationGeneration += 1
         engine = nil
         indexing = false
         activity.progress = nil
@@ -240,6 +248,8 @@ final class SearchModel {
         case let .indexDone(done):
             indexing = false
             activity.progress = nil
+            let followUp = indexAfterCurrentRun
+            indexAfterCurrentRun = false
             switch done.status {
             case "done":
                 // Settings changed during the run still wait for the next one.
@@ -260,6 +270,7 @@ final class SearchModel {
                 await refreshSemantic()
             }
             scheduleSearch(delay: 0)
+            if followUp { startIndex() }
         case let .semanticDownload(d):
             semanticDownload = d
         case let .refreshed(_, changed):
@@ -527,8 +538,12 @@ final class SearchModel {
     }
 
     /// `background`: the app started it on its own, so a big one may wait on power.
-    func startIndex(rebuild: Bool = false, background: Bool = false) {
-        guard let engine, !indexing else { return }
+    func startIndex(rebuild: Bool = false, background: Bool = false, afterCurrentRun: Bool = false) {
+        guard let engine else { return }
+        if indexing {
+            if afterCurrentRun { indexAfterCurrentRun = true }
+            return
+        }
         indexing = true
         indexedRevision = settingsRevision
         Task {
@@ -563,6 +578,9 @@ final class SearchModel {
     }
 
     func cancelIndex() {
+        // An explicit Stop also cancels the queued update, so it cannot restart indexing.
+        indexAfterCurrentRun = false
+        indexCancellationGeneration += 1
         guard let engine else { return }
         Task { _ = try? await engine.request(.cancelIndex) }
     }
@@ -570,6 +588,7 @@ final class SearchModel {
     /// Save settings. `reindex` marks changes that only apply after the next index update.
     func updateConfig(_ patch: ConfigPatch, reindex: Bool, indexAfterSaving: Bool = false) {
         guard let engine else { return }
+        let cancellation = indexCancellationGeneration
         if reindex { settingsRevision += 1 }
         Task {
             do {
@@ -579,7 +598,7 @@ final class SearchModel {
                     scheduleSearch(delay: 0)
                 }
                 if reindex { needsReindex = true }
-                if indexAfterSaving { startIndex() }
+                if indexAfterSaving, cancellation == indexCancellationGeneration { startIndex(afterCurrentRun: true) }
             } catch {
                 show(error.localizedDescription)
             }
@@ -604,7 +623,8 @@ final class SearchModel {
     func applySetup(roots: [String], readContents: Bool) {
         guard let engine else { return }
         let waits = !firstRun && manualIndexing
-        if waits { settingsRevision += 1 }
+        let cancellation = indexCancellationGeneration
+        settingsRevision += 1
         Task {
             do {
                 let patch = ConfigPatch(roots: roots, content: ContentConfig(enabled: readContents))
@@ -615,7 +635,8 @@ final class SearchModel {
                 }
                 firstRun = false
                 showSetup = false
-                if waits { needsReindex = true } else { startIndex() }
+                needsReindex = true
+                if !waits, cancellation == indexCancellationGeneration { startIndex(afterCurrentRun: true) }
             } catch {
                 show(error.localizedDescription)
             }
@@ -645,16 +666,12 @@ final class SearchModel {
 
     // One assignment to `query`: each one schedules a search of its own.
     func sortResults(_ key: String) {
-        let descending = query.contains("sort:" + key)
-        query = query.replacingOccurrences(of: #"\s*\bsort:[^\s]+"#, with: "", options: .regularExpression)
-            + " sort:" + (descending ? "-" : "") + key
+        query = QueryFilters.togglingSort(key, in: query)
         scheduleSearch(delay: 0)
     }
     func toggleFoldedPreview() {
-        let on = !query.contains("fold:on")
+        query = QueryFilters.togglingFold(in: query)
         clearPreviewCache()
-        query = query.replacingOccurrences(of: #"\s*\bfold:[^\s]+"#, with: "", options: .regularExpression)
-            + " fold:" + (on ? "on" : "off")
         scheduleSearch(delay: 0)
     }
     func copyAllPaths() {
