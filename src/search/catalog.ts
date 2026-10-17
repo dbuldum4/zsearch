@@ -367,8 +367,11 @@ export class Catalog {
    * ("mian" finds main.rs, "recieve" finds receive.py).
    */
   typo(query: string, filters: Filters, limit: number): { idx: number; score: number; positions: number[] }[] {
-    const terms: FuzzyTerm[] = parseFuzzyTerms(query).filter((t) => !t.negate && t.kind === "fuzzy" && t.text.length >= 4)
+    const parsed = parseFuzzyTerms(query)
+    const terms: FuzzyTerm[] = parsed.filter((t) => !t.negate && t.kind === "fuzzy" && t.text.length >= 4)
     if (!terms.length) return []
+    // Exclusions and exact, prefix and suffix terms still hold: only fuzzy terms may be misspelt.
+    const operators = parsed.filter((t) => t.negate || t.kind !== "fuzzy")
     const out: { idx: number; score: number; positions: number[] }[] = []
     for (let i = 0; i < this.size; i++) {
       const lower = this.lower[i]!
@@ -401,7 +404,14 @@ export class Catalog {
         total += t.text.length * 8 - best * 12
         for (let p = bestAt; p < bestAt + bestLen; p++) positions.push(p)
       }
-      if (!ok || !this.passes(i, filters)) continue
+      if (!ok) continue
+      if (operators.length) {
+        const m = matchPath(this.display[i]!, lower, start, operators, true)
+        if (!m) continue
+        positions.push(...m.positions)
+        positions.sort((a, b) => a - b)
+      }
+      if (!this.passes(i, filters)) continue
       out.push({ idx: i, score: total, positions })
     }
     out.sort((a, b) => b.score - a.score || this.display[a.idx]!.length - this.display[b.idx]!.length)
