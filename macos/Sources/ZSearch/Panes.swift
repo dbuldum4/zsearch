@@ -67,15 +67,17 @@ struct SplitPanes<Left: View, Right: View>: View {
     }
 }
 
-/// The preview text: one read-only, non-wrapping AppKit text view. Switching files replaces its
+/// The preview text: one read-only AppKit text view. Switching files replaces its
 /// text in place (one attributed string, usually styled ahead by `TextPreviews`) instead of
 /// rebuilding a SwiftUI row per line, and the matching line is centered without an animated jump.
 struct PreviewTextView: NSViewRepresentable {
     let preview: FilePreview
+    @AppStorage(AppSettings.wrapTextPreviews) private var wrapTextPreviews = true
 
     final class Coordinator {
         var shown: FilePreview?
         var styled: StyledText?
+        var wraps: Bool?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -113,13 +115,29 @@ struct PreviewTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
         let coordinator = context.coordinator
+        let wrappingChanged = coordinator.wraps != wrapTextPreviews
+        if wrappingChanged {
+            coordinator.wraps = wrapTextPreviews
+            textView.isHorizontallyResizable = !wrapTextPreviews
+            textView.autoresizingMask = wrapTextPreviews ? [.width] : [.width, .height]
+            textView.textContainer?.widthTracksTextView = wrapTextPreviews
+            scroll.hasHorizontalScroller = !wrapTextPreviews
+            if wrapTextPreviews {
+                textView.setFrameSize(NSSize(width: scroll.contentSize.width, height: textView.frame.height))
+            } else {
+                textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            }
+            textView.sizeToFit()
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: scroll.contentView.bounds.minY))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         let previous = coordinator.shown
-        guard previous != preview else { return }
+        guard previous != preview || wrappingChanged else { return }
         coordinator.shown = preview
 
         // The same text with another line in focus (⌘G to a match among these lines): only scroll.
         if let previous, let styled = coordinator.styled, TextPreviews.Key(previous) == TextPreviews.Key(preview) {
-            if previous.focusLine != preview.focusLine {
+            if previous.focusLine != preview.focusLine || wrappingChanged {
                 Self.center(styled.lineRanges[preview.focusLine], in: textView, scroll: scroll)
             }
             return
