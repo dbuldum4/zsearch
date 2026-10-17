@@ -7,6 +7,8 @@ export interface LineMatch {
   page: number
   text: string
   ranges: [number, number][]
+  /** Audio and video hits: where the line's transcript segment starts, in seconds. */
+  startSeconds?: number
   /** Offset of the line start in the searched text. */
   offset?: number
 }

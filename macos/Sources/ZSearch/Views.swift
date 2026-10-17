@@ -129,6 +129,12 @@ struct ResultsList: View {
                         model.selection = hit.id
                         model.toggleQuickLook()
                     }
+                    if let start = Transcript.start(of: hit) {
+                        Button("Play from \(Transcript.format(start))") {
+                            model.selection = hit.id
+                            Playback.shared.play(hit.path, from: start)
+                        }
+                    }
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
                     Button("Exclude from Index") { model.exclude(hit) }
@@ -303,6 +309,7 @@ struct PreviewPane: View {
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    if media, visual { PlayFromButton(preview: p) }
                     if pdf != nil, p.message == nil {
                         Picker("Show", selection: $pdfShowsText) {
                             Text("Pages").tag(false)
@@ -355,15 +362,22 @@ struct PreviewPane: View {
                 } else if ebook, !ebookShowsText {
                     EbookPreviewView(preview: p)
                 } else if visual, !visualShowsText || p.message != nil {
-                    QuickLookView(url: URL(fileURLWithPath: p.path))
+                    if media, Playback.shared.isPlaying(p) {
+                        MediaPlayerView()
+                    } else {
+                        QuickLookView(url: URL(fileURLWithPath: p.path))
+                    }
                 } else if let message = p.message {
                     Text(message)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    PreviewTextView(preview: p, wrapTextPreviews: isPanel ? wrapPanelTextPreviews : wrapTextPreviews)
+                    if media, visual { TranscriptPlayer(preview: p) }
+                    PreviewTextView(preview: p, wrapTextPreviews: isPanel ? wrapPanelTextPreviews : wrapTextPreviews,
+                                    seek: media && visual ? { Playback.shared.play(p.path, from: $0) } : nil)
                 }
             }
+            .onChange(of: p.path) { _, path in Playback.shared.stop(unless: path) }
             .task(id: Showing(preview: p, pdfShowsText: pdfShowsText, documentShowsText: documentShowsText)) {
                 guard PreviewPreparation.needsDocument(p) else { return }
                 await PreviewPreparation.prepare(p)

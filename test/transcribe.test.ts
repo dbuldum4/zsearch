@@ -5,7 +5,7 @@ import { basename, join } from "node:path"
 import { defaultConfig, mergeConfig, withConfigSetting } from "../src/config.ts"
 import { ContentState, getMeta, openDb, setMeta } from "../src/index/db.ts"
 import { DEFAULT_EXTRACT, extract, wantsContent } from "../src/index/extract/index.ts"
-import { transcribe } from "../src/index/extract/transcribe.ts"
+import { segmentStamp, segmentStart, transcribe } from "../src/index/extract/transcribe.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { ExtractPool } from "../src/index/pool.ts"
 import { describeEstimate, estimateFolder } from "../src/index/estimate.ts"
@@ -212,6 +212,34 @@ console.log(JSON.stringify({complete: true, truncated: false}))
   } finally { db.close(); process.env.ZSEARCH_TRANSCRIBE = helper }
 })
 
+test("transcript stamps round-trip, and a cut stamp is not one", () => {
+  expect(segmentStamp(3725.9)).toBe("01:02:05")
+  expect(segmentStart(`[${segmentStamp(83.5)}] Orion`)).toBe(83)
+  expect(segmentStart("[00:00:05]")).toBe(5)
+  for (const line of ["[00:0", "[00:01:23", "[00:61:00] x", "[00:01:23]words", "…budget"]) expect(segmentStart(line)).toBeUndefined()
+})
+
+test("hit lines in transcripts carry their segment's start, even when clipped", async () => {
+  const root = join(dir, "long-media"); mkdirSync(root)
+  writeFileSync(join(root, "talk.m4a"), "fake audio")
+  writeFileSync(join(root, "notes.txt"), "[00:00:07] the quasar notes are not a recording")
+  process.env.ZSEARCH_TRANSCRIBE = script("long-segments", `
+if (process.argv[2] === "--prepare") process.exit(0)
+console.log(JSON.stringify({start: 3, text: "Opening remarks"}))
+console.log(JSON.stringify({start: 3725.9, text: "${"filler words ".repeat(30)}the quasar results"}))
+console.log(JSON.stringify({complete: true, truncated: false}))
+`)
+  const config = { ...defaultConfig(), roots: [root], indexLoad: 100, workers: 1 }
+  const db = openDb(join(dir, "long-index.db"))
+  try {
+    expect((await new Indexer(db, config).run()).contentErrors).toBe(0)
+    const hits = (await new SearchEngine(db, config).search("quasar")).hits
+    const talk = hits.find((h) => basename(h.path) === "talk.m4a")!
+    expect(talk.lines[0]).toMatchObject({ line: 2, startSeconds: 3725 })
+    expect(talk.lines[0]!.text.startsWith("…")).toBe(true)
+    expect(hits.find((h) => basename(h.path) === "notes.txt")!.lines[0]!.startSeconds).toBeUndefined()
+  } finally { db.close(); process.env.ZSEARCH_TRANSCRIBE = helper }
+})
 test("speech settings default on, preserve older configs, validate locale, and inform estimates", () => {
   const config = mergeConfig(defaultConfig(), { content: { ocr: false } })
   expect(config.content.transcribe).toBe(true)
