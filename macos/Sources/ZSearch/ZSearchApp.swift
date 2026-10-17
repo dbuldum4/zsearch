@@ -37,16 +37,16 @@ struct ZSearchApp: App {
             CommandGroup(after: .pasteboard) {
                 Button("Copy Path") { model.copySelectedPath() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
-                    .disabled(model.selectedHit == nil)
+                    .disabled(!model.hasSelection)
                 Button("Show in Finder") { model.revealSelected() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
-                    .disabled(model.selectedHit == nil)
+                    .disabled(!model.hasSelection)
                 Button("Open in Editor") { model.openSelectedInEditor() }
                     .keyboardShortcut("e")
-                    .disabled(model.selectedHit == nil)
+                    .disabled(!model.hasSelection)
                 Button(model.quickLookURL == nil ? "Quick Look" : "Close Quick Look") { model.toggleQuickLook() }
                     .keyboardShortcut("y")
-                    .disabled(model.selectedHit == nil)
+                    .disabled(!model.hasSelection)
             }
             CommandMenu("Search") {
                 if !Edition.semanticOnly {

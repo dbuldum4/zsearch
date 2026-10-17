@@ -32,7 +32,8 @@ struct FilterBar: View {
     ]
 
     var body: some View {
-        let query = model.query
+        // Parsed once for every control in the row.
+        let query = QueryFilters.Parsed(model.query)
         HStack(spacing: 6) {
             choiceMenu("Type", icon: "doc", keys: QueryFilters.typeKeys, options: Self.types, anyTitle: "Any Type", query: query,
                        isUnknown: QueryFilters.isUnknownType)
@@ -42,7 +43,7 @@ struct FilterBar: View {
             choiceMenu("Size", icon: "internaldrive", keys: QueryFilters.sizeKeys, options: Self.sizes, anyTitle: "Any Size", query: query)
             regexToggle(query)
             Spacer(minLength: 0)
-            if QueryFilters.hasFilters(query) || QueryFilters.isRegex(query) {
+            if query.hasFilters || query.isRegex {
                 Button("Clear Filters") {
                     model.query = QueryFilters.settingRegex(false, in: QueryFilters.clearingFilters(model.query))
                     model.requestSearchFocus()
@@ -60,14 +61,14 @@ struct FilterBar: View {
         model.requestSearchFocus()
     }
 
-    private func choiceMenu(_ title: String, icon: String, keys: [String], options: [Option], anyTitle: String, query: String,
+    private func choiceMenu(_ title: String, icon: String, keys: [String], options: [Option], anyTitle: String, query: QueryFilters.Parsed,
                             isUnknown: (String) -> Bool = { _ in false }) -> some View {
-        let value = QueryFilters.value(keys, in: query)
+        let value = query.value(keys)
         let label: String
         if let value {
             // A value typed by hand that isn't one of the choices shows as written.
             label = options.first { $0.value == value.lowercased() }?.title
-                ?? "\(QueryFilters.key(keys, in: query) ?? keys[0]):\(value)"
+                ?? "\(query.key(keys) ?? keys[0]):\(value)"
         } else {
             label = title
         }
@@ -87,8 +88,8 @@ struct FilterBar: View {
         .help(unknown ? "Not a \(title.lowercased()) zsearch knows, so this filter is ignored" : "\(title) filter (\(keys[0]):…)")
     }
 
-    private func folderMenu(_ query: String) -> some View {
-        let value = QueryFilters.value(QueryFilters.folderKeys, in: query)
+    private func folderMenu(_ query: QueryFilters.Parsed) -> some View {
+        let value = query.value(QueryFilters.folderKeys)
         let label = value.map { v in
             let name = (v as NSString).lastPathComponent
             return name.isEmpty || v == "~" ? v : name
@@ -123,8 +124,8 @@ struct FilterBar: View {
         set(QueryFilters.folderKeys, tildePath(url.path))
     }
 
-    private func regexToggle(_ query: String) -> some View {
-        let on = QueryFilters.isRegex(query)
+    private func regexToggle(_ query: QueryFilters.Parsed) -> some View {
+        let on = query.isRegex
         return Button {
             model.query = QueryFilters.settingRegex(!on, in: model.query)
             model.requestSearchFocus()

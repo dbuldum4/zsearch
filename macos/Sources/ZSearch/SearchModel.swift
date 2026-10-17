@@ -27,6 +27,7 @@ final class SearchModel {
     var selection: SearchHit.ID? {
         didSet {
             guard selection != oldValue else { return }
+            updateHasSelection()
             loadPreview()
             // Quick Look follows the selection while it is open, as in Finder.
             if quickLookURL != nil { quickLookURL = selectedHit.map { URL(fileURLWithPath: $0.path) } }
@@ -39,7 +40,12 @@ final class SearchModel {
     var showSetup = false
     /// Bumped to ask the search field to take focus.
     private(set) var focusRequest = 0
-    private(set) var response: SearchResponse?
+    private(set) var response: SearchResponse? {
+        didSet { updateHasSelection() }
+    }
+    /// Whether a result is selected. The menus read this rather than `selectedHit`, which
+    /// changes with every move through the list.
+    private(set) var hasSelection = false
     private(set) var preview: FilePreview?
     private(set) var stats: IndexStats?
     private(set) var config: Config?
@@ -66,6 +72,8 @@ final class SearchModel {
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var prefetchTask: Task<Void, Never>?
+    /// Readies the preview about to show (see `PreviewPreparation`).
+    @ObservationIgnored private var displayTask: Task<Void, Never>?
     /// Re-runs the search after the index changes; separate from `searchTask` so it never delays typing.
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
@@ -89,10 +97,31 @@ final class SearchModel {
     var hits: [SearchHit] { response?.hits ?? [] }
     var selectedHit: SearchHit? { hits.first { $0.id == selection } }
 
+    /// A preview is for a file as the result list shows it: one changed on disk since (or whose
+    /// first match moved, its text having been read since) needs a new one.
     private struct PreviewKey: Hashable {
         var file: Int
+        var path: String
+        var size: Int
+        var mtime: Double
+        var focus: Int?
         var query: String
         var mode: Mode
+
+        init(_ hit: SearchHit, query: String, mode: Mode) {
+            file = hit.id
+            path = hit.path
+            size = hit.size
+            mtime = hit.mtime
+            focus = hit.lines.first?.line
+            self.query = query
+            self.mode = mode
+        }
+    }
+
+    private func updateHasSelection() {
+        let selected = selection != nil && hits.contains { $0.id == selection }
+        if selected != hasSelection { hasSelection = selected }
     }
 
     // MARK: - Engine
@@ -234,10 +263,8 @@ final class SearchModel {
         case let .semanticDownload(d):
             semanticDownload = d
         case let .refreshed(_, changed):
-            if changed {
-                clearPreviewCache()
-                scheduleRefresh()
-            }
+            // Cached previews stay: one for a file that changed no longer matches its result.
+            if changed { scheduleRefresh() }
         case let .error(text):
             show(text)
         default:
@@ -249,6 +276,9 @@ final class SearchModel {
 
     func scheduleSearch(delay: Double = 0.016) {
         searchTask?.cancel()
+        // Previews of the results around the selection can wait until the typing stops.
+        prefetchTask?.cancel()
+        prefetchTask = nil
         searchTask = Task { [weak self] in
             // One frame: coalesces key repeat; the engine cancels superseded searches anyway.
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
@@ -292,17 +322,19 @@ final class SearchModel {
         guard let hit = selectedHit, let engine else {
             previewTask?.cancel()
             previewTask = nil
+            displayTask?.cancel()
+            displayTask = nil
             previewKey = nil
             preview = nil
             return
         }
-        let key = PreviewKey(file: hit.id, query: query, mode: mode)
+        let key = PreviewKey(hit, query: query, mode: mode)
         guard key != previewKey else { return }
         previewTask?.cancel()
         previewTask = nil
         previewKey = key
         if let cached = previewCache[key] {
-            preview = cached
+            display(cached, for: key)
             prefetchAround()
             return
         }
@@ -315,35 +347,65 @@ final class SearchModel {
             self.previewTask = nil
             guard case let .preview(p)? = reply else { return }
             self.remember(p, for: key)
-            self.preview = p
+            self.display(p, for: key)
             self.prefetchAround()
         }
     }
 
-    /// Fetch the previews of the results around the selection, so ↑/↓ shows them instantly.
+    /// Show a preview once what the pane shows for it is ready: a PDF opened, a Word file read,
+    /// text styled, all off the main thread. Until then the previous preview stays up.
+    private func display(_ p: FilePreview, for key: PreviewKey) {
+        displayTask?.cancel()
+        displayTask = nil
+        if PreviewPreparation.isReady(p) {
+            preview = p
+            return
+        }
+        displayTask = Task { [weak self] in
+            await PreviewPreparation.prepare(p)
+            guard !Task.isCancelled, let self, self.previewKey == key else { return }
+            self.displayTask = nil
+            self.preview = p
+        }
+    }
+
+    /// Fetch the previews of the results around the selection, so ↑/↓ shows them instantly, and
+    /// style their text ahead. Waits for a pause: while typing, each new result list would ask for
+    /// previews nobody looks at, ahead of the searches in the engine's queue.
     private func prefetchAround() {
         guard let engine, let index = hits.firstIndex(where: { $0.id == selection }) else { return }
         let (query, mode) = (self.query, self.mode)
-        let around = hits[max(0, index - 2)..<min(hits.count, index + 4)]
-            .filter { previewCache[PreviewKey(file: $0.id, query: query, mode: mode)] == nil }
-        guard !around.isEmpty else { return }
-        // Each with its hit's first matching line, as `loadPreview` asks: the engine cannot always
-        // find the match itself (a typo-tolerant one, say) and would show the top of the file.
-        let ids = around.map(\.id)
-        let focusLines = around.map { $0.lines.first?.line }
+        let keys = hits[max(0, index - 2)..<min(hits.count, index + 4)]
+            .map { PreviewKey($0, query: query, mode: mode) }
+            .filter { previewCache[$0] == nil }
+        guard !keys.isEmpty else { return }
         let epoch = previewEpoch
         prefetchTask?.cancel()
         prefetchTask = Task { [weak self] in
-            let request = Request.previews(files: ids, query: Self.sent(query), mode: mode, focusLines: focusLines)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            // Each with its hit's first matching line, as `loadPreview` asks: the engine cannot always
+            // find the match itself (a typo-tolerant one, say) and would show the top of the file.
+            let request = Request.previews(files: keys.map(\.file), query: Self.sent(query), mode: mode, focusLines: keys.map(\.focus))
             guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
-            for p in list where p.message == nil || p.isDir {
-                self.remember(p, for: PreviewKey(file: p.id, query: query, mode: mode))
+            let byFile = Dictionary(keys.map { ($0.file, $0) }, uniquingKeysWith: { first, _ in first })
+            var fetched: [FilePreview] = []
+            for p in list {
+                guard let key = byFile[p.id] else { continue }
+                self.remember(p, for: key)
+                fetched.append(p)
+            }
+            for p in fetched {
+                guard !Task.isCancelled else { return }
+                await PreviewPreparation.prepareAhead(p)
             }
         }
     }
 
     private func remember(_ preview: FilePreview, for key: PreviewKey) {
+        // A file without a preview may get one as indexing reads it: ask again next time.
+        guard preview.message == nil || preview.isDir else { return }
         if previewCache.updateValue(preview, forKey: key) == nil { previewCacheOrder.append(key) }
         while previewCacheOrder.count > 128 {
             previewCache.removeValue(forKey: previewCacheOrder.removeFirst())
@@ -666,6 +728,18 @@ final class SearchModel {
         guard !lines.isEmpty else { return }
         let target = delta > 0 ? (lines.first { $0 > p.focusLine } ?? lines[0]) : (lines.last { $0 < p.focusLine } ?? lines[lines.count - 1])
         guard target != p.focusLine else { return }
+        // A match among the lines the preview holds, with enough of them around it to fill the
+        // pane, needs no new lines from the engine.
+        if let at = p.lines.firstIndex(where: { $0.n == target }),
+           at >= Self.jumpContext || p.lines.first?.n == 1,
+           p.lines.count - 1 - at >= Self.jumpContext || p.lines.last?.n == p.totalLines {
+            previewTask?.cancel()
+            previewTask = nil
+            var next = p
+            next.focusLine = target
+            display(next, for: key)
+            return
+        }
         // The preview holds the lines around its focus only: ask for the ones around the target.
         let request = Request.preview(file: p.id, query: Self.sent(key.query), mode: key.mode, focusLine: target)
         let epoch = previewEpoch
@@ -674,9 +748,12 @@ final class SearchModel {
             let reply = try? await engine.request(request)
             guard !Task.isCancelled, let self, self.previewKey == key, self.previewEpoch == epoch else { return }
             self.previewTask = nil
-            if case let .preview(next)? = reply { self.preview = next }
+            if case let .preview(next)? = reply { self.display(next, for: key) }
         }
     }
+
+    /// Lines a match needs above and below it to be shown from the preview's own lines.
+    private static let jumpContext = 40
 
     /// Bring the search window forward (hotkey, menu bar, Dock), opening it if it was closed.
     func showMainWindow() {

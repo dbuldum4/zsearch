@@ -38,10 +38,49 @@ public enum QueryFilters {
         }
     }
 
+    /// A query split into its mode prefix and tokens once, for callers that ask several questions
+    /// about the same query (the filter row asks about a dozen on every keystroke).
+    public struct Parsed {
+        let prefix: String
+        let body: String
+        let tokens: [Token]
+
+        public init(_ query: String) {
+            let split = QueryFilters.splitPrefix(query)
+            prefix = split.prefix
+            body = split.body
+            tokens = QueryFilters.tokens(split.body)
+        }
+
+        /// See `QueryFilters.value(_:in:)`.
+        public func value(_ keys: [String]) -> String? {
+            tokens.last { t in t.matches(keys) }?.value
+        }
+
+        /// See `QueryFilters.key(_:in:)`.
+        public func key(_ keys: [String]) -> String? {
+            tokens.last { t in t.matches(keys) }?.key
+        }
+
+        /// See `QueryFilters.hasFilters(_:)`.
+        public var hasFilters: Bool {
+            tokens.contains { $0.key != nil }
+        }
+
+        /// See `QueryFilters.isRegex(_:)`.
+        public var isRegex: Bool {
+            if QueryFilters.regexPrefixes.contains(prefix.trimmingCharacters(in: .whitespaces).lowercased()) { return true }
+            if !prefix.isEmpty { return false }
+            let words = tokens.filter { $0.key == nil }
+            guard let first = words.first, let last = words.last else { return false }
+            let text = String(body[first.range.lowerBound..<last.range.upperBound])
+            return text.count > 2 && text.range(of: #"^/.+/[imsux]*$"#, options: .regularExpression) != nil
+        }
+    }
+
     /// The value of the last filter with one of `keys` (`type:pdf` gives "pdf"), ignoring negated ones.
     public static func value(_ keys: [String], in query: String) -> String? {
-        let (_, body) = splitPrefix(query)
-        return tokens(body).last { t in t.matches(keys) }?.value
+        Parsed(query).value(keys)
     }
 
     /// Whether a `type:` value names no type the engine knows (`docx`, `imgae`), so the engine
@@ -52,8 +91,7 @@ public enum QueryFilters {
 
     /// The key a filter in the query was written with (`modified`, `after`...), for labels.
     public static func key(_ keys: [String], in query: String) -> String? {
-        let (_, body) = splitPrefix(query)
-        return tokens(body).last { t in t.matches(keys) }?.key
+        Parsed(query).key(keys)
     }
 
     /// The query with every filter in `keys` removed and, when `value` is set, `keys[0]:value` added at the end.
@@ -73,8 +111,7 @@ public enum QueryFilters {
 
     /// Whether any filter is set (negated ones included).
     public static func hasFilters(_ query: String) -> Bool {
-        let (_, body) = splitPrefix(query)
-        return tokens(body).contains { $0.key != nil }
+        Parsed(query).hasFilters
     }
 
     /// The query with all filters removed.
@@ -87,13 +124,7 @@ public enum QueryFilters {
 
     /// Whether the query is a regular expression: `re:…`, `regex:…` or `/…/`.
     public static func isRegex(_ query: String) -> Bool {
-        let (prefix, body) = splitPrefix(query)
-        if regexPrefixes.contains(prefix.trimmingCharacters(in: .whitespaces).lowercased()) { return true }
-        if !prefix.isEmpty { return false }
-        let words = tokens(body).filter { $0.key == nil }
-        guard let first = words.first, let last = words.last else { return false }
-        let text = String(body[first.range.lowerBound..<last.range.upperBound])
-        return text.count > 2 && text.range(of: #"^/.+/[imsux]*$"#, options: .regularExpression) != nil
+        Parsed(query).isRegex
     }
 
     /// The query with regex matching switched on (a `re:` prefix) or off (the prefix or `/…/` removed).

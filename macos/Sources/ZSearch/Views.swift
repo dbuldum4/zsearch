@@ -116,7 +116,7 @@ struct ResultsList: View {
                 }
             }.font(.caption).padding(.horizontal)
             List(model.hits, selection: $model.selection) { hit in
-                ResultRow(hit: hit)
+                ResultRow(hit: hit).equatable()
             }
             .listStyle(.inset)
             .contextMenu(forSelectionType: SearchHit.ID.self) { ids in
@@ -138,25 +138,43 @@ struct ResultsList: View {
             } primaryAction: { ids in
                 if let hit = model.hits.first(where: { ids.contains($0.id) }) { model.open(hit) }
             }
-            .onChange(of: model.selection) { _, id in
-                if let id { proxy.scrollTo(id) }
-            }
+            // In views of their own, so a new selection or a keystroke doesn't redo this list's body.
+            .background { SelectionScroller(proxy: proxy) }
             .onKeyPress(.space) {
                 model.toggleQuickLook()
                 return .handled
             }
-            .overlay {
-                if model.hits.isEmpty, model.response != nil {
-                    Text(model.query.isEmpty ? "No recent files" : "No results")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            .overlay { NoResultsNote() }
             }
         }
     }
 }
 
-struct ResultRow: View {
+/// Keeps the selected result in view.
+private struct SelectionScroller: View {
+    @Environment(SearchModel.self) private var model
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.selection) { _, id in
+                if let id { proxy.scrollTo(id) }
+            }
+    }
+}
+
+private struct NoResultsNote: View {
+    @Environment(SearchModel.self) private var model
+
+    var body: some View {
+        if model.hits.isEmpty, model.response != nil {
+            Text(model.query.isEmpty ? "No recent files" : "No results")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ResultRow: View, Equatable {
     let hit: SearchHit
 
     var body: some View {
@@ -233,15 +251,26 @@ struct PreviewPane: View {
     /// Images show themselves unless the reader picked the text OCR read from them.
     @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
 
+    /// Bumped when a document this pane waited on is ready (see `PreviewPreparation`).
+    @State private var documentsLoaded = 0
+
     /// Kinds Quick Look shows better than any text could.
-    private static let visualKinds: Set<String> = ["image", "video", "audio", "font"]
+    static let visualKinds: Set<String> = ["image", "video", "audio", "font"]
+
+    private struct Showing: Equatable {
+        var preview: FilePreview
+        var pdfShowsText: Bool
+        var documentShowsText: Bool
+    }
 
     var body: some View {
         // The last preview stays up while the next one loads (a few milliseconds), so switching
-        // files swaps the content in place instead of flashing an empty pane.
+        // files swaps the content in place instead of flashing an empty pane. `SearchModel` shows a
+        // preview once its document is open, so the documents here are only the ones already open.
         if let p = model.preview, !model.hits.isEmpty {
+            let _ = documentsLoaded
             let pdf = p.kind == "pdf" && p.contentAllowed != false ? PDFDocuments.shared.document(for: p) : nil
-            // Reading a Word file happens on the main thread, so it waits until the document will show.
+            // A Word file is only read when the document will show.
             let wordFile = pdf == nil && WordDocuments.handles(p)
             let word = wordFile && (!documentShowsText || p.message != nil) ? WordDocuments.shared.document(for: p) : nil
             // Images, video and audio, and other files without text: Quick Look shows them.
@@ -307,6 +336,11 @@ struct PreviewPane: View {
                 } else {
                     PreviewTextView(preview: p)
                 }
+            }
+            .task(id: Showing(preview: p, pdfShowsText: pdfShowsText, documentShowsText: documentShowsText)) {
+                guard PreviewPreparation.needsDocument(p) else { return }
+                await PreviewPreparation.prepare(p)
+                if !Task.isCancelled { documentsLoaded += 1 }
             }
         } else {
             Color.clear
