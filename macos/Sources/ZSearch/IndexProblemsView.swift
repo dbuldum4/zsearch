@@ -229,7 +229,7 @@ struct IndexProblemsView: View {
         Task {
             do {
                 guard case let .retried(r)? = try await model.problemsRequest(request) else { return }
-                var text = r.retried == 0 ? "Nothing to read again." : "\(r.retried.formatted()) \(r.retried == 1 ? "file is" : "files are") read again: the index is updating."
+                var text = r.retried == 0 ? "Nothing to read again." : "\(r.retried.formatted()) \(r.retried == 1 ? "file is" : "files are") \(Self.reading(r.reading))"
                 if let first = r.refused.first { text += " \((first.path as NSString).lastPathComponent): \(first.reason)" }
                 message = text
                 if let e = explanation, r.retried > 0 { await explain(e.path) }
@@ -237,6 +237,16 @@ struct IndexProblemsView: View {
             } catch {
                 message = error.localizedDescription
             }
+        }
+    }
+
+    /// How the engine says the marked files will be read (absent from older engines, where a
+    /// retry always started an update at once).
+    private static func reading(_ reading: String?) -> String {
+        switch reading {
+        case "next": return "will be read when the update in progress ends."
+        case "waiting": return "will be read at the next update, once the other zsearch process finishes updating the index."
+        default: return "read again: the index is updating."
         }
     }
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs, progressLine } from "../src/cli.ts"
+import { acquireLock } from "../src/index/lock.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -169,6 +170,21 @@ describe("zsearch command line", () => {
     expect(retry.code).toBe(0)
     expect(retry.err).toContain("1 file is read again with the next index update.")
     expect((await zs("retry", "~/notes/recipes/pancakes.txt")).code).toBe(1)
+  })
+
+  test("retry while another process holds the lock says the files wait for it", async () => {
+    corpus.write("Documents/stuck.docx", "not really a docx")
+    expect((await zs("index", "--quiet")).code).toBe(0)
+    // Held from here, as another zsearch process would hold it.
+    const release = acquireLock(join(corpus.home, ".zsearch-data", "index.lock"))!
+    try {
+      const r = await zs("retry", "unreadable")
+      expect(r.code).toBe(0)
+      expect(r.err).toContain("read again with the next index update")
+      expect(r.err).toContain("is updating the index")
+    } finally {
+      release()
+    }
   })
 
   test("config get/set/path with validation", async () => {

@@ -318,6 +318,10 @@ public struct RetryResult: Decodable, Hashable, Sendable {
     public var retried: Int
     /// Files a retry would not help, and why.
     public var refused: [Refusal]
+    /// When the marked files will be read: an update starts "now", one is running ("next": the
+    /// one that follows it reads them), or another zsearch process holds the index ("waiting").
+    /// Absent from engines that predate the field, and when nothing was marked.
+    public var reading: String?
 }
 
 public enum Mode: String, Codable, CaseIterable, Sendable {

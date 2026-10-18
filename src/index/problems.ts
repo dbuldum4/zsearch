@@ -515,13 +515,13 @@ function searchableAnyway(row: FileRow, c: Context): { searchable: "content" | "
  * Only problems a retry may help are marked (see `RETRYABLE`): keys, names-only and cloud files
  * are never read this way, nor files whose settings decide the outcome.
  */
-export function retryProblems(db: Database, config: Config, target: { category?: ProblemCategory; paths?: string[] }): RetryResult {
+export async function retryProblems(db: Database, config: Config, target: { category?: ProblemCategory; paths?: string[] }): Promise<RetryResult> {
   const { category, paths } = target
   if (category) {
     if (!RETRYABLE.has(category)) throw new Error(`Reading these files again would not change anything. ${NOT_RETRYABLE[category as keyof typeof NOT_RETRYABLE]}`)
     problemSet(db, context(config))
     const ids = (db.query(`SELECT id FROM temp.problem_set WHERE rank = ${rank(category)} AND retry = 1`).values() as [number][]).map(([id]) => id)
-    markPending(db, ids)
+    await markPending(db, ids)
     return { retried: ids.length, refused: [] }
   }
   const wanted = [...new Set((paths ?? []).map((path) => resolvePath(path.trim())))]
@@ -544,13 +544,32 @@ export function retryProblems(db: Database, config: Config, target: { category?:
     const fix = e.category && !e.retry && e.setting ? NOT_RETRYABLE[e.category as keyof typeof NOT_RETRYABLE] : ""
     return { path, reason: e.category ? `${e.reason}${fix ? ` ${fix}` : ""}` : `Nothing to read again. ${e.reason}` }
   })
-  markPending(db, ids)
+  await markPending(db, ids)
   return { retried: ids.length, refused }
 }
 
-function markPending(db: Database, ids: number[]) {
+/** Files marked per write: a whole category can be many, and one long write would freeze a server's thread. */
+const MARK_CHUNK = 5000
+/** Short waits for a writer that is not letting go, after busy_timeout has already waited. */
+const MARK_TRIES = 4
+
+async function markPending(db: Database, ids: number[]) {
   const mark = db.query(`UPDATE files SET content_state = ${ContentState.Pending}, note = NULL WHERE id = ?`)
-  db.transaction(() => {
-    for (const id of ids) mark.run(id)
-  }).immediate()
+  for (let at = 0; at < ids.length; at += MARK_CHUNK) {
+    const chunk = ids.slice(at, at + MARK_CHUNK)
+    for (let tries = 1; ; tries++) {
+      try {
+        db.transaction(() => {
+          for (const id of chunk) mark.run(id)
+        }).immediate()
+        break
+      } catch (e) {
+        if (tries >= MARK_TRIES || !/busy|locked/i.test((e as Error).message)) {
+          throw new Error("The index is being updated by another zsearch process, which did not let go. Try again in a moment.", { cause: e })
+        }
+        await Bun.sleep(100 * tries)
+      }
+    }
+    if (at + MARK_CHUNK < ids.length) await Bun.sleep(0)
+  }
 }

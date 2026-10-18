@@ -107,16 +107,19 @@ test("mcp: diagnostics follow current exclusions, and every advertised page can 
     expect(status.data.problems.find((p: Msg) => p.category === "unreadable").count).toBeGreaterThanOrEqual(2)
     expect(status.text).toContain("could not be read")
 
-    // Excluded locally, without updating the index: the stored row stays, but is not shown.
+    // Excluded locally, without updating the index: the stored row stays, but is not shown or counted.
     saveLocal({ ...defaultConfig(), roots: ["~"], exclude: ["~/secret"] })
     expect((await c.call("search", { query: "confidential-merger" })).data.hits).toEqual([])
     const after = await c.call("index_status", { errors: true })
     expect(after.data.unreadableFiles.map((f: Msg) => f.path)).toEqual([join(home, "public/broken-report.docx")])
     expect(after.text).not.toContain("confidential")
+    expect(after.data.problems.find((p: Msg) => p.category === "unreadable").count).toBe(1)
     // Ignore rules too.
     write("public/.zsearchignore", "broken-*\n")
     expect((await c.call("index_status", { errors: true })).data.unreadableFiles).toEqual([])
     expect((await c.call("index_status", { errors: true, errors_limit: 1 })).data.unreadableFiles).toEqual([])
+    const ignored = await c.call("index_status")
+    expect(ignored.data.problems.find((p: Msg) => p.category === "unreadable")).toBeUndefined()
 
     // Pages up to the end of the result pool are accepted when advertised.
     const page = await c.call("search", { query: "pagetoken", limit: 20, offset: 800 })

@@ -14,7 +14,7 @@ import { type IndexStats, openDb } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import { policyFor, crawlOptionsFor } from "../index/policy.ts"
-import { eachProblem, PROBLEM_CATEGORIES, type ProblemCategory, type ProblemCount, problemCounts } from "../index/problems.ts"
+import { eachProblem, PROBLEM_CATEGORIES, PROBLEM_LABELS, type ProblemCategory, type ProblemCount } from "../index/problems.ts"
 import { excludingPath } from "../index/exclude.ts"
 import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
@@ -221,10 +221,29 @@ class Host {
     return out
   }
 
-  /** Problems by category: only categories that have some. */
+  /**
+   * Problems by category: only categories that have some. Counted over the same policy filter as
+   * the listing, so a file the current settings exclude is not counted either. A fresh checker
+   * per call (never reused, like search): the cost is a stat per problem file.
+   */
   async problemCounts(): Promise<ProblemCount[]> {
     await this.client.waitReady()
-    return problemCounts(this.database(), this.reloadConfig())
+    const config = this.reloadConfig()
+    const check = policyFor(crawlOptionsFor(config))
+    const counts = new Map<ProblemCategory, { n: number; retry: boolean }>()
+    for (const p of eachProblem(this.database(), config)) {
+      if (!check(p.path).allowed) continue
+      const c = counts.get(p.category) ?? { n: 0, retry: false }
+      c.n += 1
+      c.retry ||= p.retry
+      counts.set(p.category, c)
+    }
+    return PROBLEM_CATEGORIES.filter((category) => counts.has(category)).map((category) => ({
+      category,
+      label: PROBLEM_LABELS[category],
+      count: counts.get(category)!.n,
+      retry: counts.get(category)!.retry,
+    }))
   }
 
   /** Start an index run with the current settings, unless one is running here or elsewhere. */

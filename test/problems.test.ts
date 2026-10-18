@@ -132,9 +132,9 @@ describe("indexing problems", () => {
   })
 
   test("retrying marks files for the next update; privacy and settings problems are refused", async () => {
-    expect(() => retryProblems(db, config(), { category: "secret" })).toThrow("never read")
-    expect(() => retryProblems(db, config(), { category: "too-large" })).toThrow("content.maxDocumentMB or content.maxTextMB")
-    const one = retryProblems(db, config(), { paths: [at("Documents/broken.docx"), at("Documents/keys/server.pem"), "~/notes/recipes/pancakes.txt"] })
+    await expect(retryProblems(db, config(), { category: "secret" })).rejects.toThrow("never read")
+    await expect(retryProblems(db, config(), { category: "too-large" })).rejects.toThrow("content.maxDocumentMB or content.maxTextMB")
+    const one = await retryProblems(db, config(), { paths: [at("Documents/broken.docx"), at("Documents/keys/server.pem"), "~/notes/recipes/pancakes.txt"] })
     expect(one.retried).toBe(1)
     expect(one.refused.map((r) => r.path)).toEqual([at("Documents/keys/server.pem"), at("notes/recipes/pancakes.txt")])
     expect(one.refused[0]!.reason).toContain("never read")
@@ -145,9 +145,26 @@ describe("indexing problems", () => {
     const run = await new Indexer(db, config(), { inProcess: true }).run()
     expect(run.contentErrors).toBe(1)
     expect(row().state).toBe(ContentState.Error)
-    expect(retryProblems(db, config(), { category: "unreadable" }).retried).toBe(1)
+    expect((await retryProblems(db, config(), { category: "unreadable" })).retried).toBe(1)
     expect(row().state).toBe(ContentState.Pending)
-    expect(retryProblems(db, config(), { category: "timeout" }).retried).toBe(1)
+    expect((await retryProblems(db, config(), { category: "timeout" })).retried).toBe(1)
+  })
+
+  test("marking files for another read gives up clearly when the index stays busy", async () => {
+    const path = join(corpus.home, "busy.db")
+    const writer = openDb(path)
+    const reader = openDb(path)
+    try {
+      writer.query("INSERT INTO files(path, name, ext, kind, content_state, note) VALUES (?, 'x.docx', 'docx', 'doc', 2, 'corrupt piece table')").run(at("x.docx"))
+      reader.exec("PRAGMA busy_timeout = 50")
+      writer.exec("BEGIN IMMEDIATE")
+      await expect(retryProblems(reader, config(), { category: "unreadable" })).rejects.toThrow("did not let go")
+      writer.exec("ROLLBACK")
+      expect((await retryProblems(reader, config(), { category: "unreadable" })).retried).toBe(1)
+    } finally {
+      writer.close()
+      reader.close()
+    }
   })
 
   test("older indexes get the column that says when contents were read", () => {
@@ -192,7 +209,7 @@ describe("indexing problems", () => {
     }
   })
 
-  test("files there was no reader for are not offered to read again", () => {
+  test("files there was no reader for are not offered to read again", async () => {
     const own = openDb(":memory:")
     try {
       const add = (rel: string, ext: string, kind: string, note: string) =>
@@ -208,11 +225,11 @@ describe("indexing problems", () => {
       expect(problemCounts(own, config())).toEqual([{ category: "no-text", label: "No text found", count: 3, retry: true }])
 
       // Only the file nothing was found in is read again.
-      expect(retryProblems(own, config(), { category: "no-text" }).retried).toBe(1)
+      expect((await retryProblems(own, config(), { category: "no-text" })).retried).toBe(1)
       const state = (rel: string) => (own.query("SELECT content_state AS s FROM files WHERE path = ?").get(at(rel)) as { s: number }).s
       expect([state("Documents/blank.pdf"), state("Documents/unread.pdf"), state("Pictures/photo.jpg")]).toEqual([ContentState.Pending, ContentState.Skipped, ContentState.Skipped])
       expect(problemCounts(own, config())).toEqual([{ category: "no-text", label: "No text found", count: 2, retry: false }])
-      const refused = retryProblems(own, config(), { paths: [at("Pictures/photo.jpg")] })
+      const refused = await retryProblems(own, config(), { paths: [at("Pictures/photo.jpg")] })
       expect(refused.retried).toBe(0)
       expect(refused.refused[0]!.reason).toContain("OCR")
     } finally {

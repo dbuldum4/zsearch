@@ -597,7 +597,7 @@ async function cmdRetry(rest: string[], args: Args): Promise<number> {
   const db = openDb(p.db)
   let retried: number
   try {
-    const result = retryProblems(db, loadConfig(), category ? { category } : { paths: rest })
+    const result = await retryProblems(db, loadConfig(), category ? { category } : { paths: rest })
     for (const r of result.refused) console.error(`${tildify(r.path)}: ${r.reason}`)
     retried = result.retried
   } finally { db.close() }

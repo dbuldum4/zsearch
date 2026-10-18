@@ -7,6 +7,7 @@
  * The server exits when stdin closes.
  */
 import type { Database } from "bun:sqlite"
+import { statSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { type Config, configExists, configStamp, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
 import { type IndexStats, openDb } from "./index/db.ts"
@@ -60,10 +61,15 @@ type ServeOut =
   | { type: "semanticDownload"; file: string; received: number; total: number }
   | ({ id?: number; type: "problems" } & ProblemList)
   | { id?: number; type: "explanation"; explanation: Explanation }
-  | ({ id?: number; type: "retried" } & RetryResult)
+  | ({ id?: number; type: "retried" } & RetryResult & { reading?: RetryReading })
 
 /** Progress events are throttled to this interval; the last one before `indexDone` always goes out. */
 const PROGRESS_MS = 100
+/** How often a waiting retry checks whether the process holding the index lock has finished. */
+const RETRY_POLL_MS = 2000
+
+/** When the files a retry marked will be read: a run starts now, one is running (its successor reads them), or another process holds the lock. */
+type RetryReading = "now" | "next" | "waiting"
 
 export async function serve(version: string): Promise<number> {
   const p = ensureDirs()
@@ -81,9 +87,30 @@ export async function serve(version: string): Promise<number> {
   const downloading: { run: AbortController | null } = { run: null }
   /** A run to start when the one going ends: it started before semantic search was installed. */
   let followUp: { meaningOnly: boolean } | null = null
+  /** Files marked to be read again (a retry) that no update has started for yet. */
+  let retryWaiting = false
+  /** While set, checks for the process holding the index lock to finish, so the retry's update can start. */
+  let retryPoll: ReturnType<typeof setInterval> | null = null
   /** A connection of this thread's own, for indexing problems: the search worker's protocol does not cover them. */
-  const own: { db: Database | null } = { db: null }
-  const database = () => (own.db ??= openDb(p.db))
+  const own: { db: Database | null; stamp: string } = { db: null, stamp: "" }
+  const database = () => {
+    // `zsearch reset` deletes the index file; a new one gets another inode. A connection kept
+    // across that would go on reading the deleted file. (ctime too: an inode can be reused.)
+    let stamp = "gone"
+    try {
+      const s = statSync(p.db)
+      stamp = `${s.dev}:${s.ino}:${s.ctimeMs}`
+    } catch {}
+    if (own.db && own.stamp !== stamp) {
+      own.db.close()
+      own.db = null
+    }
+    if (!own.db) {
+      own.db = openDb(p.db)
+      own.stamp = stamp
+    }
+    return own.db
+  }
   const watcher = new RootWatcher(() => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
@@ -96,6 +123,22 @@ export async function serve(version: string): Promise<number> {
 
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
+
+  /**
+   * Start the update that reads the files a retry marked, as soon as the index is free: when a
+   * run ends (however it ends), and by polling while another process holds the lock.
+   */
+  const retryWhenPossible = () => {
+    if (closed || index || !retryWaiting) return
+    if (lockHolder(p.lock) === null) return startIndex(undefined, false, true)
+    retryPoll ??= setInterval(() => {
+      if (closed || index || !retryWaiting || lockHolder(p.lock) !== null) return
+      if (retryPoll) clearInterval(retryPoll)
+      retryPoll = null
+      startIndex(undefined, false, true)
+    }, RETRY_POLL_MS)
+    retryPoll.unref?.()
+  }
 
   /** `background`: the run started on its own (file changes, the app's schedule), not on request. */
   const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false) => {
@@ -131,11 +174,20 @@ export async function serve(version: string): Promise<number> {
       },
       onCommit: () => client.refresh(),
     }, rebuild, background, meaningOnly)
+    // This run reads whatever a retry marked: nothing is waiting any more. Unless the run never
+    // takes the lock: then it read nothing, and the retry goes back to waiting.
+    const forRetry = retryWaiting
     index = run
+    retryWaiting = false
+    if (retryPoll) {
+      clearInterval(retryPoll)
+      retryPoll = null
+    }
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
       if (trailing) clearTimeout(trailing)
       index = null
+      if (outcome.status === "locked" && forRetry) retryWaiting = true
       if (pending) send({ type: "indexProgress", progress: pending })
       client.refresh(true)
       if (outcome.status === "fatal") send({ type: "indexDone", status: "error", error: outcome.error })
@@ -144,6 +196,7 @@ export async function serve(version: string): Promise<number> {
       const next = followUp
       followUp = null
       if (next && outcome.status !== "cancelled") startIndex(undefined, false, true, next.meaningOnly)
+      retryWhenPossible()
     })
   }
 
@@ -280,14 +333,15 @@ export async function serve(version: string): Promise<number> {
         const paths = Array.isArray(msg.paths) ? msg.paths.filter((path): path is string => typeof path === "string") : undefined
         if (msg.category !== undefined && !isProblemCategory(msg.category)) return send({ id, type: "error", error: `unknown problem category "${msg.category}"` })
         if (!msg.category && !paths?.length) return send({ id, type: "error", error: "retryProblems needs paths or a category" })
-        const result = retryProblems(database(), config, msg.category ? { category: msg.category } : { paths })
-        send({ id, type: "retried", ...result })
+        const result = await retryProblems(database(), config, msg.category ? { category: msg.category } : { paths })
         // Read them now, even with Only when I ask: someone asked. A run going may have listed
-        // the files to read before these were marked: another follows it.
-        if (result.retried) {
-          if (index) followUp = { meaningOnly: false }
-          else if (lockHolder(p.lock) === null) startIndex()
-        }
+        // the files to read before these were marked, so one follows it (however it ends); while
+        // another process holds the lock, one starts when it finishes (see retryWhenPossible).
+        const reading: RetryReading | undefined = !result.retried ? undefined : index ? "next" : lockHolder(p.lock) !== null ? "waiting" : "now"
+        if (reading === "next" || reading === "waiting") retryWaiting = true
+        send({ id, type: "retried", ...result, ...(reading ? { reading } : {}) })
+        if (reading === "now") startIndex()
+        else retryWhenPossible()
         return
       }
       default:
@@ -317,6 +371,7 @@ export async function serve(version: string): Promise<number> {
   }
   // stdin closed: finish what was asked, stop indexing cleanly, and exit.
   closed = true
+  if (retryPoll) clearInterval(retryPoll)
   downloading.run?.abort()
   estimating.run?.cancel()
   watcher.close()

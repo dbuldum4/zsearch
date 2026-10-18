@@ -627,7 +627,12 @@ final class SearchModel {
         QuickPanel.shared.fileOpened()
         explaining = hit.path
         NSApp.activate(ignoringOtherApps: true)
-        openProblemsWindow?()
+        if let openProblemsWindow {
+            openProblemsWindow()
+        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("problems") == true }) {
+            // Nothing has captured openWindow yet, but the window exists: bring it forward.
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     /// Update the index only when asked: no schedule and no file watching.
