@@ -8,6 +8,8 @@ public struct LineMatch: Decodable, Hashable, Sendable {
     public var page: Int
     public var text: String
     public var ranges: [[Int]]
+    /// Audio and video: where the line's transcript segment starts, in seconds.
+    public var startSeconds: Double?
 }
 
 public struct SearchHit: Decodable, Hashable, Identifiable, Sendable {
@@ -186,6 +188,8 @@ public struct Config: Codable, Hashable, Sendable {
     public var pauseOnBattery: Bool?
     /// Semantic search. Nil from engines without it.
     public var semantic: SemanticConfig?
+    /// Keep and show the searches results were opened from. Nil from engines older than this setting.
+    public var searchHistory: Bool?
 }
 
 public struct SemanticConfig: Codable, Hashable, Sendable {
@@ -259,6 +263,48 @@ public enum Mode: String, Codable, CaseIterable, Sendable {
     case find, fuzzy, semantic
 }
 
+/// A search kept under a name. Filters and sorting are part of the query text.
+public struct SavedSearch: Codable, Hashable, Sendable, Identifiable {
+    public var name: String
+    public var query: String
+    public var mode: Mode
+
+    public var id: String { name }
+
+    public init(name: String, query: String, mode: Mode) {
+        self.name = name
+        self.query = query
+        self.mode = mode
+    }
+}
+
+/// A search a result was opened from (`rememberSearch`).
+public struct RecentSearch: Codable, Hashable, Sendable, Identifiable {
+    public var query: String
+    public var mode: Mode
+    /// Milliseconds since 1970.
+    public var at: Double
+
+    public var id: String { query }
+
+    public init(query: String, mode: Mode, at: Double) {
+        self.query = query
+        self.mode = mode
+        self.at = at
+    }
+}
+
+/// Saved searches by name, and recent searches newest first (`searches` replies).
+public struct Searches: Decodable, Hashable, Sendable {
+    public var saved: [SavedSearch]
+    public var recent: [RecentSearch]
+
+    public init(saved: [SavedSearch] = [], recent: [RecentSearch] = []) {
+        self.saved = saved
+        self.recent = recent
+    }
+}
+
 /// A request to the engine. `id` is added by `EngineConnection`.
 public enum Request: Sendable {
     case search(query: String, mode: Mode, limit: Int = 200)
@@ -292,6 +338,15 @@ public enum Request: Sendable {
     case semanticCancelInstall
     /// Turn semantic search off and delete its model and index.
     case semanticRemove
+    /// Saved searches and recent history. This and the changes below reply `searches`.
+    case searches
+    /// Save under `name`, replacing the saved search already called that (in any case).
+    case saveSearch(name: String, query: String, mode: Mode)
+    case renameSearch(name: String, to: String)
+    case deleteSearch(name: String)
+    /// Keep a search a result was opened from in the history.
+    case rememberSearch(query: String, mode: Mode)
+    case clearRecent
 }
 
 public struct ConfigPatch: Encodable, Hashable, Sendable {
@@ -307,6 +362,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var liveUpdates: Bool?
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
+    public var searchHistory: Bool?
     public var semantic: SemanticConfig?
 
     public init(
@@ -322,6 +378,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         liveUpdates: Bool? = nil,
         pauseOnLowPower: Bool? = nil,
         pauseOnBattery: Bool? = nil,
+        searchHistory: Bool? = nil,
         semantic: SemanticConfig? = nil
     ) {
         self.roots = roots
@@ -336,6 +393,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.liveUpdates = liveUpdates
         self.pauseOnLowPower = pauseOnLowPower
         self.pauseOnBattery = pauseOnBattery
+        self.searchHistory = searchHistory
         self.semantic = semantic
     }
 
@@ -354,6 +412,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             liveUpdates: config.liveUpdates,
             pauseOnLowPower: config.pauseOnLowPower,
             pauseOnBattery: config.pauseOnBattery,
+            searchHistory: config.searchHistory,
             semantic: config.semantic
         )
     }
@@ -375,6 +434,8 @@ extension Request {
         var rebuild: Bool?
         var roots: [String]?
         var background: Bool?
+        var name: String?
+        var to: String?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -418,6 +479,18 @@ extension Request {
             w.type = "semanticCancelInstall"
         case .semanticRemove:
             w.type = "semanticRemove"
+        case .searches:
+            w.type = "searches"
+        case let .saveSearch(name, query, mode):
+            w.type = "saveSearch"; w.name = name; w.query = query; w.mode = mode
+        case let .renameSearch(name, to):
+            w.type = "renameSearch"; w.name = name; w.to = to
+        case let .deleteSearch(name):
+            w.type = "deleteSearch"; w.name = name
+        case let .rememberSearch(query, mode):
+            w.type = "rememberSearch"; w.query = query; w.mode = mode
+        case .clearRecent:
+            w.type = "clearRecent"
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -443,6 +516,7 @@ public enum Message: Hashable, Sendable {
     case estimate(EstimateReply)
     case semantic(SemanticStatus)
     case semanticDownload(DownloadProgress)
+    case searches(Searches)
     /// A message type this version of the app does not know.
     case unknown(type: String)
 }
@@ -491,6 +565,7 @@ public struct Envelope: Hashable, Sendable {
         case "estimate": message = .estimate(try d.decode(EstimateReply.self, from: line))
         case "semantic": message = .semantic(try d.decode(SemanticBody.self, from: line).status)
         case "semanticDownload": message = .semanticDownload(try d.decode(DownloadProgress.self, from: line))
+        case "searches": message = .searches(try d.decode(Searches.self, from: line))
         case "refreshed":
             let r = try d.decode(RefreshedBody.self, from: line)
             message = .refreshed(files: r.files, changed: r.changed)

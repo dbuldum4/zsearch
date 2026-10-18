@@ -33,6 +33,7 @@ import { runSemanticPass, semanticAvailable } from "./semantic/indexer.ts"
 import { removeSemantic, semanticStatus } from "./semantic/manage.ts"
 import { downloadModels, GRANITE, modelBytes } from "./semantic/model.ts"
 import { semanticDbPath } from "./semantic/store.ts"
+import { clearRecent, deleteSearch, findSaved, loadSearches, renameSearch, saveSearch } from "./searches.ts"
 
 export const VERSION: string = pkg.version
 
@@ -47,6 +48,8 @@ Usage
   zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
   zsearch duplicates [--json]      find identical indexed files
   zsearch exclude <path>          exclude an indexed file or folder
+  zsearch saved [list|add|rename|rm|run]  saved searches (query, mode and filters)
+  zsearch history [clear]         searches you opened results from
   zsearch semantic [status|install|remove]  semantic search (downloads Granite)
   zsearch doctor                  check optional tools and the index
   zsearch reset                   delete the index
@@ -202,6 +205,10 @@ export async function main(argv: string[]): Promise<number> {
         return cmdDoctor()
       case "semantic":
         return await cmdSemantic(rest, args)
+      case "saved":
+        return await cmdSaved(rest, args)
+      case "history":
+        return cmdHistory(rest, args)
       case "serve": {
         const { serve } = await import("./serve.ts")
         return await serve(VERSION)
@@ -655,6 +662,96 @@ async function cmdSemantic(rest: string[], args: Args): Promise<number> {
   }
 }
 
+/* ------------------------------------------------------- saved searches -- */
+
+async function cmdSaved(rest: string[], args: Args): Promise<number> {
+  const [action = "list", name, ...more] = rest
+  switch (action) {
+    case "list":
+    case "ls": {
+      const { saved } = loadSearches()
+      if (flag(args, "json")) {
+        console.log(JSON.stringify(saved, null, 2))
+        return 0
+      }
+      if (!saved.length) {
+        console.log('No saved searches. Save one with: zsearch saved add "Recent invoices" invoice type:pdf mtime:<30d')
+        return 0
+      }
+      const width = Math.max(...saved.map((s) => Bun.stringWidth(s.name)))
+      for (const s of saved) console.log(`${s.name}${" ".repeat(width - Bun.stringWidth(s.name))}  ${s.mode.padEnd(8)}  ${s.query}`)
+      return 0
+    }
+    case "add":
+    case "save": {
+      if (!name || !more.length) throw new UsageError("saved add <name> <query> [-m find|fuzzy|semantic]")
+      let query = more.join(" ")
+      if (flag(args, "regex", "e") === true) query = `re:${query}`
+      if (typeof flag(args, "sort") === "string") query += ` sort:${flag(args, "sort")}`
+      // As `search` would run it: find unless -m says otherwise.
+      const mode = parseMode(flag(args, "mode", "m")) ?? "find"
+      const replaced = findSaved(loadSearches(), name)
+      const entry = findSaved(saveSearch(name, query, mode), name)!
+      console.log(`${replaced ? "Replaced" : "Saved"} "${entry.name}": ${entry.query} (${entry.mode})`)
+      return 0
+    }
+    case "rename":
+    case "mv": {
+      if (!name || more.length !== 1) throw new UsageError("saved rename <name> <new name>")
+      renameSearch(name, more[0]!)
+      console.log(`Renamed "${name}" to "${more[0]!.trim()}".`)
+      return 0
+    }
+    case "rm":
+    case "remove":
+    case "delete": {
+      if (!name || more.length) throw new UsageError("saved rm <name>")
+      const entry = findSaved(loadSearches(), name)
+      deleteSearch(name)
+      console.log(`Deleted "${entry?.name ?? name}".`)
+      return 0
+    }
+    case "run": {
+      if (!name || more.length) throw new UsageError("saved run <name> [search options]")
+      const entry = findSaved(loadSearches(), name)
+      // 2 as for `search`'s errors: 1 means the search found nothing.
+      if (!entry) throw new UsageError(`no saved search is called "${name}" (zsearch saved lists them)`)
+      // Output options apply as to `search`; `-m` runs it in another mode.
+      const flags = new Map(args.flags)
+      if (flag(args, "mode", "m") === undefined) flags.set("mode", entry.mode)
+      return await cmdSearch(entry.query, { _: [], flags })
+    }
+    default:
+      throw new UsageError(`unknown saved action "${action}" (list, add, rename, rm, run)`)
+  }
+}
+
+function cmdHistory(rest: string[], args: Args): number {
+  const action = rest[0] ?? "list"
+  if (action === "clear") {
+    clearRecent()
+    console.log("Search history cleared.")
+    return 0
+  }
+  if (action !== "list") throw new UsageError(`unknown history action "${action}" (list, clear)`)
+  const { recent } = loadSearches()
+  if (!loadConfig().searchHistory) {
+    if (flag(args, "json")) console.log("[]")
+    else {
+      console.log("Search history is off: nothing is recorded or shown. Turn it on with: zsearch config set searchHistory true")
+      if (recent.length) console.log(`${recent.length} earlier search${recent.length === 1 ? " is" : "es are"} still kept; zsearch history clear forgets them.`)
+    }
+    return 0
+  }
+  if (flag(args, "json")) {
+    console.log(JSON.stringify(recent.map((r) => ({ ...r, at: new Date(r.at).toISOString() })), null, 2))
+    return 0
+  }
+  if (!recent.length) console.log("No searches yet: a search is kept here when you open one of its results in zsearch or the Mac app.")
+  for (const r of recent) console.log(`${r.mode.padEnd(8)}  ${r.query}  ${formatAge(r.at)}`)
+  return 0
+}
+
 /* ----------------------------------------------------------------- doctor -- */
 
 function cmdDoctor(): number {
@@ -688,6 +785,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>", saved: "saved [list [--json]|add <name> <query> [-e] [--sort key] [-m mode, default find]|rename <name> <new name>|rm <name>|run <name> [search options]]", history: "history [list [--json]|clear]" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

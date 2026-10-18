@@ -8,6 +8,7 @@ import type { StatsReply } from "../search/client.ts"
 import { explainDiagnosis, type SearchDiagnosis } from "../search/diagnose.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
 import { MODES, type Mode } from "../search/query.ts"
+import type { RecentSearch } from "../searches.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "../util/text.ts"
 import { clampScroll, previewLayout, type Row, resultRows } from "./layout.ts"
 import type { IndexHandle, Services } from "./services.ts"
@@ -277,6 +278,7 @@ export function App(props: AppProps) {
     const h = current()
     if (!h) return
     svc.search.opened(h.path)
+    remember()
     if (props.printMode) return quit(h.path)
     const err = await svc.open(h.path)
     if (err) notify(`Could not open: ${err}`, "error")
@@ -288,6 +290,7 @@ export function App(props: AppProps) {
     if (!h) return
     if (h.isDir) return revealSelected()
     svc.search.opened(h.path)
+    remember()
     const line = h.lines[0]?.line
     const err = await svc.edit(
       h.path,
@@ -305,6 +308,7 @@ export function App(props: AppProps) {
   const revealSelected = async () => {
     const h = current()
     if (!h) return
+    remember()
     const err = await svc.reveal(h.path, h.isDir)
     if (err) notify(`Could not reveal: ${err}`, "error")
   }
@@ -370,6 +374,34 @@ export function App(props: AppProps) {
     else if (e.scroll?.direction === "down") scrollPreview(3)
   }
 
+  /** Keep the search a result was opened from, for Alt-↑/↓, unless history is off. */
+  const remember = () => {
+    if (config().searchHistory) svc.rememberSearch?.(query(), mode())
+  }
+
+  /** Stepping through earlier searches (Alt-↑/↓): where, and what was typed before the first step. */
+  let recalled: { list: RecentSearch[]; at: number; draft: { query: string; mode: Mode } } | null = null
+  const recall = (dir: 1 | -1) => {
+    if (!config().searchHistory) return notify("Search history is off (zsearch config set searchHistory true)")
+    recalled ??= { list: svc.recentSearches?.() ?? [], at: -1, draft: { query: query(), mode: mode() } }
+    const r = recalled
+    if (!r.list.length) {
+      recalled = null
+      return notify("No recent searches yet: a search is kept when you open one of its results")
+    }
+    const at = Math.max(-1, Math.min(r.list.length - 1, r.at + dir))
+    if (at === r.at) return
+    r.at = at
+    const next = at < 0 ? r.draft : r.list[at]!
+    if (at < 0) recalled = null
+    batch(() => {
+      setQuery(next.query)
+      setMode(next.mode)
+    })
+    if (input) input.value = next.query
+    notify(at < 0 ? "Back to your search" : `Recent search ${at + 1} of ${r.list.length}`, "info", 2000)
+  }
+
   const cycleMode = (dir: 1 | -1) => {
     const i = MODES.indexOf(mode())
     setMode(MODES[(i + dir + MODES.length) % MODES.length]!)
@@ -431,6 +463,7 @@ export function App(props: AppProps) {
     }
     if (k === "escape") return handled(() => (query() ? (input && (input.value = ""), setQuery("")) : quit()))
     if (k === "return" || k === "enter") return handled(openSelected)
+    if (key.meta && (k === "up" || k === "down")) return handled(() => recall(k === "up" ? 1 : -1))
     if (k === "up" && key.shift) return handled(() => scrollPreview(-1))
     if (k === "down" && key.shift) return handled(() => scrollPreview(1))
     if (k === "up" || (key.ctrl && (k === "p" || k === "k"))) return handled(() => move(-1))
@@ -631,7 +664,10 @@ export function App(props: AppProps) {
             placeholder="Search names and contents · try ext:pdf, in:~/Documents, /regex/, name:*.pdf"
             textColor={t().text}
             cursorColor={t().accent}
-            onInput={(v: string) => setQuery(v)}
+            onInput={(v: string) => {
+              if (v !== query()) recalled = null
+              setQuery(v)
+            }}
           />
           <StyledLine segs={searchBox()} />
         </box>
@@ -705,6 +741,7 @@ const HELP: [string, [string, string][]][] = [
       ["Ctrl-Shift-X", "exclude this file or folder"],
       ["Ctrl-Shift-O / Ctrl-Shift-T", "cycle sorting / fold preview"],
       ["Tab, Alt-1 / 2 / 3", "switch between find, fuzzy and semantic"],
+      ["Alt-↑ / Alt-↓", "earlier / later searches you opened results from"],
       ["^T", "toggle preview"],
       ["Shift-↑↓  ^D ^U", "scroll preview"],
       ["^F ^B", "next / previous match in preview"],

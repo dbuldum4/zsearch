@@ -73,11 +73,21 @@ struct SplitPanes<Left: View, Right: View>: View {
 struct PreviewTextView: NSViewRepresentable {
     let preview: FilePreview
     var wrapTextPreviews: Bool
+    /// Plays the recording from a transcript stamp that was clicked.
+    var seek: ((Double) -> Void)?
 
-    final class Coordinator {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var shown: FilePreview?
         var styled: StyledText?
         var wraps: Bool?
+        var seek: ((Double) -> Void)?
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)),
+                  let seconds = Transcript.seconds(from: url) else { return false }
+            seek?(seconds)
+            return true
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -102,6 +112,8 @@ struct PreviewTextView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width, .height]
         textView.textContainerInset = NSSize(width: 10, height: 8)
+        textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
+        textView.delegate = context.coordinator
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -115,6 +127,7 @@ struct PreviewTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
         let coordinator = context.coordinator
+        coordinator.seek = seek
         let wrappingChanged = coordinator.wraps != wrapTextPreviews
         if wrappingChanged {
             coordinator.wraps = wrapTextPreviews
@@ -192,6 +205,7 @@ struct StyledText: @unchecked Sendable {
         let matches = Set(p.matchLines)
         // Code is colored by its file type; plain text, PDFs and other documents stay plain.
         var syntax = p.isDir ? nil : SyntaxLanguage.forPath(p.path).map { SyntaxHighlighter(language: $0) }
+        let transcript = Transcript.isRecording(kind: p.kind)
 
         let out = NSMutableAttributedString()
         var ranges: [Int: NSRange] = [:]
@@ -202,6 +216,10 @@ struct StyledText: @unchecked Sendable {
             out.append(NSAttributedString(string: pad + number + "  ", attributes: matches.contains(line.n) ? matchGutter : gutter))
             let textStart = out.length
             out.append(NSAttributedString(string: line.text, attributes: body))
+            if transcript, let stamp = Transcript.stamp(in: line.text) {
+                out.addAttributes([.link: Transcript.seekURL(stamp.seconds), .toolTip: "Play from \(Transcript.format(stamp.seconds))"],
+                                  range: NSRange(location: textStart + stamp.range.location, length: stamp.range.length))
+            }
             var focus = start
             var hasMatch = false
             // Syntax tokens and engine ranges are UTF-16 offsets, the same unit NSString uses.

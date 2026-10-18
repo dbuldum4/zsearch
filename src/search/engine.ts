@@ -4,6 +4,7 @@ import { statSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
+import { segmentStart } from "../index/extract/transcribe.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
 import { onlyKeys, redactPrivateKeys, SECRET_NOTE } from "../index/secrets.ts"
 import { type Kind, semanticExcluded } from "../kinds.ts"
@@ -370,12 +371,34 @@ export class SearchEngine {
         hit.sources = hit.sources.filter((s) => s !== "content")
         hit.lines = []; hit.matchCount = 0
         if (!hit.sources.length) return false
-      }
+      } else if (hit.kind === "audio" || hit.kind === "video") this.markSegments(hit)
       return true
     })
     res.total = Math.max(res.hits.length, res.total - (returned - res.hits.length))
     res.elapsedMs = performance.now() - t0
     return res
+  }
+
+  /** A snippet line may be clipped past its stamp, so a transcript's hit lines carry their segment's start. */
+  private markSegments(hit: SearchHit) {
+    if (!hit.lines.length) return
+    const text = this.storedText(hit.id)
+    if (text === null) return
+    const starts = new Map<number, number>()
+    // Each segment's whitespace is collapsed, so a transcript has no form feeds: lines end at \n.
+    let line = 1, at = 0
+    for (const n of [...new Set(hit.lines.map((l) => l.line))].sort((a, b) => a - b)) {
+      while (line < n) {
+        const next = text.indexOf("\n", at)
+        if (next === -1) break
+        at = next + 1
+        line++
+      }
+      if (line !== n) break
+      const start = segmentStart(text.slice(at, at + 24))
+      if (start !== undefined) starts.set(n, start)
+    }
+    hit.lines = hit.lines.map((l) => (starts.has(l.line) ? { ...l, startSeconds: starts.get(l.line)! } : l))
   }
 
   private contentAuthorized(i: number, check = policyFor(crawlOptionsFor(this.config))): boolean {

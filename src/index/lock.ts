@@ -49,14 +49,17 @@ export function lockHolder(path: string): number | null {
   finally { if (fd !== undefined) closeSync(fd) }
 }
 
-/** Keep the lock inode in place: unlinking it permits two writers to lock different inodes. */
-export function acquireLock(path: string): (() => void) | null {
+/**
+ * Keep the lock inode in place: unlinking it permits two writers to lock different inodes.
+ * `waitMs`: how long to wait for another holder to let go before giving up.
+ */
+export function acquireLock(path: string, waitMs = SETTLE_TRIES * SETTLE_MS): (() => void) | null {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600)
   try {
     fchmodSync(fd, 0o600)
     let locked = tryLock(fd, LOCK_EX)
-    for (let tries = 0; !locked && tries < SETTLE_TRIES; tries++) {
+    for (const end = Date.now() + waitMs; !locked && Date.now() < end; ) {
       Bun.sleepSync(SETTLE_MS)
       locked = tryLock(fd, LOCK_EX)
     }
