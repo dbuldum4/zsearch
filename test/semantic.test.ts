@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
@@ -730,6 +730,42 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("a text changed at the same size, date and length is embedded again, and its old vectors are not used meanwhile", async () => {
+    const when = new Date("2024-05-01T00:00:00Z")
+    const before = "Parked the sedan on level two.\n"
+    const after = "Parked the bike on level 2 ok.\n"
+    expect(after.length).toBe(before.length)
+    const p = corpus.write("notes/parking.txt", before)
+    utimesSync(p, when, when)
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    const e = engine()
+    // Other extraction settings read every file again; this one's text differs, at the same length.
+    const reread = { ...config, content: { ...config.content, maxChars: config.content.maxChars + 1 } }
+    try {
+      expect((await e.search("automobile", "semantic")).hits.map((h) => h.display)).toContain("notes/parking.txt")
+      writeFileSync(p, after)
+      utimesSync(p, when, when)
+      await new Indexer(db, reread, { inProcess: true }).run()
+      e.refresh(true)
+      const r = await e.search("automobile", "semantic")
+      expect(r.strategy).toStartWith("semantic + words")
+      expect(r.hits.map((h) => h.display)).not.toContain("notes/parking.txt")
+      // The other texts read again are the same: only this one waits for vectors.
+      expect(r.semantic).toMatchObject({ pending: 1 })
+      resetLog()
+      expect((await semantic()).status).toBe("done")
+      expect(embeddedTexts()).toEqual(["parking\n\nParked the bike on level 2 ok."])
+      const now = await e.search("automobile", "semantic")
+      expect(now.semantic).toMatchObject({ pending: 0 })
+      expect(now.hits.map((h) => h.display)).not.toContain("notes/parking.txt")
+    } finally {
+      e.closeSemantic()
+      rmSync(p, { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
   test("vectors stored during a pass are read without loading the others again", async () => {
     expect((await semantic()).status).toBe("done")
     const vectors = new SemanticVectors(semanticDbPath(dbPath), 0, 0)
@@ -942,6 +978,35 @@ console.log(JSON.stringify({ complete: true, truncated: false }))
     expect(r.files).toBeGreaterThanOrEqual(110)
   })
 
+  test("vectors stored before signatures held the text's hash wait for a pass, which checks them again without embedding or waiting on power", async () => {
+    const s = store()
+    s.exec("UPDATE files SET sig = substr(sig, 1, instr(sig, ':text:') - 1) WHERE instr(sig, ':text:') > 0")
+    const legacy = (s.query("SELECT COUNT(*) AS n FROM files").get() as { n: number }).n
+    s.close()
+    expect(legacy).toBeGreaterThanOrEqual(110)
+    const e = engine()
+    try {
+      const r = await e.search("automobile", "semantic")
+      expect(r.strategy).toBe("words")
+      expect(r.notice).toContain("Granite is not ready")
+      resetLog()
+      const power = { reason: () => "Low Power Mode" } as unknown as PowerGate
+      const run = await Promise.race([semantic({ power }), Bun.sleep(30_000).then(() => null)])
+      expect(run?.status).toBe("done")
+      expect(run!.embedded).toBe(0)
+      expect(requests()).toHaveLength(0)
+      const t = store()
+      const left = (t.query("SELECT COUNT(*) AS n FROM files WHERE instr(sig, ':text:') = 0").get() as { n: number }).n
+      t.close()
+      expect(left).toBe(0)
+      e.refresh(true)
+      const now = await e.search("automobile", "semantic")
+      expect(now.strategy).toBe("semantic + words")
+      expect(now.hits[0]!.display).toMatch(/^notes\/garage( copy)?\.txt$/)
+    } finally {
+      e.closeSemantic()
+    }
+  })
   test("partial Granite uses words and does not embed at search time", async () => {
     const s = store()
     const ids = (db.query("SELECT id FROM files WHERE name LIKE 'garage%'").values() as number[][]).map((r) => r[0]!)

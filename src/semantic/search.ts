@@ -245,6 +245,8 @@ export class VectorIndex {
   dim = 0
   complete = true
   completeSeq: string | null = null
+  /** When the last completed pass finished (`last_run_at`), as loaded. */
+  passAt: string | null = null
   /** The model and helper the vectors were made with (see `semanticFingerprint`). */
   fingerprint: string | null = null
   /** What each file's passages were made from (see `semanticCandidates`), for files with every passage and its vector here. */
@@ -492,6 +494,7 @@ export class VectorIndex {
 
   private finish(db: Database, files: FileRow[]) {
     this.completeSeq = getMeta(db, "complete_seq")
+    this.passAt = getMeta(db, "last_run_at")
     this.fingerprint = getMeta(db, "fingerprint")
     this.complete = !!this.completeSeq && this.missing.size === 0
     for (const [file, sig, upto, total] of files) {
@@ -570,7 +573,9 @@ export class SemanticVectors {
       if (this.index && this.index.fingerprint === stored) {
         if (dv === this.version) return this.index
         const published = getMeta(this.db, "complete_seq") === sequence
-        const wait = !published ? this.partialReloadMs : this.index.isCompleteFor(sequence) ? this.minReloadMs : 0
+        // A pass completed since, for the same sequence (new settings, or old signatures checked again), is new too.
+        const loaded = this.index.isCompleteFor(sequence) && this.index.passAt === getMeta(this.db, "last_run_at")
+        const wait = !published ? this.partialReloadMs : loaded ? this.minReloadMs : 0
         if (Date.now() - this.loadedAt < wait) return this.index
       }
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()

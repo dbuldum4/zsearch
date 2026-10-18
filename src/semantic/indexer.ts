@@ -136,7 +136,7 @@ export function semanticFingerprint(vectorVersion: number): string {
   return `${modelFingerprint(GRANITE)} vectors${vectorVersion} chunks${CHUNKER_VERSION}`
 }
 
-/** What a file's passages are read from: its size, date and text length, and the title they go to the model with. */
+/** What a file's passages are read from: its size, date and text length, and the title they go to the model with (see `Candidate.sig`). */
 export function textSig(size: number, mtime: number, len: number, title: string): string {
   return `t:${size}:${mtime}:${len}:${title}`
 }
@@ -146,7 +146,10 @@ export interface Candidate {
   path: string
   name: string
   kind: Kind
+  /** `base` and a hash of the stored text: extraction can change a text and keep its length (OCR, other settings). */
   sig: string
+  /** `textSig`, and the transcription language for recordings: the whole signature before it held the text's hash. */
+  base: string
   mtime: number
   /** Characters of stored text. */
   len: number
@@ -157,6 +160,8 @@ interface Queued extends Candidate {
   from: number
   /** All its passages, once this run has cut its text: round two skips the files it finished. */
   total?: number
+  /** Stored with a signature from before it held the text's hash: its passages most likely have vectors already. */
+  recheck?: boolean
 }
 
 /** One passage needing a vector, and the files waiting for it. */
@@ -321,7 +326,7 @@ export class SemanticIndexer {
     const queue: Queued[] = []
     for (const c of candidates) {
       const k = known.get(c.id)
-      if (!k || k.sig !== c.sig) queue.push({ ...c, from: 0 })
+      if (!k || k.sig !== c.sig) queue.push({ ...c, from: 0, recheck: k?.sig === c.base })
       else if (k.upto < k.total) queue.push({ ...c, from: k.upto })
     }
     // Newest first.
@@ -332,7 +337,8 @@ export class SemanticIndexer {
       this.finish(store, true)
       return summary
     }
-    const big = queue.length >= BIG_RUN
+    // Files only checked again cost reading, not embedding: they don't make the run wait on power.
+    const big = queue.filter((q) => !q.recheck).length >= BIG_RUN
     if (!(await this.waitPower(big))) return { ...summary, status: "cancelled" }
 
     const stats = { files: new Set<number>() }
@@ -511,15 +517,19 @@ export function semanticCandidates(main: Database, config: Config, policy = poli
   const kinds = [...TEXT_KINDS, ...(config.semantic.code ? CODE_KINDS : [])]
   const out: Candidate[] = []
   // Searches ask for these after every index change: most indexed files can be code, left out here rather than read.
+  // The writer stores each text's hash (`textHash`) as it stores the text.
   const rows = main
-    .query(`SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0 AND kind IN (${kinds.map(() => "?").join(", ")})${since === undefined ? "" : " AND seq > ?"}`)
-    .all(ContentState.Indexed, ...kinds, ...(since === undefined ? [] : [since])) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
+    .query(`SELECT f.id, f.path, f.name, f.kind, f.size, f.mtime, f.content_len AS len, f.source_path AS source, lower(hex(m.hash)) AS hash, m.text AS text FROM files f LEFT JOIN content_map m ON m.id = f.id WHERE f.is_dir = 0 AND f.content_state = ? AND f.content_len > 0 AND f.kind IN (${kinds.map(() => "?").join(", ")})${since === undefined ? "" : " AND f.seq > ?"}`)
+    .all(ContentState.Indexed, ...kinds, ...(since === undefined ? [] : [since])) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string; hash: string | null; text: number | null }[]
   for (const r of rows) {
     if (semanticExcluded(r.path)) continue
     const p = policy(r.path)
     if (p.allowed && p.content && !secretFile(r.path) && (!r.source || r.source === p.real)) {
       const speech = r.kind === "audio" || r.kind === "video" ? `:speech:${config.content.transcriptionLocale}` : ""
-      out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: textSig(r.size, r.mtime, r.len, titleOf(r.name)) + speech, mtime: r.mtime, len: r.len })
+      const base = textSig(r.size, r.mtime, r.len, titleOf(r.name)) + speech
+      // A text written without its hash (through the `content` view) is told apart by where it is kept.
+      const text = r.hash || `#${r.text ?? "none"}`
+      out.push({ id: r.id, path: r.path, name: r.name, kind: r.kind, sig: `${base}:text:${text}`, base, mtime: r.mtime, len: r.len })
     }
   }
   return out
