@@ -209,7 +209,7 @@ struct IndexProblemsView: View {
 
     private func explain(_ path: String) async {
         do {
-            guard case let .explanation(e)? = try await model.problemsRequest(.explain(path: path)) else { return }
+            guard case let .explanation(e)? = try await model.problemsRequest(.explainPath(path: path)) else { return }
             explanation = e
         } catch {
             message = error.localizedDescription

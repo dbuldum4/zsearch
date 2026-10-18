@@ -257,6 +257,11 @@ export async function serve(version: string): Promise<number> {
         return send(response ? { id, type: "results", response } : { id, type: "cancelled" })
       }
       case "explain": {
+        // Path explanations and empty-search diagnoses share the wire request name.
+        if ("path" in msg) {
+          if (typeof msg.path !== "string" || !msg.path.trim()) return send({ id, type: "error", error: "explain needs a path" })
+          return send({ id, type: "explanation", explanation: explainPath(database(), config, msg.path) })
+        }
         const query = String(msg.query ?? ""), m = mode(msg.mode)
         const reply = await client.explain(query, m, msg.limit ?? 200)
         return send(reply ? { id, type: "diagnosis", query, mode: m, ...(reply.diagnosis ? { diagnosis: reply.diagnosis } : {}) } : { id, type: "cancelled" })
@@ -373,9 +378,6 @@ export async function serve(version: string): Promise<number> {
         })
         return send({ id, type: "problems", ...list })
       }
-      case "explain":
-        if (typeof msg.path !== "string" || !msg.path.trim()) return send({ id, type: "error", error: "explain needs a path" })
-        return send({ id, type: "explanation", explanation: explainPath(database(), config, msg.path) })
       case "retryProblems": {
         const paths = Array.isArray(msg.paths) ? msg.paths.filter((path): path is string => typeof path === "string") : undefined
         if (msg.category !== undefined && !isProblemCategory(msg.category)) return send({ id, type: "error", error: `unknown problem category "${msg.category}"` })
