@@ -361,10 +361,10 @@ export class SearchEngine {
     const t0 = performance.now()
     const limit = parseQuery(rawQuery, Date.now(), mode).filters.limit ?? opts.limit ?? 100
     const res = await this.search(rawQuery, mode, { ...opts, groupDuplicates: false, extra: COPY_EXTRA })
-    const fetched = res.hits.length
     // A one-shot search (the CLI's budgetMs) waits for hashing as long as searching; a
     // keystroke waits only COPY_BUDGET_MS and groups what the background has hashed so far.
-    const rows = await this.groupCopies(res.hits, performance.now() + (opts.budgetMs ?? COPY_BUDGET_MS))
+    const rows = await this.groupCopies(res, performance.now() + (opts.budgetMs ?? COPY_BUDGET_MS))
+    const fetched = res.hits.length
     res.total = res.total > fetched ? Math.max(rows.length, res.total - (fetched - rows.length)) : rows.length
     res.hits = rows.slice(0, limit)
     res.elapsedMs = performance.now() - t0
@@ -378,7 +378,8 @@ export class SearchEngine {
    * (CopyHashes); a search waits for it at most until `deadline`, and files not hashed by then
    * stay hits of their own and group on a later search once their hash is cached.
    */
-  private async groupCopies(hits: SearchHit[], deadline: number): Promise<SearchHit[]> {
+  private async groupCopies(res: SearchResponse, deadline: number): Promise<SearchHit[]> {
+    let hits = res.hits
     const candidate = (h: SearchHit) => !h.isDir && h.size > 0
     const sizes = new Map<number, number>()
     for (const h of hits) if (candidate(h)) sizes.set(h.size, (sizes.get(h.size) ?? 0) + 1)
@@ -412,6 +413,9 @@ export class SearchEngine {
         if (digest !== undefined) keys.set(id, `sha:${hit.size}:${digest}`)
       }
     }
+    // Hashing yields to settings changes and file events. Recheck every original hit before
+    // choosing representatives or exposing copy paths, so an allowed copy can replace a denied one.
+    hits = this.done(res, performance.now()).hits
     // Hard links are the same file whether or not contents may be read from where they are: a
     // link that was not read joins the group its readable siblings hashed into.
     const shaByInode = new Map<string, string>()

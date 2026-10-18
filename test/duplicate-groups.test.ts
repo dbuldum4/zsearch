@@ -157,6 +157,59 @@ test("a stalled read does not hold results past the budget; copies group once it
   } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
 })
 
+test("grouping rechecks exclusions and content policy after hashing yields", async () => {
+  const root = mkdtempSync(join(tmpdir(), "zsearch-copy-policy-")), docs = join(root, "docs")
+  mkdirSync(join(docs, "a"), { recursive: true })
+  writeFileSync(join(docs, "a/quokka.txt"), "quokka confidential")
+  writeFileSync(join(docs, "quokka.txt"), "quokka confidential")
+  const config = { ...defaultConfig(), roots: [docs], indexLoad: 100 }, db = openDb(join(root, "index.db"))
+  try {
+    await new Indexer(db, config, { inProcess: true }).run()
+    for (const change of ["exclude-all", "exclude-primary", "names-only", "contents-off"] as const) {
+      let started!: () => void, resume!: () => void
+      const opening = new Promise<void>((resolve) => { started = resolve })
+      const gate = new Promise<void>((resolve) => { resume = resolve })
+      const hashes = new CopyHashes({ open: async (path) => {
+        started()
+        await gate
+        const fh = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        return {
+          stat: () => fh.stat(),
+          read: async (buffer, position) => (await fh.read(buffer, 0, buffer.length, position)).bytesRead,
+          close: () => fh.close(),
+        }
+      } })
+      const e = new SearchEngine(db, config, undefined, undefined, hashes)
+      const before = await e.search("quokka")
+      expect(before.hits).toHaveLength(2)
+      const primary = before.hits[0]!.path
+      const pending = e.search("quokka", "find", { groupDuplicates: true, budgetMs: 1000 })
+      await opening
+      if (change === "exclude-all") e.config = { ...config, exclude: [docs] }
+      else if (change === "exclude-primary") e.config = { ...config, exclude: [primary] }
+      else if (change === "names-only") e.config = { ...config, namesOnly: [docs] }
+      else e.config = { ...config, content: { ...config.content, enabled: false } }
+      resume()
+      const result = await pending
+      if (change === "exclude-all") {
+        expect(result.hits).toHaveLength(0)
+        expect(result.total).toBe(0)
+      } else if (change === "exclude-primary") {
+        expect(result.hits).toHaveLength(1)
+        expect(result.hits[0]!.path).not.toBe(primary)
+        expect(result.hits[0]!.copies).toBeUndefined()
+        expect(result.total).toBe(1)
+      } else {
+        expect(result.hits).toHaveLength(1)
+        expect(result.hits[0]!.copies).toHaveLength(1)
+        expect(result.hits[0]!.sources).toEqual(["name"])
+        expect(result.hits[0]!.lines).toEqual([])
+        expect(result.hits[0]!.matchCount).toBe(0)
+      }
+    }
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
 test("CopyHashes hashes the smallest first and resumes where it stopped", async () => {
   const bytes = { small: Buffer.alloc(100, 1), big: Buffer.alloc(900_000, 2), other: Buffer.alloc(50, 3) }
   type Name = keyof typeof bytes
