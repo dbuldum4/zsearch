@@ -524,8 +524,14 @@ final class SearchModel {
         requestSearchFocus()
     }
 
+    /// The recent searches to show: none while the `searchHistory` setting is off.
+    var recentSearchesShown: [RecentSearch] {
+        (config?.searchHistory ?? true) ? searches.recent : []
+    }
+
     /// A result was opened: keep the search it came from in the history.
     private func rememberSearch() {
+        guard config?.searchHistory ?? true else { return }
         guard SavedSearches.shouldRemember(query: query, mode: mode, recent: searches.recent) else { return }
         changeSearches(.rememberSearch(query: query, mode: mode), quietly: true)
     }

@@ -90,6 +90,9 @@ export async function serve(version: string): Promise<number> {
 
   const send = (m: ServeOut): void => void process.stdout.write(JSON.stringify(m) + "\n")
   const mode = (m: unknown): Mode => (MODES.includes(m as Mode) ? (m as Mode) : config.defaultMode)
+  /** With the `searchHistory` setting off, the history is neither kept nor shown. */
+  const sendSearches = (id: number | undefined, s: Searches) =>
+    send({ id, type: "searches", saved: s.saved, recent: config.searchHistory ? s.recent : [] })
 
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
@@ -261,17 +264,18 @@ export async function serve(version: string): Promise<number> {
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       }
       case "searches":
-        return send({ id, type: "searches", ...loadSearches() })
+        return sendSearches(id, loadSearches())
+      // A mode left out is the default one; one this version doesn't know is an error, not stored as another.
       case "saveSearch":
-        return send({ id, type: "searches", ...saveSearch(String(msg.name ?? ""), String(msg.query ?? ""), mode(msg.mode)) })
+        return sendSearches(id, saveSearch(String(msg.name ?? ""), String(msg.query ?? ""), msg.mode ?? config.defaultMode))
       case "renameSearch":
-        return send({ id, type: "searches", ...renameSearch(String(msg.name ?? ""), String(msg.to ?? "")) })
+        return sendSearches(id, renameSearch(String(msg.name ?? ""), String(msg.to ?? "")))
       case "deleteSearch":
-        return send({ id, type: "searches", ...deleteSearch(String(msg.name ?? "")) })
+        return sendSearches(id, deleteSearch(String(msg.name ?? "")))
       case "rememberSearch":
-        return send({ id, type: "searches", ...rememberSearch(String(msg.query ?? ""), mode(msg.mode)) })
+        return sendSearches(id, rememberSearch(String(msg.query ?? ""), msg.mode ?? config.defaultMode))
       case "clearRecent":
-        return send({ id, type: "searches", ...clearRecent() })
+        return sendSearches(id, clearRecent())
       default:
         return send({ id, type: "error", error: `unknown request type "${(msg as { type?: unknown }).type}"` })
     }

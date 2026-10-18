@@ -9,6 +9,7 @@ struct SearchesMenu: View {
 
     var body: some View {
         let searches = model.searches
+        let recent = model.recentSearchesShown
         let current = SavedSearches.matching(query: model.query, mode: model.mode, in: searches.saved)
         Menu {
             Button("Save Search…") { model.promptSaveSearch() }
@@ -20,11 +21,11 @@ struct SearchesMenu: View {
                     }
                 }
             }
-            if !searches.recent.isEmpty {
+            if !recent.isEmpty {
                 Section("Recent Searches") {
-                    ForEach(searches.recent.prefix(12)) { recent in
-                        Button(SavedSearches.menuTitle(query: recent.query, mode: recent.mode, showsMode: !Edition.semanticOnly)) {
-                            model.restore(query: recent.query, mode: recent.mode)
+                    ForEach(recent.prefix(12)) { entry in
+                        Button(SavedSearches.menuTitle(query: entry.query, mode: entry.mode, showsMode: !Edition.semanticOnly)) {
+                            model.restore(query: entry.query, mode: entry.mode)
                         }
                     }
                 }

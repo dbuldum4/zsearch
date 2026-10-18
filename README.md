@@ -187,7 +187,7 @@ Files you open through zsearch rank higher next time (frecency), and recently mo
 ```sh
 zsearch saved add "Recent invoices" invoice type:pdf mtime:<30d
 zsearch saved add "Large downloads" in:~/Downloads size:>100mb sort:-size
-zsearch saved add "Project notes" -m fuzzy notes
+zsearch saved add "Project notes" -m fuzzy notes   # without -m: find, as `zsearch search`
 zsearch saved                        # list them
 zsearch saved run "recent invoices"  # print its matches, with `search`'s options (-l, --json, ...)
 zsearch saved rename "Project notes" Notes
@@ -195,7 +195,9 @@ zsearch saved rm notes
 zsearch history                      # recent searches; `zsearch history clear` forgets them
 ```
 
-Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case, and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them. If that file cannot be read, the next change starts a new one and keeps the old one as `searches.json.damaged`.
+Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case (the same in every locale), and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them. Frontends changing it at the same time hold `searches.lock`, so no change is lost, and entries written by a newer version of zsearch are kept as they are. If the file cannot be read, the next change starts a new one and keeps the old one as `searches.json.damaged`.
+
+History can be turned off: `zsearch config set searchHistory false`, or **Keep recent searches** in the Mac app's settings. Then nothing is recorded and no frontend shows recent searches; what was kept before stays, shows again when it is turned back on, and `zsearch history clear` still forgets it.
 
 ## Indexing
 
@@ -301,6 +303,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `semantic.code` | `false` | ...and source code and data files |
 | `defaultMode` | `find` | Initial search mode (`find`, `fuzzy` or `semantic`) |
 | `preview` | `true` | Show the preview pane |
+| `searchHistory` | `true` | Keep the searches results were opened from; off records and shows none, until cleared |
 
 To update the index only when you ask (the Mac app's **Update Index Now**, `^R` in the terminal app, `zsearch index`, or the MCP `update_index` tool), set `autoRefreshMinutes` to `0` and `liveUpdates` to `false`: `zsearch config set autoRefreshMinutes 0` and `zsearch config set liveUpdates false`, or pick **Only when I ask** under "Update the index" in the Mac app. Changing folders or what to read then waits for the next update too, in both apps. With a schedule picked, the Mac app's **Also update as files change** switch sets `liveUpdates`. Setting up for the first time, and excluding a result, still update the index.
 

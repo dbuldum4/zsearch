@@ -17,6 +17,13 @@ final class SavedSearchesTests: XCTestCase {
         // The engine's limit is in UTF-16 code units: 51 emoji are 102.
         XCTAssertNotNil(SavedSearches.problem(with: String(repeating: "😀", count: 51), in: saved))
         XCTAssertNil(SavedSearches.problem(with: String(repeating: "😀", count: 50), in: saved))
+        // Case matching has no locale rules, exactly as the engine's: "I" is "i", Turkish İ is
+        // not i, ß folds to SS, and precomposed and decomposed accents are the same name.
+        XCTAssertTrue(SavedSearches.sameName("I", "i"))
+        XCTAssertFalse(SavedSearches.sameName("İ", "i"))
+        XCTAssertNil(SavedSearches.existing(named: "ınvoices", in: [SavedSearch(name: "İnvoices", query: "q", mode: .find)]))
+        XCTAssertTrue(SavedSearches.sameName("straße", "STRASSE"))
+        XCTAssertTrue(SavedSearches.sameName("café", "CAFÉ"))
         // Saving under a taken name replaces that search; renaming onto another one is refused.
         XCTAssertNil(SavedSearches.problem(with: "project notes", in: saved))
         XCTAssertEqual(SavedSearches.problem(with: "project notes", in: saved, renaming: saved[0]), "A saved search is already called “Project notes”.")

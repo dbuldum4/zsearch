@@ -181,6 +181,8 @@ public struct Config: Codable, Hashable, Sendable {
     public var pauseOnBattery: Bool?
     /// Semantic search. Nil from engines without it.
     public var semantic: SemanticConfig?
+    /// Keep and show the searches results were opened from. Nil from engines older than this setting.
+    public var searchHistory: Bool?
 }
 
 public struct SemanticConfig: Codable, Hashable, Sendable {
@@ -350,6 +352,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
     public var liveUpdates: Bool?
     public var pauseOnLowPower: Bool?
     public var pauseOnBattery: Bool?
+    public var searchHistory: Bool?
     public var semantic: SemanticConfig?
 
     public init(
@@ -365,6 +368,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         liveUpdates: Bool? = nil,
         pauseOnLowPower: Bool? = nil,
         pauseOnBattery: Bool? = nil,
+        searchHistory: Bool? = nil,
         semantic: SemanticConfig? = nil
     ) {
         self.roots = roots
@@ -379,6 +383,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
         self.liveUpdates = liveUpdates
         self.pauseOnLowPower = pauseOnLowPower
         self.pauseOnBattery = pauseOnBattery
+        self.searchHistory = searchHistory
         self.semantic = semantic
     }
 
@@ -397,6 +402,7 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
             liveUpdates: config.liveUpdates,
             pauseOnLowPower: config.pauseOnLowPower,
             pauseOnBattery: config.pauseOnBattery,
+            searchHistory: config.searchHistory,
             semantic: config.semantic
         )
     }

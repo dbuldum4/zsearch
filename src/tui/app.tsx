@@ -257,7 +257,7 @@ export function App(props: AppProps) {
     const h = current()
     if (!h) return
     svc.search.opened(h.path)
-    svc.rememberSearch?.(query(), mode())
+    remember()
     if (props.printMode) return quit(h.path)
     const err = await svc.open(h.path)
     if (err) notify(`Could not open: ${err}`, "error")
@@ -269,7 +269,7 @@ export function App(props: AppProps) {
     if (!h) return
     if (h.isDir) return revealSelected()
     svc.search.opened(h.path)
-    svc.rememberSearch?.(query(), mode())
+    remember()
     const line = h.lines[0]?.line
     const err = await svc.edit(
       h.path,
@@ -287,7 +287,7 @@ export function App(props: AppProps) {
   const revealSelected = async () => {
     const h = current()
     if (!h) return
-    svc.rememberSearch?.(query(), mode())
+    remember()
     const err = await svc.reveal(h.path, h.isDir)
     if (err) notify(`Could not reveal: ${err}`, "error")
   }
@@ -353,9 +353,15 @@ export function App(props: AppProps) {
     else if (e.scroll?.direction === "down") scrollPreview(3)
   }
 
+  /** Keep the search a result was opened from, for Alt-↑/↓, unless history is off. */
+  const remember = () => {
+    if (config().searchHistory) svc.rememberSearch?.(query(), mode())
+  }
+
   /** Stepping through earlier searches (Alt-↑/↓): where, and what was typed before the first step. */
   let recalled: { list: RecentSearch[]; at: number; draft: { query: string; mode: Mode } } | null = null
   const recall = (dir: 1 | -1) => {
+    if (!config().searchHistory) return notify("Search history is off (zsearch config set searchHistory true)")
     recalled ??= { list: svc.recentSearches?.() ?? [], at: -1, draft: { query: query(), mode: mode() } }
     const r = recalled
     if (!r.list.length) {

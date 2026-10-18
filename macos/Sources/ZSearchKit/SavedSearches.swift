@@ -20,11 +20,18 @@ public enum SavedSearches {
         return String(base.prefix(40)).trimmingCharacters(in: .whitespaces) + "…"
     }
 
+    /// Whether two names are the same but for case, exactly as the engine matches them
+    /// (src/searches.ts): Unicode's full uppercase mapping, which has no locale or context rules
+    /// (so "I" is "i" but "İ" is not, and "ß" is "SS"), then canonical equivalence.
+    public static func sameName(_ a: String, _ b: String) -> Bool {
+        a.uppercased().decomposedStringWithCanonicalMapping == b.uppercased().decomposedStringWithCanonicalMapping
+    }
+
     /// The saved search called `name`: that exact name, or the same name in another case, as the
     /// engine matches names.
     public static func existing(named name: String, in saved: [SavedSearch]) -> SavedSearch? {
         let n = normalized(name)
-        return saved.first { $0.name == n } ?? saved.first { $0.name.compare(n, options: .caseInsensitive) == .orderedSame }
+        return saved.first { $0.name == n } ?? saved.first { sameName($0.name, n) }
     }
 
     /// Why `name` cannot be used, or nil when it can. Saving under a taken name replaces that

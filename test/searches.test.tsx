@@ -28,6 +28,7 @@ describe("saved searches and history", () => {
   beforeEach(() => {
     rmSync(searchesFile(), { force: true })
     rmSync(`${searchesFile()}.damaged`, { force: true })
+    rmSync(join(dirname(searchesFile()), "config.json"), { force: true })
   })
 
   test("save, replace, rename and delete by name", () => {
@@ -52,6 +53,86 @@ describe("saved searches and history", () => {
     expect(() => saveSearch("", "x", "find")).toThrow("needs a name")
     expect(() => saveSearch("Empty", "   ", "find")).toThrow("no search to save")
     expect(() => saveSearch("Bad", "x", "regex" as never)).toThrow('unknown mode "regex"')
+  })
+
+  test("names match without regard to case, the same in every locale", () => {
+    saveSearch("İZMİR", "x", "find")
+    saveSearch("straße", "y", "find")
+    saveSearch("café", "z", "find")
+    const s = loadSearches()
+    // "I" is "i", but Turkish İ is not i in any locale.
+    expect(findSaved(s, "izmir")).toBeUndefined()
+    expect(findSaved(s, "İzmİr")).toBeTruthy()
+    // Full case folding: ß is SS; precomposed and decomposed accents are the same name.
+    expect(findSaved(s, "STRASSE")?.query).toBe("y")
+    expect(findSaved(s, "CAFÉ")?.query).toBe("z")
+    expect(() => renameSearch("straße", "Strasse")).not.toThrow()
+  })
+
+  test("a newer version's entries and fields are written back unchanged", () => {
+    writeFileSync(searchesFile(), JSON.stringify({
+      future: { flag: true },
+      saved: [
+        { name: "ok", query: "a", mode: "find", rating: 5 },
+        { name: "quantum", query: "b", mode: "quantum" },
+        "junk",
+      ],
+      recent: [
+        { query: "x", mode: "find", at: 5, note: "n" },
+        { query: "y", mode: "quantum", at: 4 },
+      ],
+    }))
+    // They are not shown or run...
+    expect(loadSearches()).toEqual({ saved: [{ name: "ok", query: "a", mode: "find" }], recent: [{ query: "x", mode: "find", at: 5 }] })
+    // ...but an unrelated change keeps them, byte for byte.
+    rememberSearch("budget", "find", 1000)
+    let raw = JSON.parse(readFileSync(searchesFile(), "utf8"))
+    expect(raw.future).toEqual({ flag: true })
+    expect(raw.saved).toContainEqual({ name: "quantum", query: "b", mode: "quantum" })
+    expect(raw.saved).toContainEqual("junk")
+    expect(raw.saved).toContainEqual({ name: "ok", query: "a", mode: "find", rating: 5 })
+    expect(raw.recent).toContainEqual({ query: "x", mode: "find", at: 5, note: "n" })
+    expect(raw.recent).toContainEqual({ query: "y", mode: "quantum", at: 4 })
+    // Renaming onto one of them is refused; saving over the name replaces it, in any case.
+    expect(() => renameSearch("ok", "QUANTUM")).toThrow("newer version")
+    saveSearch("QUANTUM", "b2", "find")
+    raw = JSON.parse(readFileSync(searchesFile(), "utf8"))
+    expect(raw.saved.filter((e: { mode?: unknown }) => e?.mode === "quantum")).toEqual([])
+    expect(raw.saved).toContainEqual({ name: "QUANTUM", query: "b2", mode: "find" })
+    // Clearing history also forgets entries this version cannot use.
+    clearRecent()
+    expect(JSON.parse(readFileSync(searchesFile(), "utf8")).recent).toEqual([])
+  })
+
+  test("changes from several zsearches at once keep every write", async () => {
+    const src = join(import.meta.dir, "..", "src", "searches.ts")
+    const procs = Array.from({ length: 6 }, (_, i) =>
+      Bun.spawn(["bun", "-e", `import { saveSearch, rememberSearch } from ${JSON.stringify(src)}; saveSearch("p${i}", "q${i}", "find"); rememberSearch("h${i}", "find", ${1000 + i})`], {
+        env: { ...process.env },
+        stdout: "pipe",
+        stderr: "pipe",
+      }))
+    for (const p of procs) {
+      const [err, code] = await Promise.all([new Response(p.stderr).text(), p.exited])
+      expect(err).toBe("")
+      expect(code).toBe(0)
+    }
+    const s = loadSearches()
+    expect(s.saved).toHaveLength(6)
+    expect(s.recent).toHaveLength(6)
+  }, 30_000)
+
+  test("with searchHistory off nothing is remembered, and what was kept stays until cleared", () => {
+    rememberSearch("budget", "find", 1000)
+    expect(loadSearches().recent).toEqual([{ query: "budget", mode: "find", at: 1000 }])
+    const config = join(dirname(searchesFile()), "config.json")
+    writeFileSync(config, JSON.stringify({ searchHistory: false }))
+    try {
+      expect(rememberSearch("report", "find", 2000).recent).toEqual([{ query: "budget", mode: "find", at: 1000 }])
+      expect(loadSearches().recent).toEqual([{ query: "budget", mode: "find", at: 1000 }])
+      expect(clearRecent().recent).toEqual([])
+    } finally { rmSync(config, { force: true }) }
+    expect(rememberSearch("report", "find", 3000).recent).toEqual([{ query: "report", mode: "find", at: 3000 }])
   })
 
   test("history keeps committed searches, newest first, once each, bounded", () => {
@@ -141,6 +222,14 @@ test("command line: saved add, list, run, rename, rm and history", async () => {
   expect((await zs("saved")).out.trim()).toBe("Zanzibar  find      zanzibar in:~/Downloads")
   expect((await zs("saved", "frobnicate")).code).toBe(2)
   expect((await zs("history")).out).toContain("No searches yet")
+  // Without -m, a saved search is in find mode, whatever the configured default mode is.
+  expect((await zs("config", "set", "defaultMode", "fuzzy")).code).toBe(0)
+  expect((await zs("saved", "add", "Plain", "plains")).out).toContain('Saved "Plain": plains (find)')
+  // With history off, listing says so (and --json is empty); clearing still works.
+  expect((await zs("config", "set", "searchHistory", "false")).code).toBe(0)
+  expect((await zs("history")).out).toContain("Search history is off")
+  expect(JSON.parse((await zs("history", "--json")).out)).toEqual([])
+  expect((await zs("history", "clear")).code).toBe(0)
 }, 60_000)
 
 test("serve: saved searches and history over JSON lines", async () => {
@@ -187,6 +276,19 @@ test("serve: saved searches and history over JSON lines", async () => {
     expect(remembered.recent.map((r: { query: string; mode: string }) => [r.query, r.mode])).toEqual([["report", "find"], ["budget", "fuzzy"]])
     expect((await ask({ id: 7, type: "deleteSearch", name: "Invoices" })).saved).toEqual([])
     expect((await ask({ id: 8, type: "clearRecent" })).recent).toEqual([])
+    // A mode left out is the configured default; one this version doesn't know is an error.
+    expect((await ask({ id: 9, type: "saveSearch", name: "Plain", query: "q" })).saved[0].mode).toBe("find")
+    const bad = await ask({ id: 10, type: "saveSearch", name: "Bad", query: "q", mode: "quantum" })
+    expect(bad).toEqual({ id: 10, type: "error", error: 'unknown mode "quantum" (use find, fuzzy, semantic)' })
+    // With history off, remembering is a no-op and replies show no recent searches...
+    await ask({ id: 11, type: "rememberSearch", query: "kept", mode: "find" })
+    const off = await ask({ id: 12, type: "setConfig", config: { searchHistory: false } })
+    expect(off.config.searchHistory).toBe(false)
+    expect((await ask({ id: 13, type: "searches" })).recent).toEqual([])
+    expect((await ask({ id: 14, type: "rememberSearch", query: "not kept", mode: "find" })).recent).toEqual([])
+    // ...and turning it back on shows what was kept before.
+    await ask({ id: 15, type: "setConfig", config: { searchHistory: true } })
+    expect((await ask({ id: 16, type: "searches" })).recent.map((r: { query: string }) => r.query)).toEqual(["kept"])
     expect(existsSync(join(corpus.home, ".zsearch-serve", "searches.json"))).toBe(true)
     proc.stdin.end()
     expect(await proc.exited).toBe(0)
