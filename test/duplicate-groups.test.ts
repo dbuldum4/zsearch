@@ -49,8 +49,9 @@ test("identical copies fold into one result that lists the others", async () => 
   expect(plain.hits).toHaveLength(5)
   expect(plain.hits.some((h) => h.copies)).toBe(false)
   expect((await e.search("quokka", "find", { groupDuplicates: false })).hits).toHaveLength(5)
-  // A group counts once towards the limit.
-  const two = await e.search("quokka", "find", { groupDuplicates: true, limit: 2 })
+  // A group counts once towards the limit. Fix its rank: filesystem timestamp precision
+  // otherwise decides whether the copies or the other two files are newest.
+  const two = await e.search("quokka sort:path", "find", { groupDuplicates: true, limit: 2 })
   expect(two.hits).toHaveLength(2)
   expect(two.hits.some((h) => h.copies?.length === 2)).toBe(true)
   expect((await e.search("quokka limit:2", "find", { groupDuplicates: true })).hits).toHaveLength(2)
