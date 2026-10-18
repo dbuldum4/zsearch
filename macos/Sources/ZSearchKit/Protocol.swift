@@ -416,7 +416,7 @@ public enum Request: Sendable {
     /// categories means all; `query` keeps paths containing it.
     case problems(categories: [String] = [], query: String = "", offset: Int = 0, limit: Int = 200)
     /// Why one file's contents are, or are not, searchable.
-    case explain(path: String)
+    case explainPath(path: String)
     /// Read these files again; the engine then starts an index update.
     case retryProblems(paths: [String])
     /// Read every file of a category again ("unreadable", "timeout", "transcription", "no-text").
@@ -570,7 +570,7 @@ extension Request {
             w.type = "problems"; w.offset = offset; w.limit = limit
             if !categories.isEmpty { w.categories = categories }
             if !query.isEmpty { w.query = query }
-        case let .explain(path):
+        case let .explainPath(path):
             w.type = "explain"; w.path = path
         case let .retryProblems(paths):
             w.type = "retryProblems"; w.paths = paths
