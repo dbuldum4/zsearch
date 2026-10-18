@@ -156,6 +156,13 @@ describe("zsearch command line", () => {
     expect(why.out).toContain("only its name is searchable")
     expect(why.out).toContain('zsearch retry "~/Documents/broken.docx"')
     expect(JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt")).out).searchable).toBe("content")
+    // Several files: each is explained, not one path made of them all.
+    const both = await zs("why", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")
+    expect(both.code).toBe(0)
+    expect(both.out).toContain("~/notes/recipes/pancakes.txt: its name and text are searchable.")
+    expect(both.out).toContain("~/Documents/broken.docx: only its name is searchable.")
+    const json = JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")).out) as { searchable: string }[]
+    expect(json.map((e) => e.searchable)).toEqual(["content", "name"])
 
     expect((await zs("retry", "secret")).err).toContain("never read")
     const retry = await zs("retry", "unreadable", "--quiet")

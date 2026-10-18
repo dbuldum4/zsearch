@@ -191,4 +191,71 @@ describe("indexing problems", () => {
       writer.close()
     }
   })
+
+  test("files there was no reader for are not offered to read again", () => {
+    const own = openDb(":memory:")
+    try {
+      const add = (rel: string, ext: string, kind: string, note: string) =>
+        own.query("INSERT INTO files(path, name, ext, kind, content_state, note) VALUES (?, ?, ?, ?, ?, ?)").run(at(rel), rel.split("/").pop()!, ext, kind, ContentState.Skipped, note)
+      add("Documents/blank.pdf", "pdf", "pdf", "empty")
+      add("Documents/unread.pdf", "pdf", "pdf", "unsupported")
+      add("Pictures/photo.jpg", "jpg", "image", "unsupported")
+      const by = new Map(listProblems(own, config()).problems.map((p) => [p.path, p]))
+      expect(by.get(at("Documents/blank.pdf"))).toMatchObject({ category: "no-text", retry: true })
+      expect(by.get(at("Documents/unread.pdf"))).toMatchObject({ category: "no-text", retry: false })
+      expect(by.get(at("Pictures/photo.jpg"))).toMatchObject({ category: "no-text", retry: false, setting: "content.ocr" })
+      expect(explainPath(own, config(), at("Pictures/photo.jpg")).retry).toBe(false)
+      expect(problemCounts(own, config())).toEqual([{ category: "no-text", label: "No text found", count: 3, retry: true }])
+
+      // Only the file nothing was found in is read again.
+      expect(retryProblems(own, config(), { category: "no-text" }).retried).toBe(1)
+      const state = (rel: string) => (own.query("SELECT content_state AS s FROM files WHERE path = ?").get(at(rel)) as { s: number }).s
+      expect([state("Documents/blank.pdf"), state("Documents/unread.pdf"), state("Pictures/photo.jpg")]).toEqual([ContentState.Pending, ContentState.Skipped, ContentState.Skipped])
+      expect(problemCounts(own, config())).toEqual([{ category: "no-text", label: "No text found", count: 2, retry: false }])
+      const refused = retryProblems(own, config(), { paths: [at("Pictures/photo.jpg")] })
+      expect(refused.retried).toBe(0)
+      expect(refused.refused[0]!.reason).toContain("OCR")
+    } finally {
+      own.close()
+    }
+  })
+
+  test("problem counts are kept until the index or the settings change", () => {
+    const path = join(corpus.home, "cached.db")
+    const reader = openDb(path)
+    const writer = openDb(path)
+    try {
+      const add = (db: Database, rel: string) => db.query("INSERT INTO files(path, name, ext, kind, content_state, note) VALUES (?, ?, 'docx', 'doc', ?, ?)").run(at(rel), rel, ContentState.Error, "corrupt piece table")
+      const count = (c = config()) => problemCounts(reader, c).map((k) => [k.category, k.count])
+      add(writer, "one.docx")
+      expect(count()).toEqual([["unreadable", 1]])
+
+      // Kept: without the trigger that records changes, a change goes unseen until the next one recorded.
+      reader.exec("DROP TRIGGER files_insert_seq")
+      add(reader, "two.docx")
+      expect(count()).toEqual([["unreadable", 1]])
+
+      // Another process changing the index.
+      writer.query("UPDATE files SET note = 'took too long: timed out' WHERE path = ?").run(at("one.docx"))
+      expect(count()).toEqual([["unreadable", 1], ["timeout", 1]])
+      // A file removed, as an index update removes them.
+      writer.transaction(() => {
+        const { id } = writer.query("SELECT id FROM files WHERE path = ?").get(at("one.docx")) as { id: number }
+        writer.query("DELETE FROM files WHERE id = ?").run(id)
+        writer.query("INSERT INTO removed(id) VALUES (?)").run(id)
+      })()
+      expect(count()).toEqual([["unreadable", 1]])
+
+      // Settings: a names-only folder now holds a document that is not read.
+      writer.query("INSERT INTO files(path, name, ext, kind, content_state) VALUES (?, 'old.docx', 'docx', 'doc', ?)").run(at("Attic/old.docx"), ContentState.None)
+      expect(count()).toEqual([["unreadable", 1]])
+      const attic = config()
+      attic.namesOnly = ["~/Attic"]
+      expect(count(attic)).toEqual([["unreadable", 1], ["names-only", 1]])
+      expect(listProblems(reader, attic, { categories: ["names-only"] }).problems.map((p) => p.path)).toEqual([at("Attic/old.docx")])
+    } finally {
+      reader.close()
+      writer.close()
+    }
+  })
 })

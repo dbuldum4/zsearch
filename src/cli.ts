@@ -44,7 +44,7 @@ Usage
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
   zsearch status --errors         files whose contents search cannot find, and why
-  zsearch why <path>              why a file's contents are, or are not, searchable
+  zsearch why <path...>           why files' contents are, or are not, searchable
   zsearch retry <path...|category>  read files that failed again, then update the index
   zsearch config [get|set|path|reset] [key] [value]
   zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
@@ -557,6 +557,7 @@ function printProblems(db: Database, config: Config, only?: ProblemCategory) {
   }
 }
 
+/** Each argument is a file, as with `retry`: a path with spaces in it is quoted. */
 function cmdWhy(rest: string[], args: Args): number {
   if (!rest.length) throw new UsageError("why needs a file, e.g. zsearch why ~/Downloads/scan.pdf")
   const p = paths()
@@ -566,17 +567,21 @@ function cmdWhy(rest: string[], args: Args): number {
   }
   const db = openDb(p.db)
   try {
-    const e = explainPath(db, loadConfig(), rest.join(" "))
+    const config = loadConfig()
+    const explained = rest.map((path) => explainPath(db, config, path))
     if (flag(args, "json")) {
-      console.log(JSON.stringify(e, null, 2))
+      console.log(JSON.stringify(explained.length === 1 ? explained[0] : explained, null, 2))
       return 0
     }
-    const what = { content: "its name and text are searchable", name: "only its name is searchable", none: "it is not in the index" }[e.searchable]
-    console.log(`${tildify(e.path)}: ${e.category === "truncated" ? "only part of its text is searchable" : what}.`)
-    console.log(e.reason)
-    if (e.detail) console.log(`Reader's error: ${e.detail}`)
-    if (e.setting) console.log(`Setting: ${e.setting} (zsearch config get ${e.setting})`)
-    if (e.retry) console.log(`To read it again: zsearch retry "${tildify(e.path)}"`)
+    const what = { content: "its name and text are searchable", name: "only its name is searchable", none: "it is not in the index" }
+    for (const [i, e] of explained.entries()) {
+      if (i) console.log("")
+      console.log(`${tildify(e.path)}: ${e.category === "truncated" ? "only part of its text is searchable" : what[e.searchable]}.`)
+      console.log(e.reason)
+      if (e.detail) console.log(`Reader's error: ${e.detail}`)
+      if (e.setting) console.log(`Setting: ${e.setting} (zsearch config get ${e.setting})`)
+      if (e.retry) console.log(`To read it again: zsearch retry "${tildify(e.path)}"`)
+    }
     return 0
   } finally { db.close() }
 }
@@ -758,6 +763,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors[=<category>]] [--json]", why: "why <path> [--json]", retry: "retry <path...|unreadable|timeout|transcription|no-text> [-q]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors[=<category>]] [--json]", why: "why <path...> [--json]", retry: "retry <path...|unreadable|timeout|transcription|no-text> [-q]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

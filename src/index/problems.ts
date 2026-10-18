@@ -223,65 +223,139 @@ function isOffline(path: string): boolean {
   }
 }
 
+/** What the last look at each possible cloud placeholder found, by file id: a stat each is most of the cost. */
+const offlineSeen = new WeakMap<Database, Map<number, { stamp: string; offline: boolean }>>()
+
 /** Files read by name only outside names-only folders because they are cloud placeholders. */
 function offlineFiles(db: Database, c: Context): number[] {
   if (!c.config.content.enabled) return []
   const p = new Params()
   const rows = db
-    .query(`SELECT id, path FROM files WHERE content_state = ${ContentState.None} AND is_dir = 0 AND ${wantedSql(c)} AND NOT ${withinSql([...c.cloud, ...c.namesOnly, ...c.system], p)} LIMIT ${OFFLINE_CHECKS}`)
-    .all(p.values) as { id: number; path: string }[]
-  return rows.filter((r) => isOffline(r.path)).map((r) => r.id)
+    .query(`SELECT id, path, size, mtime FROM files WHERE content_state = ${ContentState.None} AND is_dir = 0 AND ${wantedSql(c)} AND NOT ${withinSql([...c.cloud, ...c.namesOnly, ...c.system], p)} LIMIT ${OFFLINE_CHECKS}`)
+    .all(p.values) as { id: number; path: string; size: number; mtime: number }[]
+  const before = offlineSeen.get(db)
+  const seen = new Map<number, { stamp: string; offline: boolean }>()
+  for (const r of rows) {
+    const stamp = `${r.path}\0${r.size}\0${r.mtime}`
+    const known = before?.get(r.id)
+    seen.set(r.id, known?.stamp === stamp ? known : { stamp, offline: isOffline(r.path) })
+  }
+  offlineSeen.set(db, seen)
+  return rows.filter((r) => seen.get(r.id)!.offline).map((r) => r.id)
+}
+/** Rows of a problem set: `retry` is 1 where reading the file again may help (see `retryable`). */
+const RETRY_SQL = `(rank IN (${rank("unreadable")}, ${rank("timeout")}, ${rank("transcription")}) OR (rank = ${rank("no-text")} AND note = 'empty'))`
+
+/**
+ * Reading the file again may help. Files with no text are read again only when nothing was
+ * found in them: "unsupported" means there was no reader for them with these settings.
+ */
+function retryable(category: ProblemCategory, note: string | null): boolean {
+  return category === "no-text" ? note === "empty" : RETRYABLE.has(category)
 }
 
+interface ProblemSet {
+  /** The index state and settings it was worked out from (see `stateKey`). */
+  key: string
+  counts: { rank: number; n: number; retry: number }[]
+}
+
+/**
+ * The problems of an index, kept per connection in a temporary table: working them out reads
+ * every file's row (and stats possible cloud placeholders), which on a large index takes most
+ * of a second, while status and the problems window ask again and again.
+ */
+const problemSets = new WeakMap<Database, ProblemSet>()
+
+/** Changes whenever a file row is added, changed or removed, the index is emptied, or the settings that decide problems change. */
+function stateKey(db: Database, c: Context): string {
+  const meta = db.query("SELECT key, value FROM meta WHERE key IN ('generation', 'change_seq', 'schema_version') ORDER BY key").values()
+  let removed: unknown = null
+  try {
+    removed = (db.query("SELECT max(n) FROM removed").values() as unknown[][])[0]?.[0] ?? null
+  } catch {}
+  const { enabled, metadata } = c.config.content
+  return JSON.stringify([meta, removed, enabled, metadata, c.ocr, c.speech, c.cloud, c.namesOnly, c.system])
+}
+
+function problemSet(db: Database, c: Context): ProblemSet {
+  const known = problemSets.get(db)
+  if (known && known.key === stateKey(db, c)) return known
+  db.exec("CREATE TEMP TABLE IF NOT EXISTS problem_set (id INTEGER PRIMARY KEY, rank INTEGER NOT NULL, retry INTEGER NOT NULL, path TEXT NOT NULL)")
+  db.exec("CREATE INDEX IF NOT EXISTS temp.problem_set_order ON problem_set(rank, path)")
+  // One snapshot for the key and the rows: a change committed meanwhile makes the next call work them out again.
+  const set = db.transaction((): ProblemSet => {
+    const key = stateKey(db, c)
+    const p = new Params()
+    const inner = problemsSql(db, c, p, offlineFiles(db, c))
+    db.exec("DELETE FROM temp.problem_set")
+    db.query(`INSERT INTO temp.problem_set(id, rank, retry, path) SELECT id, rank, ${RETRY_SQL}, path FROM (${inner}) WHERE rank IS NOT NULL`).run(p.values)
+    const counts = db.query("SELECT rank, count(*) AS n, sum(retry) AS retry FROM temp.problem_set GROUP BY rank ORDER BY rank").all() as ProblemSet["counts"]
+    return { key, counts }
+  })()
+  problemSets.set(db, set)
+  return set
+}
+
+/** The problem set's rows the filter matches, as a condition on `t` (temp.problem_set). */
 function filterSql(filter: ProblemFilter, p: Params, withCategories = true): string {
-  let sql = "rank IS NOT NULL"
+  let sql = "1"
   // SQLite's lower() leaves letters outside ASCII as they are: so must the query.
   const q = filter.query?.trim().replace(/[A-Z]+/g, (s) => s.toLowerCase())
-  if (q) sql += ` AND instr(lower(path), ${p.add(q)}) > 0`
-  if (withCategories && filter.categories) sql += ` AND rank IN (${filter.categories.map(rank).join(", ") || "-1"})`
+  if (q) sql += ` AND instr(lower(t.path), ${p.add(q)}) > 0`
+  if (withCategories && filter.categories) sql += ` AND t.rank IN (${filter.categories.map(rank).join(", ") || "-1"})`
   return sql
 }
 
-/** The query over problems, from the files it needs to stat (cloud placeholders) only when the filter wants them. */
-function prepare(db: Database, config: Config, filter: ProblemFilter) {
-  const c = context(config)
-  const offline = !filter.categories || filter.categories.includes("cloud") ? offlineFiles(db, c) : []
-  const p = new Params()
-  return { c, p, inner: problemsSql(db, c, p, offline) }
-}
-
-function counts(db: Database, inner: string, where: string, values: Params["values"]): ProblemCount[] {
-  const rows = db.query(`SELECT rank, count(*) AS n FROM (${inner}) WHERE ${where} GROUP BY rank ORDER BY rank`).all(values) as { rank: number; n: number }[]
-  return rows.map((r) => {
-    const category = PROBLEM_CATEGORIES[r.rank]!
-    return { category, label: PROBLEM_LABELS[category], count: r.n, retry: RETRYABLE.has(category) }
-  })
+function countsOf(db: Database, set: ProblemSet, filter: ProblemFilter, withCategories: boolean): ProblemCount[] {
+  const q = filter.query?.trim()
+  let rows = set.counts
+  if (q) {
+    const p = new Params()
+    rows = db.query(`SELECT rank, count(*) AS n, sum(retry) AS retry FROM temp.problem_set t WHERE ${filterSql(filter, p, false)} GROUP BY rank ORDER BY rank`).all(p.values) as ProblemSet["counts"]
+  }
+  const wanted = withCategories && filter.categories ? new Set(filter.categories.map(rank)) : null
+  return rows
+    .filter((r) => !wanted || wanted.has(r.rank))
+    .map((r) => {
+      const category = PROBLEM_CATEGORIES[r.rank]!
+      return { category, label: PROBLEM_LABELS[category], count: r.n, retry: r.retry > 0 }
+    })
 }
 
 /** Problems by category: only categories that have some. */
 export function problemCounts(db: Database, config: Config, filter: ProblemFilter = {}): ProblemCount[] {
-  const { p, inner } = prepare(db, config, filter)
-  return counts(db, inner, filterSql(filter, p), p.values)
+  return countsOf(db, problemSet(db, context(config)), filter, true)
+}
+
+/** The rows of `files` for the problem set's rows that `where` keeps, by category and then path. */
+function rowsSql(db: Database, where: string): string {
+  return `SELECT f.id, f.path, f.size, f.mtime, f.ext, f.kind, f.note, ${hasReadAt(db) ? "f.read_at" : "0"} AS at, t.rank
+    FROM temp.problem_set t JOIN files f ON f.id = t.id WHERE ${where} ORDER BY t.rank, t.path`
 }
 
 /** A page of problems, by category and then path. */
 export function listProblems(db: Database, config: Config, opts: ProblemFilter & { offset?: number; limit?: number } = {}): ProblemList {
-  const { c, p, inner } = prepare(db, config, {})
-  const categories = counts(db, inner, filterSql(opts, p, false), p.values)
+  const c = context(config)
+  const set = problemSet(db, c)
+  const categories = countsOf(db, set, opts, false)
   const wanted = opts.categories ? new Set(opts.categories) : null
   const total = categories.reduce((n, k) => n + (!wanted || wanted.has(k.category) ? k.count : 0), 0)
   const limit = Math.max(1, Math.min(PAGE_MAX, Math.floor(opts.limit ?? 100)))
   const offset = Math.max(0, Math.floor(opts.offset ?? 0))
-  const rows = db.query(`SELECT * FROM (${inner}) WHERE ${filterSql(opts, p)} ORDER BY rank, path LIMIT ${limit} OFFSET ${offset}`).all(p.values) as Row[]
+  const p = new Params()
+  const rows = db.query(`${rowsSql(db, filterSql(opts, p))} LIMIT ${limit} OFFSET ${offset}`).all(p.values) as Row[]
   return { problems: rows.map((r) => problemOf(r, c)), total, categories }
 }
 
 /** Every problem the filter matches, by category and then path. */
 export function* eachProblem(db: Database, config: Config, filter: ProblemFilter = {}): Generator<IndexProblem> {
-  const { c, p, inner } = prepare(db, config, filter)
+  const c = context(config)
+  problemSet(db, c)
+  const p = new Params()
   // A statement left part-way through keeps its read transaction open: the connection would see
   // the index as it was from then on, and the log could not be checkpointed past it.
-  const statement = db.prepare(`SELECT * FROM (${inner}) WHERE ${filterSql(filter, p)} ORDER BY rank, path`)
+  const statement = db.prepare(rowsSql(db, filterSql(filter, p)))
   try {
     for (const r of statement.iterate(p.values) as IterableIterator<Row>) yield problemOf(r, c)
   } finally {
@@ -293,9 +367,8 @@ function problemOf(r: Row, c: Context): IndexProblem {
   const category = PROBLEM_CATEGORIES[r.rank!]!
   const { reason, setting } = describe(category, r, c)
   const failed = category === "unreadable" || category === "timeout" || category === "transcription"
-  return { path: r.path, size: r.size, mtime: r.mtime, category, reason, detail: failed ? r.note : null, at: r.at || null, retry: RETRYABLE.has(category), setting }
+  return { path: r.path, size: r.size, mtime: r.mtime, category, reason, detail: failed ? r.note : null, at: r.at || null, retry: retryable(category, r.note), setting }
 }
-
 /** Raw reader errors, in plain words. The first that matches is used. */
 const ERRORS: [RegExp, string][] = [
   [/^permission denied/i, "zsearch is not allowed to open it. Check the file's permissions, or give zsearch Full Disk Access in System Settings › Privacy & Security."],
@@ -338,12 +411,13 @@ function describe(category: ProblemCategory, r: { path: string; ext: string; kin
         ? { reason: `It is larger than ${content.maxDocumentMB} MB, the limit for reading documents and images, so only its name is searchable.`, setting: "content.maxDocumentMB" }
         : { reason: `It is larger than ${content.maxTextMB} MB, the limit for reading text files, so only its name is searchable.`, setting: "content.maxTextMB" }
     case "no-text":
-      if (TRANSCRIBE_EXTS.has(r.ext)) return { reason: "No speech was found in it.", setting: null }
+      // "unsupported": there was no reader for it then. Reading it again with the same settings finds nothing either.
       if (r.note === "unsupported") {
-        return isImage(r.ext, r.kind)
-          ? { reason: "Images are read only with text recognition (OCR), which is off or not available here.", setting: "content.ocr" }
-          : { reason: "zsearch cannot read its text with the current settings.", setting: null }
+        if (isImage(r.ext, r.kind)) return { reason: "Images are read only with text recognition (OCR), which was off or not available when it was read.", setting: "content.ocr" }
+        if (TRANSCRIBE_EXTS.has(r.ext)) return { reason: "Speech was not transcribed when it was read: that needs the Mac app on macOS 26 or later, with transcription on.", setting: "content.transcribe" }
+        return { reason: "zsearch had no way to read its text with the settings it was read with. An update after a settings change reads it again.", setting: null }
       }
+      if (TRANSCRIBE_EXTS.has(r.ext)) return { reason: "No speech was found in it.", setting: null }
       if (r.ext === "pdf" && !c.ocr) return { reason: "No text was found in it. If it is a scan, turn on reading text in images and scanned PDFs (OCR) to read it.", setting: "content.ocr" }
       return { reason: isImage(r.ext, r.kind) ? "No text was found in this image." : "No text was found in it.", setting: null }
     case "truncated":
@@ -445,8 +519,8 @@ export function retryProblems(db: Database, config: Config, target: { category?:
   const { category, paths } = target
   if (category) {
     if (!RETRYABLE.has(category)) throw new Error(`Reading these files again would not change anything. ${NOT_RETRYABLE[category as keyof typeof NOT_RETRYABLE]}`)
-    const { p, inner } = prepare(db, config, { categories: [category] })
-    const ids = (db.query(`SELECT id FROM (${inner}) WHERE rank = ${rank(category)}`).values(p.values) as [number][]).map(([id]) => id)
+    problemSet(db, context(config))
+    const ids = (db.query(`SELECT id FROM temp.problem_set WHERE rank = ${rank(category)} AND retry = 1`).values() as [number][]).map(([id]) => id)
     markPending(db, ids)
     return { retried: ids.length, refused: [] }
   }
@@ -458,13 +532,13 @@ export function retryProblems(db: Database, config: Config, target: { category?:
     .query(`SELECT * FROM (${problemsSql(db, c, p, [])}) WHERE rank IS NOT NULL AND path IN (SELECT value FROM json_each(${p.add(JSON.stringify(wanted))}))`)
     .all(p.values) as Row[]
   const ids: number[] = []
-  const retryable = new Set<string>()
+  const marked = new Set<string>()
   for (const r of rows) {
-    if (!RETRYABLE.has(PROBLEM_CATEGORIES[r.rank!]!)) continue
+    if (!retryable(PROBLEM_CATEGORIES[r.rank!]!, r.note)) continue
     ids.push(r.id)
-    retryable.add(r.path)
+    marked.add(r.path)
   }
-  const refused = wanted.filter((path) => !retryable.has(path)).map((path) => {
+  const refused = wanted.filter((path) => !marked.has(path)).map((path) => {
     const e = explainPath(db, config, path)
     // Only problems a setting decides need the fix spelled out: the others' reasons already say what to do.
     const fix = e.category && !e.retry && e.setting ? NOT_RETRYABLE[e.category as keyof typeof NOT_RETRYABLE] : ""
