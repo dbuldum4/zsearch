@@ -74,6 +74,17 @@ test("hard links group by inode; a deleted copy leaves its group", async () => c
   }
 }, [["one/data.csv", "linked/data.csv"]]))
 
+test("a FIFO in place of a file is not waited on", () => {
+  const dir = mkdtempSync(join(tmpdir(), "zsearch-fifo-")), fifo = join(dir, "data.csv")
+  try {
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0)
+    // In a child process, so that a blocking open fails the test instead of hanging the run.
+    const script = `const { fileDigest } = require(${JSON.stringify(join(import.meta.dir, "../src/search/duplicates.ts"))}); console.log(String(fileDigest(${JSON.stringify(fifo)}, { size: 0 })))`
+    const child = Bun.spawnSync([process.execPath, "-e", script], { timeout: 10_000 })
+    expect(child.stdout.toString().trim()).toBe("null")
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test("a copy changed on disk is compared again", async () => corpus({
   "x/plan.md": "numbat plan",
   "y/plan.md": "numbat plan",

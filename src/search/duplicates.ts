@@ -38,7 +38,8 @@ const buffer = new Uint8Array(256 * 1024)
 export function fileDigest(path: string, expected: { size: number; mtimeMs?: number; ctimeMs?: number }, deadline = Infinity): string | null {
   let fd: number | undefined
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    // O_NONBLOCK: a FIFO in place of the file would otherwise block the open until a writer comes.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = fstatSync(fd)
     if (!before.isFile() || before.size !== expected.size) return null
     if (expected.mtimeMs !== undefined && (before.mtimeMs !== expected.mtimeMs || before.ctimeMs !== expected.ctimeMs)) return null
