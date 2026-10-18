@@ -140,7 +140,8 @@ describe("search screen", () => {
 
   test("typing shows results with snippets and a preview", async () => {
     await type(s, "calvin")
-    const f = await until(s, (f) => f.includes("paper.pdf") && f.includes("page 2"))
+    // The recent-files list shown before results arrive already holds "paper.pdf" and "page 2".
+    const f = await until(s, (f) => f.includes("Calvin cycle") && f.includes("p.2"))
     expect(f).toContain("Calvin cycle")
     expect(f).toContain("p.2") // location label in the result list
     expect(f).toContain("PDF")
