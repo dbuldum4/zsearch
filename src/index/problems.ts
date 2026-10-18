@@ -460,11 +460,29 @@ export function explainPath(db: Database, config: Config, path: string): Explana
   const c = context(config)
   const abs = resolvePath(path.trim())
   const base = { path: abs, category: null, detail: null, retry: false, at: null }
+  // Search checks today's policy even while old rows await the next index update.
+  const policy = pathPolicy(abs, crawlOptionsFor(config))
+  if (!policy.allowed) {
+    const denied = POLICY_DENIALS[policy.reason ?? ""] ?? { reason: `It is not indexed: ${policy.reason}.`, setting: null }
+    return { ...base, searchable: "none", ...denied }
+  }
   const row = db.query("SELECT id, path, is_dir, content_state, note, ext, kind FROM files WHERE path = ?").get(abs) as FileRow | null
   if (!row) {
-    const policy = pathPolicy(abs, crawlOptionsFor(config))
-    const denied = !policy.allowed ? (POLICY_DENIALS[policy.reason ?? ""] ?? { reason: `It is not indexed: ${policy.reason}.`, setting: null }) : null
-    return { ...base, searchable: "none", ...(denied ?? { reason: "It is not in the index yet: the next index update adds it.", setting: null }) }
+    return { ...base, searchable: "none", reason: "It is not in the index yet: the next index update adds it.", setting: null }
+  }
+  if (!row.is_dir) {
+    if (!config.content.enabled) return { ...base, searchable: "name", reason: "Reading the text inside files is turned off in Settings › Index, so only names are searchable.", setting: "content.enabled" }
+    if (!policy.content) {
+      const paths = [abs, policy.real ?? abs]
+      let category: ProblemCategory
+      if (policy.reason === "key or password file: indexed by name only") category = "secret"
+      else if (paths.some((path) => c.cloud.some((dir) => under(path, dir)))) category = "cloud"
+      else if (paths.some((path) => c.namesOnly.some((dir) => under(path, dir)))) category = "names-only"
+      else if (paths.some((path) => c.system.some((dir) => under(path, dir)))) return { ...base, searchable: "name", reason: "It is in a system folder, indexed by name only when the whole disk is indexed.", setting: null }
+      else if (policy.reason === "speech transcription is disabled in settings") return { ...base, searchable: "name", reason: "Transcribing speech in audio and video is turned off in Settings › Index.", setting: "content.transcribe" }
+      else category = "cloud"
+      return { ...base, searchable: "name", category, ...describe(category, { ...row, path: policy.real ?? abs }, c) }
+    }
   }
   const offline = row.content_state === ContentState.None && !row.is_dir && isOffline(abs) ? [row.id] : []
   const p = new Params()

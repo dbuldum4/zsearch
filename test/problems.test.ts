@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
+import { rmSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
 import { ContentState, hasReadAt, openDb } from "../src/index/db.ts"
@@ -150,6 +151,43 @@ describe("indexing problems", () => {
     expect((await retryProblems(db, config(), { category: "timeout" })).retried).toBe(1)
   })
 
+  test("explanations follow current policy before an indexed file is updated", async () => {
+    const path = corpus.write("policy-check/report.txt", "A report that was read before its settings changed.")
+    const c = config()
+    c.roots = [at("policy-check")]
+    const own = openDb(":memory:")
+    try {
+      await new Indexer(own, c, { inProcess: true }).run()
+      expect(explainPath(own, c, path)).toMatchObject({ searchable: "content", category: null })
+      const excluded = structuredClone(c)
+      excluded.exclude.push(path)
+      expect(explainPath(own, excluded, path)).toMatchObject({ searchable: "none", setting: "exclude", retry: false })
+      const outside = structuredClone(c)
+      outside.roots = [at("Documents")]
+      expect(explainPath(own, outside, path)).toMatchObject({ searchable: "none", setting: "roots" })
+      const namesOnly = structuredClone(c)
+      namesOnly.namesOnly.push(at("policy-check"))
+      expect(explainPath(own, namesOnly, path)).toMatchObject({ searchable: "name", category: "names-only", setting: "namesOnly", retry: false })
+      const disabled = structuredClone(c)
+      disabled.content.enabled = false
+      expect(explainPath(own, disabled, path)).toMatchObject({ searchable: "name", setting: "content.enabled", retry: false })
+      // A stored truncation or extraction error must not override today's restriction.
+      own.query("UPDATE files SET note = 'truncated' WHERE path = ?").run(path)
+      expect(explainPath(own, c, path)).toMatchObject({ searchable: "content", category: "truncated" })
+      expect(explainPath(own, namesOnly, path)).toMatchObject({ searchable: "name", category: "names-only" })
+      own.query("UPDATE files SET content_state = ?, note = 'permission denied' WHERE path = ?").run(ContentState.Error, path)
+      expect(explainPath(own, c, path)).toMatchObject({ searchable: "name", category: "unreadable", retry: true })
+      expect(explainPath(own, namesOnly, path)).toMatchObject({ searchable: "name", category: "names-only", retry: false })
+      const ignore = corpus.write("policy-check/.zsearchignore", "report.txt\n")
+      expect(explainPath(own, c, path)).toMatchObject({ searchable: "none", setting: "exclude" })
+      rmSync(ignore)
+      rmSync(path)
+      expect(explainPath(own, c, path)).toMatchObject({ searchable: "none", reason: "It does not exist, or zsearch cannot reach it." })
+    } finally {
+      own.close()
+    }
+  })
+
   test("marking files for another read gives up clearly when the index stays busy", async () => {
     const path = join(corpus.home, "busy.db")
     const writer = openDb(path)
@@ -217,6 +255,7 @@ describe("indexing problems", () => {
       add("Documents/blank.pdf", "pdf", "pdf", "empty")
       add("Documents/unread.pdf", "pdf", "pdf", "unsupported")
       add("Pictures/photo.jpg", "jpg", "image", "unsupported")
+      corpus.write("Pictures/photo.jpg", new Uint8Array([0xff, 0xd8, 0xff]))
       const by = new Map(listProblems(own, config()).problems.map((p) => [p.path, p]))
       expect(by.get(at("Documents/blank.pdf"))).toMatchObject({ category: "no-text", retry: true })
       expect(by.get(at("Documents/unread.pdf"))).toMatchObject({ category: "no-text", retry: false })
