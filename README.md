@@ -195,7 +195,7 @@ zsearch saved rm notes
 zsearch history                      # recent searches; `zsearch history clear` forgets them
 ```
 
-Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case, and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them.
+Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case, and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them. If that file cannot be read, the next change starts a new one and keeps the old one as `searches.json.damaged`.
 
 ## Indexing
 

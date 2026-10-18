@@ -14,6 +14,9 @@ final class SavedSearchesTests: XCTestCase {
         XCTAssertNil(SavedSearches.existing(named: "Large", in: saved))
         XCTAssertEqual(SavedSearches.problem(with: "   ", in: saved), "Enter a name.")
         XCTAssertNotNil(SavedSearches.problem(with: String(repeating: "x", count: 101), in: saved))
+        // The engine's limit is in UTF-16 code units: 51 emoji are 102.
+        XCTAssertNotNil(SavedSearches.problem(with: String(repeating: "😀", count: 51), in: saved))
+        XCTAssertNil(SavedSearches.problem(with: String(repeating: "😀", count: 50), in: saved))
         // Saving under a taken name replaces that search; renaming onto another one is refused.
         XCTAssertNil(SavedSearches.problem(with: "project notes", in: saved))
         XCTAssertEqual(SavedSearches.problem(with: "project notes", in: saved, renaming: saved[0]), "A saved search is already called “Project notes”.")

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { App } from "../src/tui/app.tsx"
 import { clearRecent, deleteSearch, findSaved, loadSearches, RECENT_LIMIT, rememberSearch, renameSearch, saveSearch, searchesFile } from "../src/searches.ts"
@@ -25,7 +25,10 @@ afterAll(() => {
 })
 
 describe("saved searches and history", () => {
-  beforeEach(() => rmSync(searchesFile(), { force: true }))
+  beforeEach(() => {
+    rmSync(searchesFile(), { force: true })
+    rmSync(`${searchesFile()}.damaged`, { force: true })
+  })
 
   test("save, replace, rename and delete by name", () => {
     expect(loadSearches()).toEqual({ saved: [], recent: [] })
@@ -82,9 +85,26 @@ describe("saved searches and history", () => {
     process.emitWarning = () => {}
     try {
       expect(loadSearches()).toEqual({ saved: [], recent: [] })
-      // Saving over a damaged file starts it again.
+      // Saving over a damaged file starts it again, keeping the damaged one aside.
       expect(saveSearch("Fresh", "a", "find").saved).toHaveLength(1)
+      expect(readFileSync(`${searchesFile()}.damaged`, "utf8")).toBe("{ not json")
+      expect(loadSearches().saved).toEqual([{ name: "Fresh", query: "a", mode: "find" }])
     } finally { process.emitWarning = warn }
+  })
+
+  test("history written over a hand-edited file with a typo does not lose its saved searches", () => {
+    const edited = '{ "saved": [{ "name": "Keep me", "query": "invoice type:pdf", "mode": "find" }], }'
+    writeFileSync(searchesFile(), edited)
+    const warn = process.emitWarning
+    process.emitWarning = () => {}
+    try {
+      expect(rememberSearch("budget", "find", 1000).recent).toEqual([{ query: "budget", mode: "find", at: 1000 }])
+    } finally { process.emitWarning = warn }
+    expect(readFileSync(`${searchesFile()}.damaged`, "utf8")).toBe(edited)
+    // A readable file is written over in place, with nothing set aside.
+    rmSync(`${searchesFile()}.damaged`)
+    rememberSearch("report", "find", 2000)
+    expect(existsSync(`${searchesFile()}.damaged`)).toBe(false)
   })
 })
 
@@ -112,7 +132,10 @@ test("command line: saved add, list, run, rename, rm and history", async () => {
   const run = await zs("saved", "run", "odd downloads", "-l")
   expect(run.code).toBe(0)
   expect(run.out).toContain(join(corpus.home, "Downloads", "unknown-text-file"))
-  expect((await zs("saved", "run", "missing")).err).toContain('no saved search is called "missing"')
+  const missing = await zs("saved", "run", "missing")
+  expect(missing.err).toContain('no saved search is called "missing"')
+  // Not 1, which `search` uses for a search that found nothing.
+  expect(missing.code).toBe(2)
   expect((await zs("saved", "rename", "Odd downloads", "Zanzibar")).out).toContain('Renamed "Odd downloads" to "Zanzibar"')
   expect((await zs("saved", "rm", "fuzzy BUDGET")).out).toContain('Deleted "Fuzzy budget"')
   expect((await zs("saved")).out.trim()).toBe("Zanzibar  find      zanzibar in:~/Downloads")

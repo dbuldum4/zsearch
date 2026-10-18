@@ -76,12 +76,11 @@ export function loadSearches(): Searches {
   const out: Searches = { saved: [], recent: [] }
   const file = searchesFile()
   if (!existsSync(file)) return out
-  let raw: unknown
-  try { raw = JSON.parse(readFileSync(file, "utf8")) } catch (err) {
-    process.emitWarning(`zsearch: ignoring unreadable ${file}: ${(err as Error).message}`)
+  const r = readStored(file)
+  if (r instanceof Error) {
+    process.emitWarning(`zsearch: ignoring unreadable ${file} (the next change keeps it as ${file}.damaged): ${r.message}`)
     return out
   }
-  const r = (raw ?? {}) as { saved?: unknown; recent?: unknown }
   for (const s of Array.isArray(r.saved) ? r.saved : []) {
     try {
       const entry = { name: cleanName(s?.name), query: cleanQuery(s?.query), mode: checkMode(s?.mode) }
@@ -99,11 +98,24 @@ export function loadSearches(): Searches {
   return out
 }
 
+/** The file's contents, or why they cannot be used. */
+function readStored(file: string): { saved?: unknown; recent?: unknown } | Error {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"))
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : new Error("not a JSON object")
+  } catch (err) {
+    return err as Error
+  }
+}
+
 function store(searches: Searches): Searches {
   const file = searchesFile()
   const dir = paths().data
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
+  // An unreadable file loads as empty, and any change (even history, written on its own when a
+  // result opens) would replace it: keep it aside so the saved searches it holds can be recovered.
+  if (existsSync(file) && readStored(file) instanceof Error) renameSync(file, `${file}.damaged`)
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
   writeFileSync(tmp, JSON.stringify(searches, null, 2) + "\n", { mode: 0o600, flag: "wx" })
   renameSync(tmp, file)

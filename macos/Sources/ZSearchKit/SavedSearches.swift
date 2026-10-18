@@ -32,7 +32,8 @@ public enum SavedSearches {
     public static func problem(with name: String, in saved: [SavedSearch], renaming: SavedSearch? = nil) -> String? {
         let n = normalized(name)
         if n.isEmpty { return "Enter a name." }
-        if n.count > nameLimit { return "Use at most \(nameLimit) characters." }
+        // The engine counts UTF-16 code units (JavaScript's length), not characters.
+        if n.utf16.count > nameLimit { return "Use at most \(nameLimit) characters." }
         if let renaming, let other = existing(named: n, in: saved), other != renaming {
             return "A saved search is already called “\(other.name)”."
         }

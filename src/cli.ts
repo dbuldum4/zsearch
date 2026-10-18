@@ -702,7 +702,8 @@ async function cmdSaved(rest: string[], args: Args): Promise<number> {
     case "run": {
       if (!name || more.length) throw new UsageError("saved run <name> [search options]")
       const entry = findSaved(loadSearches(), name)
-      if (!entry) throw new Error(`no saved search is called "${name}" (zsearch saved lists them)`)
+      // 2 as for `search`'s errors: 1 means the search found nothing.
+      if (!entry) throw new UsageError(`no saved search is called "${name}" (zsearch saved lists them)`)
       // Output options apply as to `search`; `-m` runs it in another mode.
       const flags = new Map(args.flags)
       if (flag(args, "mode", "m") === undefined) flags.set("mode", entry.mode)
