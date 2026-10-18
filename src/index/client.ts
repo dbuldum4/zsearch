@@ -13,12 +13,13 @@ export type IndexOutcome = { status: "done" | "cancelled" | "error"; progress: I
 /**
  * Runs one indexing pass in a worker thread. A `background` run, one that started on its own
  * (a schedule, file changes), waits on power during a big pass; one someone asked for does not.
+ * With `paths` (file changes), it updates just those paths when it can (see `IndexOptions.paths`).
  */
 export class IndexRun {
   private worker: Worker
   readonly done: Promise<IndexOutcome>
 
-  constructor(config: Config, dbPath: string, lockPath: string, handlers: IndexRunHandlers = {}, rebuild = false, background = false, meaningOnly = false) {
+  constructor(config: Config, dbPath: string, lockPath: string, handlers: IndexRunHandlers = {}, rebuild = false, background = false, meaningOnly = false, paths?: string[]) {
     this.worker = new Worker(workerUrl("index/index-worker.ts"))
     this.done = new Promise<IndexOutcome>((resolve) => {
       this.worker.onmessage = (ev: MessageEvent<IndexWorkerOut>) => {
@@ -51,7 +52,7 @@ export class IndexRun {
         this.worker.terminate()
       }
     })
-    const msg: IndexWorkerIn = { type: "start", config, dbPath, lockPath, rebuild, background, meaningOnly }
+    const msg: IndexWorkerIn = { type: "start", config, dbPath, lockPath, rebuild, background, meaningOnly, paths }
     this.worker.postMessage(msg)
   }
 
