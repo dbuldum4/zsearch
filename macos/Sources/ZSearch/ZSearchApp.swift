@@ -60,6 +60,9 @@ struct ZSearchApp: App {
                 }
                 Button("Search Field") { model.requestSearchFocus() }
                     .keyboardShortcut("l")
+                Button("Save Search…") { model.promptSaveSearch() }
+                    .keyboardShortcut("s")
+                Button("Manage Saved Searches…") { model.manageSearches() }
                 Button("Next Result") { model.moveSelection(by: 1) }
                     .keyboardShortcut("j")
                 Button("Previous Result") { model.moveSelection(by: -1) }

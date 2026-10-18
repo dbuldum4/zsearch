@@ -41,6 +41,7 @@ struct ContentView: View {
                 .environment(model)
                 .interactiveDismissDisabled(model.firstRun)
         }
+        .modifier(SavedSearchDialogs(enabled: !isPanel))
         .onAppear {
             searchFocused = true
             guard !isPanel else { return }
@@ -87,6 +88,7 @@ struct SearchBar: View {
                     model.query = ""
                     return .handled
                 }
+            SearchesMenu()
             if !Edition.semanticOnly {
                 Picker("Mode", selection: $model.mode) {
                     Text("Find").tag(Mode.find)
@@ -134,6 +136,12 @@ struct ResultsList: View {
                     Button("Quick Look") {
                         model.selection = hit.id
                         model.toggleQuickLook()
+                    }
+                    if let start = Transcript.start(of: hit) {
+                        Button("Play from \(Transcript.format(start))") {
+                            model.selection = hit.id
+                            Playback.shared.play(hit.path, from: start)
+                        }
                     }
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
@@ -309,6 +317,7 @@ struct PreviewPane: View {
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    if media, visual { PlayFromButton(preview: p) }
                     if pdf != nil, p.message == nil {
                         Picker("Show", selection: $pdfShowsText) {
                             Text("Pages").tag(false)
@@ -361,15 +370,25 @@ struct PreviewPane: View {
                 } else if ebook, !ebookShowsText {
                     EbookPreviewView(preview: p)
                 } else if visual, !visualShowsText || p.message != nil {
-                    QuickLookView(url: URL(fileURLWithPath: p.path))
+                    if media, Playback.shared.isPlaying(p) {
+                        MediaPlayerView()
+                    } else {
+                        QuickLookView(url: URL(fileURLWithPath: p.path))
+                    }
                 } else if let message = p.message {
                     Text(message)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    PreviewTextView(preview: p, wrapTextPreviews: isPanel ? wrapPanelTextPreviews : wrapTextPreviews)
+                    if media, visual { TranscriptPlayer(preview: p) }
+                    PreviewTextView(preview: p, wrapTextPreviews: isPanel ? wrapPanelTextPreviews : wrapTextPreviews,
+                                    seek: media && visual ? { Playback.shared.play(p.path, from: $0) } : nil)
                 }
             }
+            .onChange(of: p.path) { _, path in Playback.shared.stop(unless: path) }
+            // With no results or a closed window there is no player to stop it from, and a pane
+            // shown again for another file sees no change of path.
+            .onDisappear { Playback.shared.stop() }
             .task(id: Showing(preview: p, pdfShowsText: pdfShowsText, documentShowsText: documentShowsText)) {
                 guard PreviewPreparation.needsDocument(p) else { return }
                 await PreviewPreparation.prepare(p)

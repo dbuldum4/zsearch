@@ -17,6 +17,7 @@ import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
+import { clearRecent, deleteSearch, loadSearches, rememberSearch, renameSearch, saveSearch, type Searches } from "./searches.ts"
 import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/manage.ts"
 import { downloadModels } from "./semantic/model.ts"
 
@@ -36,6 +37,12 @@ type ServeIn =
   | { id?: number; type: "semanticInstall" }
   | { id?: number; type: "semanticCancelInstall" }
   | { id?: number; type: "semanticRemove" }
+  | { id?: number; type: "searches" }
+  | { id?: number; type: "saveSearch"; name: string; query: string; mode?: Mode }
+  | { id?: number; type: "renameSearch"; name: string; to: string }
+  | { id?: number; type: "deleteSearch"; name: string }
+  | { id?: number; type: "rememberSearch"; query: string; mode?: Mode }
+  | { id?: number; type: "clearRecent" }
 
 type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
@@ -53,6 +60,7 @@ type ServeOut =
   | { type: "refreshed"; files: number; changed: boolean }
   | { id?: number; type: "semantic"; status: SemanticStatus }
   | { type: "semanticDownload"; file: string; received: number; total: number }
+  | ({ id?: number; type: "searches" } & Searches)
 
 /** Progress events are throttled to this interval; the last one before `indexDone` always goes out. */
 const PROGRESS_MS = 100
@@ -92,6 +100,9 @@ export async function serve(version: string): Promise<number> {
 
   const send = (m: ServeOut): void => void process.stdout.write(JSON.stringify(m) + "\n")
   const mode = (m: unknown): Mode => (MODES.includes(m as Mode) ? (m as Mode) : config.defaultMode)
+  /** With the `searchHistory` setting off, the history is neither kept nor shown. */
+  const sendSearches = (id: number | undefined, s: Searches) =>
+    send({ id, type: "searches", saved: s.saved, recent: config.searchHistory ? s.recent : [] })
 
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
@@ -277,6 +288,19 @@ export async function serve(version: string): Promise<number> {
         removeSemantic(p.db)
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       }
+      case "searches":
+        return sendSearches(id, loadSearches())
+      // A mode left out is the default one; one this version doesn't know is an error, not stored as another.
+      case "saveSearch":
+        return sendSearches(id, saveSearch(String(msg.name ?? ""), String(msg.query ?? ""), msg.mode ?? config.defaultMode))
+      case "renameSearch":
+        return sendSearches(id, renameSearch(String(msg.name ?? ""), String(msg.to ?? "")))
+      case "deleteSearch":
+        return sendSearches(id, deleteSearch(String(msg.name ?? "")))
+      case "rememberSearch":
+        return sendSearches(id, rememberSearch(String(msg.query ?? ""), msg.mode ?? config.defaultMode))
+      case "clearRecent":
+        return sendSearches(id, clearRecent())
       default:
         return send({ id, type: "error", error: `unknown request type "${(msg as { type?: unknown }).type}"` })
     }

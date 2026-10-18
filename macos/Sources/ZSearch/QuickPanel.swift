@@ -31,8 +31,12 @@ final class QuickPanel: NSObject, NSWindowDelegate {
         model.requestSearchFocus()
     }
 
-    func hide() {
-        panel?.orderOut(nil)
+    /// Playback started here stops with the panel, which holds the only player in sight, unless
+    /// the main window takes over the same selection and so shows the player.
+    func hide(keepingPlayback: Bool = false) {
+        guard let panel, panel.isVisible else { return }
+        panel.orderOut(nil)
+        if !keepingPlayback { Playback.shared.stop() }
     }
 
     /// A file was opened or revealed from the panel: its job is done.
@@ -88,7 +92,7 @@ final class QuickPanel: NSObject, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isVisible, !self.isKey else { return }
             if NSApp.keyWindow is QLPreviewPanel || NSApp.modalWindow != nil { return }
-            self.hide()
+            self.hide(keepingPlayback: NSApp.keyWindow?.identifier?.rawValue.hasPrefix("main") == true)
         }
     }
 }
@@ -99,7 +103,7 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {
-        orderOut(nil)
+        QuickPanel.shared.hide()
     }
 }
 
