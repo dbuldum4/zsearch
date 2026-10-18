@@ -40,8 +40,8 @@ export function segmentStamp(seconds: number): string {
 
 /** Where a transcript line's segment starts in the recording, in seconds, read from its stamp. */
 export function segmentStart(line: string): number | undefined {
-  // A character limit can cut the last line inside its stamp.
-  const m = /^\[(\d{2,}):([0-5]\d):([0-5]\d)\](?=\s|$)/.exec(line)
+  // A character limit can cut the last line inside its stamp. Hours take 2–4 digits, as Transcript.stamp in ZSearchKit reads them.
+  const m = /^\[(\d{2,4}):([0-5]\d):([0-5]\d)\](?=\s|$)/.exec(line)
   return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : undefined
 }
 

@@ -216,7 +216,9 @@ test("transcript stamps round-trip, and a cut stamp is not one", () => {
   expect(segmentStamp(3725.9)).toBe("01:02:05")
   expect(segmentStart(`[${segmentStamp(83.5)}] Orion`)).toBe(83)
   expect(segmentStart("[00:00:05]")).toBe(5)
-  for (const line of ["[00:0", "[00:01:23", "[00:61:00] x", "[00:01:23]words", "…budget"]) expect(segmentStart(line)).toBeUndefined()
+  // Hours take 2–4 digits, as the Mac app's parser reads them.
+  expect(segmentStart("[9999:59:59] x")).toBe(35_999_999)
+  for (const line of ["[00:0", "[00:01:23", "[00:61:00] x", "[00:01:23]words", "…budget", "[0:00:01] x", "[10000:00:00] x"]) expect(segmentStart(line)).toBeUndefined()
 })
 
 test("hit lines in transcripts carry their segment's start, even when clipped", async () => {

@@ -9,6 +9,8 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(stamp.range, NSRange(location: 0, length: 10))
         XCTAssertEqual(Transcript.stamp(in: "[01:02:05] later")?.seconds, 3725)
         XCTAssertEqual(Transcript.stamp(in: "[100:00:00] past the helper's two hours")?.seconds, 360_000)
+        // Hours take 2–4 digits, as the engine's segmentStart reads them.
+        XCTAssertEqual(Transcript.stamp(in: "[9999:59:59] x")?.seconds, 35_999_999)
         // A character limit can leave a stamp with no words after it.
         XCTAssertEqual(Transcript.stamp(in: "[00:00:05]")?.seconds, 5)
         // Ranges are UTF-16, as NSString counts them, whatever the words after.
@@ -18,7 +20,7 @@ final class TranscriptTests: XCTestCase {
     func testRejectsCutAndMalformedStamps() {
         for line in ["", "[", "[00:0", "[00:01:2", "[00:01:23", "[0:01:23] one-digit hours", "[00:1:23] x",
                      "[00:60:00] x", "[00:00:60] x", "[00:01:23]words", "x [00:01:23] later in the line",
-                     "…budget approved", "[aa:bb:cc] x", "(00:01:23) x"] {
+                     "…budget approved", "[aa:bb:cc] x", "(00:01:23) x", "[10000:00:00] x"] {
             XCTAssertNil(Transcript.stamp(in: line), line)
         }
     }
