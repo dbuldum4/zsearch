@@ -78,7 +78,7 @@ async function search(engine: SearchEngine, q: string) {
   const r = await engine.search(q, "semantic", { limit: 100 })
   const ms = performance.now() - t
   if (r.error) throw new Error(`${q}: ${r.error}`)
-  if (r.strategy !== "semantic + words" && r.strategy !== "words") throw new Error(`${q}: ${r.strategy}`)
+  if (!/^(semantic \+ words|words)( · |$)/.test(r.strategy)) throw new Error(`${q}: ${r.strategy}`)
   if (r.notice && /Granite|Semantic search/.test(r.notice)) throw new Error(`${q}: ${r.notice}`)
   return { ms, r }
 }
