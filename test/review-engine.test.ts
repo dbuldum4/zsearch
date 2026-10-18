@@ -217,7 +217,7 @@ describe("semantic snapshots", () => {
     }
   })
 
-  test("an index update during the query's embedding drops the outdated snapshot", async () => {
+  test("an index update during the query's embedding leaves the changed file to its words", async () => {
     const p = corpus.write("notes/dogwalk.txt", "Our puppy needs a long walk every morning.\n")
     await index()
     expect((await semantic()).status).toBe("done")
@@ -232,8 +232,8 @@ describe("semantic snapshots", () => {
     const r = await pending
     e.closeSemantic()
     try {
-      expect(r.strategy).toBe("words")
-      expect(r.notice).toContain("Granite is not ready")
+      expect(r.strategy).toEndWith("files current; 1 pending")
+      expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
       expect(names(r)).not.toContain("notes/dogwalk.txt")
       expect(r.hits.flatMap((h) => h.lines).some((l) => l.text.includes("revenue"))).toBe(false)
     } finally {
