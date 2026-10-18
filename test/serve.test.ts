@@ -150,7 +150,8 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   // A query that finds something has nothing to explain; a search inline when asked to.
   s.send({ id: 45, type: "explain", query: "pancakes", mode: "find" })
   expect(await s.reply(45)).toEqual({ id: 45, type: "diagnosis", query: "pancakes", mode: "find" })
-  s.send({ id: 46, type: "search", query: "pancakes type:pdf", mode: "find", explain: true })
+  // Grouping and inline diagnosis are independent options, including for an empty page.
+  s.send({ id: 46, type: "search", query: "pancakes type:pdf", mode: "find", explain: true, groupDuplicates: true })
   expect(((await s.reply(46)).response as { diagnosis?: { filters?: unknown[] } }).diagnosis?.filters).toHaveLength(1)
   // A newer search supersedes an explanation.
   s.send({ id: 47, type: "explain", query: "pancakes type:pdf", mode: "find" })
