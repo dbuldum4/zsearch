@@ -11,10 +11,15 @@ export function testServices(config: Config, opts: { firstRun?: boolean; dbPath?
   const dbPath = opts.dbPath ?? paths().db
   const db: Database = openDb(dbPath)
   let engine = new SearchEngine(db, config)
-  const calls = { open: [] as string[], reveal: [] as string[], edit: [] as { path: string; line?: number }[], copy: [] as string[], saved: [] as Config[], indexRuns: 0 }
+  const calls = { open: [] as string[], reveal: [] as string[], edit: [] as { path: string; line?: number }[], copy: [] as string[], saved: [] as Config[], indexRuns: 0, searches: [] as { query: string; explain?: boolean }[], explains: [] as string[] }
   const search: SearchService = {
-    async search(query, mode, limit) {
-      return engine.search(query, mode, { limit })
+    async search(query, mode, limit, explain) {
+      calls.searches.push({ query, explain })
+      return engine.search(query, mode, { limit, explain })
+    },
+    async explain(query, mode, limit) {
+      calls.explains.push(query)
+      return { diagnosis: await engine.explain(query, mode, { limit }) }
     },
     async preview(id, query, mode, focusLine) {
       return engine.preview(id, query, mode, focusLine)

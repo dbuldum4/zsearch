@@ -147,7 +147,9 @@ export async function diagnose(engine: SearchEngine, res: SearchResponse, cancel
     const others: Mode[] = res.resolved === "find" ? ["fuzzy", "semantic"] : res.resolved === "fuzzy" ? ["semantic"] : ["find", "fuzzy"]
     const modes: NonNullable<SearchDiagnosis["modes"]> = []
     for (const mode of others) {
-      if (mode === "semantic" && !semantic) continue
+      // Semantic search finds something for most queries, by meaning: offered only when nothing
+      // else would help, it is not a line under every empty result.
+      if (mode === "semantic" && (!semantic || d.filters || d.folders || d.suggestion || modes.length)) continue
       const r = await probe(res.query, mode)
       if (r === null) return undefined
       if (r) modes.push({ mode, ...found(r) })

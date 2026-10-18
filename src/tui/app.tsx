@@ -4,7 +4,7 @@ import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMo
 import { type Config, manualIndexing, tildify } from "../config.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
-import { explainDiagnosis } from "../search/diagnose.ts"
+import { explainDiagnosis, type SearchDiagnosis } from "../search/diagnose.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
 import { MODES, type Mode } from "../search/query.ts"
 import { formatAge, formatBytes, formatCount, formatDuration } from "../util/text.ts"
@@ -27,6 +27,8 @@ interface AppProps {
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const MODE_LABEL: Record<Mode, string> = { find: "find", fuzzy: "fuzzy", semantic: "semantic" }
+/** How long a query without results stays the same before the app asks why (not on every keystroke). */
+const EXPLAIN_DELAY_MS = 350
 
 function RowText(props: { row: Row; width: number }) {
   return <StyledLine segs={props.row.segs} width={props.width} bg={props.row.bg} />
@@ -44,6 +46,8 @@ export function App(props: AppProps) {
   const [query, setQuery] = createSignal(props.initialQuery ?? "")
   const [mode, setMode] = createSignal<Mode>(props.initialMode ?? svc.config.defaultMode)
   const [response, setResponse] = createSignal<SearchResponse | null>(null)
+  /** Why a query found nothing (see `scheduleExplain`). */
+  const [explained, setExplained] = createSignal<{ query: string; mode: Mode; diagnosis?: SearchDiagnosis } | null>(null)
   const [searching, setSearching] = createSignal(false)
   const [selected, setSelected] = createSignal(0)
   const [top, setTop] = createSignal(0)
@@ -61,6 +65,7 @@ export function App(props: AppProps) {
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let previewTimer: ReturnType<typeof setTimeout> | undefined
   let liveTimer: ReturnType<typeof setTimeout> | undefined
+  let explainTimer: ReturnType<typeof setTimeout> | undefined
   let lastLiveSearch = 0
   let exiting = false
 
@@ -90,10 +95,11 @@ export function App(props: AppProps) {
     const seq = ++searchSeq
     const issued = Date.now()
     setSearching(true)
-    const res = await svc.search.search(q, m, 200)
+    const res = await svc.search.search(q, m, 200, false)
     if (seq !== searchSeq) return
     setSearching(false)
     if (!res) return
+    scheduleExplain(res, q, m)
     // Keep the highlighted file if the user moved to it while this search was running.
     const prevId = current()?.id
     if (lastMove > issued) keepSelection = true
@@ -113,9 +119,19 @@ export function App(props: AppProps) {
     clearTimeout(searchTimer)
     searchTimer = setTimeout(() => void runSearch(), delay)
   }
+  /** An empty result is explained once its query has stayed the same for a moment. */
+  const scheduleExplain = (res: SearchResponse, q: string, m: Mode) => {
+    clearTimeout(explainTimer)
+    if (res.hits.length || res.error || !q.trim()) return
+    explainTimer = setTimeout(async () => {
+      const reply = await svc.search.explain(q, m, 200)
+      if (reply && q === query() && m === mode()) setExplained({ query: q, mode: m, diagnosis: reply.diagnosis })
+    }, EXPLAIN_DELAY_MS)
+  }
 
   createEffect(
     on([query, mode], () => {
+      clearTimeout(explainTimer)
       // Semantic search runs the model on the query: wait for a pause in typing.
       if (screen() === "search") scheduleSearch(mode() === "semantic" ? 100 : 25)
     }),
@@ -242,6 +258,7 @@ export function App(props: AppProps) {
     clearTimeout(searchTimer)
     clearTimeout(previewTimer)
     clearTimeout(liveTimer)
+    clearTimeout(explainTimer)
     clearTimeout(toastTimer)
   })
 
@@ -500,9 +517,11 @@ export function App(props: AppProps) {
     if (s && s.files === 0 && !indexing()) return [[{ text: "  The index is empty. Press Ctrl-R to index, or Ctrl-S to choose folders.", fg: t().warn }]]
     if (!query()) return [[{ text: indexing() ? "  Indexing… results appear as files are found." : "  Start typing to search.", fg: t().subtle }]]
     const lines: Seg[][] = [[{ text: `  No matches for “${query()}”`, fg: t().muted }], []]
+    const e = explained()
+    const diagnosis = e && e.query === query() && e.mode === mode() ? e.diagnosis : undefined
     // Indexing has a line of its own below, whichever process runs it.
-    for (const line of explainDiagnosis(r.diagnosis && { ...r.diagnosis, indexing: false })) lines.push([{ text: `  ${line}`, fg: t().text }])
-    if (r.diagnosis?.indexing && !indexing()) lines.push([{ text: "  Another zsearch process is indexing — more results may appear shortly.", fg: t().subtle }])
+    for (const line of explainDiagnosis(diagnosis && { ...diagnosis, indexing: false })) lines.push([{ text: `  ${line}`, fg: t().text }])
+    if (diagnosis?.indexing && !indexing()) lines.push([{ text: "  Another zsearch process is indexing — more results may appear shortly.", fg: t().subtle }])
     lines.push([{ text: mode() === "find" ? "  Tip: press Tab for fuzzy search, which forgives typos." : mode() === "fuzzy" ? "  Tip: press Tab to semantic search." : "  Tip: press Tab to find the exact text.", fg: t().subtle }])
     if (indexing()) lines.push([{ text: "  Still indexing — more results may appear shortly.", fg: t().subtle }])
     return lines

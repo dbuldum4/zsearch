@@ -1,7 +1,15 @@
 import Foundation
 
-/// Why a search found nothing, and what would find something: the engine's `diagnosis`, sent
-/// only with responses without hits (src/search/diagnose.ts). Parts that don't apply are nil.
+/// The engine's reply to `Request.explain`: why `query` (as sent) finds nothing in `mode`.
+/// `diagnosis` is nil when it finds something, or there is nothing to say.
+public struct DiagnosisReply: Decodable, Hashable, Sendable {
+    public var query: String
+    public var mode: String
+    public var diagnosis: SearchDiagnosis?
+}
+
+/// Why a search found nothing, and what would find something (src/search/diagnose.ts). Parts
+/// that don't apply are nil.
 public struct SearchDiagnosis: Decodable, Hashable, Sendable {
     public struct FilterProbe: Decodable, Hashable, Sendable {
         /// "date", "created", "size", "type", "folder", "path", "name", "tag", or "all".
@@ -104,6 +112,22 @@ public struct NoResultsHelp: Hashable, Sendable {
         if d?.semanticPending == true {
             items.append(Item(text: "Semantic indexing hasn't finished: only words were matched."))
         }
+    }
+
+    /// How long a query without results stays the same before the app asks why, in seconds:
+    /// explaining runs more searches, which typing should not wait behind.
+    public static let explainDelay = 0.35
+
+    /// Whether to ask why `response`, the results shown for `sentQuery` (as sent) in `mode`, found nothing.
+    public static func shouldExplain(_ response: SearchResponse?, sentQuery: String, mode: Mode) -> Bool {
+        guard let r = response, r.hits.isEmpty, r.error == nil, r.query == sentQuery, r.mode == mode.rawValue else { return false }
+        return !sentQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The diagnosis to show for `sentQuery` in `mode`: nil when `reply` is for another query or mode.
+    public static func current(_ reply: DiagnosisReply?, sentQuery: String, mode: Mode) -> SearchDiagnosis? {
+        guard let reply, reply.query == sentQuery, reply.mode == mode.rawValue else { return nil }
+        return reply.diagnosis
     }
 
     static let filterLabels = [

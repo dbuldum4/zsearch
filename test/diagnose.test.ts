@@ -201,6 +201,55 @@ describe("diagnosis of empty results", () => {
     expect((await engine.search("pancakes type:pdf", "find", { explain: false })).diagnosis).toBeUndefined()
   })
 
+  test("searches while typing do not explain; they ask separately", async () => {
+    const original = engine.search.bind(engine)
+    let searches = 0
+    engine.search = (query, mode, opts) => { searches++; return original(query, mode, opts) }
+    try {
+      const r = await engine.search("pancakes type:pdf", "find", { limit: 50, explain: false })
+      expect(r.hits).toEqual([])
+      expect(r.diagnosis).toBeUndefined()
+      // No probing searches ran.
+      expect(searches).toBe(1)
+    } finally {
+      delete (engine as Partial<SearchEngine>).search
+    }
+    expect((await engine.explain("pancakes type:pdf", "find", { limit: 50 }))?.filters).toEqual([{ filter: "type", query: "pancakes", count: 1, more: false }])
+    expect(await engine.explain("pancakes", "find", { limit: 50 })).toBeUndefined()
+    expect(await engine.explain("pancakes type:pdf", "find", { limit: 50, cancelled: () => true })).toBeUndefined()
+  })
+
+  test("similar words are looked up once for an empty search and its explanation", async () => {
+    const similar = engine.vocab.similar.bind(engine.vocab)
+    let looked = 0
+    engine.vocab.similar = (term) => { looked++; return similar(term) }
+    try {
+      const r = await search("pancaks")
+      expect(r.notice).toContain("Did you mean: pancakes")
+      expect(r.diagnosis?.suggestion).toBe("pancakes")
+      looked = 0
+      expect(engine.similarWords(parseQuery("pancaks"))).toEqual(["pancakes"])
+      expect(looked).toBe(0)
+      // Other settings may let other words be read.
+      await withConfig({}, async () => expect(engine.similarWords(parseQuery("pancaks"))).toEqual(["pancakes"]))
+      expect(looked).toBe(1)
+    } finally {
+      delete (engine.vocab as Partial<typeof engine.vocab>).similar
+    }
+  })
+
+  test("semantic search is offered only when nothing else would help", async () => {
+    engine.embedQuery = async () => new Float32Array(768)
+    try {
+      await withConfig({ semantic: { ...config.semantic, enabled: true } }, async () => {
+        expect((await search("pancaks")).diagnosis?.modes?.map((m) => m.mode)).toEqual(["fuzzy"])
+        expect((await search("pancakes type:pdf")).diagnosis?.modes).toBeUndefined()
+      })
+    } finally {
+      engine.embedQuery = undefined
+    }
+  })
+
   test("grouped queries are explained once, for the whole query", async () => {
     const r = await search("(pancakes OR glacier) type:pdf")
     expect(r.hits).toEqual([])

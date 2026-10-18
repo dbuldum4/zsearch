@@ -254,6 +254,20 @@ describe("search screen", () => {
     await until(s, (f) => f.includes(" FIND "))
   })
 
+  test("an empty result is explained once the query stays the same", async () => {
+    await esc(s)
+    const asked = t.calls.explains.length
+    await type(s, "pancakes type:pdf")
+    const f = await until(s, (f) => f.includes("No matches") && f.includes("without the type filter: pancakes"))
+    expect(f).toContain("1 result without the type filter: pancakes")
+    // Searches never wait for an explanation; only the query as typed in the end is explained.
+    expect(t.calls.searches.every((c) => c.explain === false)).toBe(true)
+    expect(t.calls.explains.slice(asked)).toEqual(["pancakes type:pdf"])
+    // A changed query drops the explanation of the one before.
+    await type(s, " qqzzyx")
+    await until(s, (f) => f.includes("No matches for “pancakes type:pdf qqzzyx”") && !f.includes("without the type filter"))
+  })
+
   test("Ctrl-T toggles the preview; narrow terminals hide it", async () => {
     await esc(s)
     await type(s, "pancakes")

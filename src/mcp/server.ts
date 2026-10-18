@@ -143,9 +143,10 @@ class Host {
     })
   }
 
-  search(query: string, mode: Mode, limit: number): Promise<SearchResponse> {
+  /** `explain`: explain an empty result (see `SearchEngine.explain`). */
+  search(query: string, mode: Mode, limit: number, explain = true): Promise<SearchResponse> {
     this.reloadConfig()
-    return this.exclusive(() => this.client.search(query, mode, limit))
+    return this.exclusive(() => this.client.search(query, mode, limit, explain))
   }
 
   private pools = new Map<string, { res: SearchResponse; at: number }>()
@@ -974,7 +975,7 @@ async function fileContents(host: Host, path: string, maxChars: number): Promise
 
 /** Indexed file paths for completing `value`, best first. */
 async function completePath(host: Host, value: string): Promise<string[]> {
-  const res = await host.search(value.trim() ? `${value.trim()} -type:folder` : "", value.trim() ? "fuzzy" : "find", 20)
+  const res = await host.search(value.trim() ? `${value.trim()} -type:folder` : "", value.trim() ? "fuzzy" : "find", 20, false)
   return res.hits.filter((h) => !h.isDir).map((h) => h.path)
 }
 

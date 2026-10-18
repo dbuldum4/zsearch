@@ -3,7 +3,8 @@
  *
  * Requests arrive on stdin and replies and events leave on stdout, one JSON object per line.
  * A request may carry a numeric `id`; its reply carries the same `id`. Search and preview
- * requests supersede older ones of the same type, which then reply `cancelled`.
+ * requests supersede older ones of the same type, which then reply `cancelled`; a search also
+ * supersedes an `explain` request.
  * The server exits when stdin closes.
  */
 import { createInterface } from "node:readline"
@@ -15,13 +16,15 @@ import type { IndexProgress } from "./index/indexer.ts"
 import { lockHolder } from "./index/lock.ts"
 import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
+import type { SearchDiagnosis } from "./search/diagnose.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/manage.ts"
 import { downloadModels } from "./semantic/model.ts"
 
 type ServeIn =
-  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
+  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number; explain?: boolean }
+  | { id?: number; type: "explain"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
   | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
   | { id?: number; type: "stats" }
@@ -40,6 +43,7 @@ type ServeIn =
 type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
   | { id?: number; type: "results"; response: SearchResponse }
+  | { id?: number; type: "diagnosis"; query: string; mode: Mode; diagnosis?: SearchDiagnosis }
   | { id?: number; type: "preview"; preview: Preview }
   | { id?: number; type: "previews"; previews: Preview[] }
   | { id?: number; type: "stats"; stats: IndexStats }
@@ -148,8 +152,15 @@ export async function serve(version: string): Promise<number> {
     }
     switch (msg.type) {
       case "search": {
-        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200)
+        // Searches come per keystroke: an empty result is explained on request (`explain`), once
+        // the query has stayed the same for a moment, so the reply never waits for it.
+        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200, msg.explain === true)
         return send(response ? { id, type: "results", response } : { id, type: "cancelled" })
+      }
+      case "explain": {
+        const query = String(msg.query ?? ""), m = mode(msg.mode)
+        const reply = await client.explain(query, m, msg.limit ?? 200)
+        return send(reply ? { id, type: "diagnosis", query, mode: m, ...(reply.diagnosis ? { diagnosis: reply.diagnosis } : {}) } : { id, type: "cancelled" })
       }
       case "preview": {
         const preview = await client.preview(msg.file, String(msg.query ?? ""), mode(msg.mode), msg.focusLine)

@@ -101,7 +101,10 @@ interface SearchOptions {
   onlyIds?: Set<number>
   /** A part of a grouped query: `limit` alone bounds it, as the query's `limit:` is for the combined results. */
   branch?: boolean
-  /** Explain an empty result (see `diagnose`). Off for the searches that explaining runs. */
+  /**
+   * Explain an empty result (see `diagnose`) before replying. Off for the searches that explaining
+   * runs, and for searches while typing, which ask separately (`explain`) once the query is stable.
+   */
   explain?: boolean
 }
 
@@ -283,6 +286,16 @@ export class SearchEngine {
     return res
   }
 
+  /**
+   * Why `rawQuery` finds nothing (see `diagnose`): undefined when it finds something, when there
+   * is nothing to say, or when `opts.cancelled` (a newer search superseded this one).
+   */
+  async explain(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchDiagnosis | undefined> {
+    const res = await this.searchOnce(rawQuery, mode, opts)
+    if (res.hits.length || res.error || opts.cancelled?.()) return undefined
+    return diagnose(this, res, opts.cancelled)
+  }
+
   private async searchOnce(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
@@ -326,9 +339,16 @@ export class SearchEngine {
   /** The query's words with similar indexed words the user may read in place of unknown ones, or null if none. */
   similarWords(q: ParsedQuery): string[] | null {
     if (q.regex || !q.words.length) return null
+    // An empty search looks them up for its notice, and its diagnosis again.
+    const key = q.words.join("\0"), cached = this.similar
+    if (cached?.key === key && cached.revision === this.revision && cached.config === this.config) return cached.words
     const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
-    return alternatives.some((w, i) => w !== q.words[i]) ? alternatives : null
+    const words = alternatives.some((w, i) => w !== q.words[i]) ? alternatives : null
+    this.similar = { key, revision: this.revision, config: this.config, words }
+    return words
   }
+
+  private similar: { key: string; revision: number; config: Config; words: string[] | null } | null = null
 
   /** Semantic search is on and set up, but its index is not complete for the current files yet. */
   semanticWaiting(): boolean {

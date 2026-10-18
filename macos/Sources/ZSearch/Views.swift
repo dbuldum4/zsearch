@@ -174,12 +174,12 @@ private struct NoResultsNote: View {
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
                 .padding()
-        } else if model.hits.isEmpty, let response = model.response {
+        } else if model.hits.isEmpty, model.response != nil {
             if model.query.isEmpty {
                 Text("No recent files")
                     .foregroundStyle(.secondary)
             } else {
-                NoResultsHelpView(help: NoResultsHelp(response.diagnosis, sentPrefix: Edition.semanticOnly ? "semantic:" : "", indexing: model.indexing))
+                NoResultsHelpView(help: NoResultsHelp(model.currentDiagnosis, sentPrefix: Edition.semanticOnly ? "semantic:" : "", indexing: model.indexing))
             }
         }
     }
