@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type Config, defaultConfig } from "../src/config.ts"
@@ -226,4 +226,35 @@ test("event updates leave the index as a full walk finds it", async () => {
   const full = await run(undefined, c)
   expect([full.added, full.updated, full.removed]).toEqual([0, 0, 0])
   expect(snapshot()).toEqual(before)
+})
+
+test("a refresh of changed paths keeps nested folders out of the unreadable-folder list", async () => {
+  const c = config(["*.log", "many/"])
+  const locked = at("a/locked"), deep = at("a/locked/deep")
+  write("a/locked/deep/leaf.txt", "a leaf about lorikeet\n")
+  expect((await run(undefined, c)).phase).toBe("done")
+  try {
+    chmodSync(locked, 0)
+    expect((await run(undefined, c)).unreadableFolders).toBe(1)
+    expect(indexStats(db).unreadableFolders).toEqual([locked])
+    // The folder can be listed again, but one inside it cannot: the refresh of its events finds
+    // that one unreadable while the earlier entry still stands, and only the topmost is kept.
+    chmodSync(locked, 0o700)
+    chmodSync(deep, 0)
+    const r = await run([deep], c)
+    expect(r.scanned).toBeLessThanOrEqual(2)
+    expect(r.unreadableFolders).toBe(1)
+    expect(indexStats(db).unreadableFolders).toEqual([locked])
+    // The parent itself unreadable again: the same event does not add a second entry either.
+    chmodSync(locked, 0)
+    const again = await run([deep], c)
+    expect(again.unreadableFolders).toBe(1)
+    expect(indexStats(db).unreadableFolders).toEqual([locked])
+  } finally {
+    chmodSync(locked, 0o700)
+    chmodSync(deep, 0o700)
+  }
+  const full = await run(undefined, c)
+  expect(full.unreadableFolders).toBe(0)
+  expect(indexStats(db).unreadableFolders).toEqual([])
 })

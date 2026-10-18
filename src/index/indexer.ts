@@ -513,10 +513,13 @@ export class Indexer {
     // Files that vanished. Keep entries under roots that are currently unavailable (unmounted drives).
     const missingRoots = [...crawlOpts.roots.filter((r) => !existsSync(r)), ...(stats.unreadable ?? [])]
     // An update of some paths finds out about folders under them only.
-    const unreadable = [
+    const merged = [
       ...(targets ? (JSON.parse(getMeta(this.db, "unreadable_folders") ?? "[]") as string[]).filter((p) => !targets.some((t) => under(p, t))) : []),
       ...(stats.unreadable ?? []),
     ]
+    // A folder under an unreadable one is unreadable for the same reason: the count a full
+    // walk would leave names the topmost folders only, and a partial merge can add a nested one.
+    const unreadable = [...new Set(merged)].filter((folder, _, all) => !all.some((other) => other !== folder && under(folder, other)))
     this.progress.unreadableFolders = unreadable.length
     setMeta(this.db, "unreadable_folders", JSON.stringify(unreadable))
     const removed: number[] = []
