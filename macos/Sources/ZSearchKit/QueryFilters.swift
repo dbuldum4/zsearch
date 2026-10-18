@@ -127,6 +127,18 @@ public enum QueryFilters {
         return setting(["fold"], to: on ? "off" : "on", in: query)
     }
 
+    /// Whether two queries find the same results: they differ at most in `sort:`, which orders
+    /// the results, and `fold:`, which only shapes their previews.
+    public static func sameResults(_ a: String, _ b: String) -> Bool {
+        func rest(_ query: String) -> String {
+            let (prefix, body) = splitPrefix(query)
+            var out = body
+            for t in tokens(body).reversed() where t.key == "sort" || t.key == "fold" { out = remove(t.range, from: out) }
+            return (prefix + out).trimmingCharacters(in: .whitespaces)
+        }
+        return rest(a) == rest(b)
+    }
+
     /// Whether any filter is set (negated ones included).
     public static func hasFilters(_ query: String) -> Bool {
         Parsed(query).hasFilters

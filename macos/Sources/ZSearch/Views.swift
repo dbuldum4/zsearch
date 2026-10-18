@@ -50,7 +50,7 @@ struct ContentView: View {
         }
         .onChange(of: model.focusRequest) { searchFocused = true }
         // Quick Look is driven from the window it was opened in.
-        .quickLookPreview(isPanel == model.quickLookInPanel ? $model.quickLookURL : .constant(nil))
+        .quickLookPreview(isPanel == model.quickLookInPanel ? $model.quickLookURL : .constant(nil), in: model.quickLookItems)
     }
 }
 
@@ -69,15 +69,16 @@ struct SearchBar: View {
                 .font(.title3)
                 .focused(focused)
                 .onSubmit { model.openSelected() }
-                .onKeyPress(.downArrow) {
-                    model.moveSelection(by: 1)
+                .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                    if press.modifiers.contains(.shift) { model.extendSelection(by: 1) } else { model.moveSelection(by: 1) }
                     return .handled
                 }
-                .onKeyPress(.upArrow) {
-                    model.moveSelection(by: -1)
+                .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                    if press.modifiers.contains(.shift) { model.extendSelection(by: -1) } else { model.moveSelection(by: -1) }
                     return .handled
                 }
                 .onKeyPress(.escape) {
+                    if model.collapseSelection() { return .handled }
                     if model.query.isEmpty {
                         // In the panel, a second Esc puts it away.
                         guard let dismissPanel else { return .ignored }
@@ -109,7 +110,6 @@ struct ResultsList: View {
     @Environment(SearchModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
             HStack {
@@ -117,12 +117,18 @@ struct ResultsList: View {
                     Button(key.capitalized) { model.sortResults(key) }.buttonStyle(.plain)
                 }
             }.font(.caption).padding(.horizontal)
-            List(model.hits, selection: $model.selection) { hit in
+            List(model.hits, selection: Binding(get: { model.picks.ids }, set: { model.listPicked($0) })) { hit in
                 ResultRow(hit: hit).equatable()
+                    // Drag results into Mail, Slack, Finder or any app that takes files. On the row
+                    // itself, so the list drags every selected result.
+                    .itemProvider { NSItemProvider(object: URL(fileURLWithPath: hit.path) as NSURL) }
             }
             .listStyle(.inset)
             .contextMenu(forSelectionType: SearchHit.ID.self) { ids in
-                if let hit = model.hits.first(where: { ids.contains($0.id) }) {
+                let picked = model.hits(for: ids)
+                if picked.count > 1 {
+                    BatchMenu(model: model, hits: picked)
+                } else if let hit = picked.first {
                     Button("Open") { model.open(hit) }
                     if EditorApp.edits(kind: hit.kind, isDir: hit.isDir) {
                         Button("Open in Editor") { model.openInEditor(hit) }
@@ -144,7 +150,7 @@ struct ResultsList: View {
                     Button("Fold Preview Around Matches") { model.toggleFoldedPreview() }
                 }
             } primaryAction: { ids in
-                if let hit = model.hits.first(where: { ids.contains($0.id) }) { model.open(hit) }
+                model.open(model.hits(for: ids))
             }
             // In views of their own, so a new selection or a keystroke doesn't redo this list's body.
             .background { SelectionScroller(proxy: proxy) }
@@ -152,7 +158,9 @@ struct ResultsList: View {
                 model.toggleQuickLook()
                 return .handled
             }
+            .onKeyPress(.escape) { model.collapseSelection() ? .handled : .ignored }
             .overlay { NoResultsNote() }
+            SelectionBar()
             }
         }
     }
@@ -253,8 +261,6 @@ struct ResultRow: View, Equatable {
             }
         }
         .padding(.vertical, 2)
-        // Drag a result into Mail, Slack, Finder or any app that takes files.
-        .onDrag { NSItemProvider(object: URL(fileURLWithPath: hit.path) as NSURL) }
     }
 }
 
