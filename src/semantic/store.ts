@@ -6,7 +6,7 @@
  *   vectors   one row per distinct passage text (by a hash of exactly what the model read): the
  *             same passage in two files, or in a file renamed, rebuilt or copied, is one vector.
  *   passages  which passages a file has, where they are in its text, and their hashes.
- *   files     what each file's passages were made from (its size, date and text length), and how
+ *   files     what each file's passages were made from (its size, date, text length and text hash), and how
  *             far through them the index got: long files are finished in a second round.
  *
  * Vectors are kept as 16-bit floats (768 bytes for Granite's 384 dimensions), as DigUp keeps them. 8-bit
@@ -87,6 +87,15 @@ function migrate(db: Database) {
     db.exec("DELETE FROM meta")
     setMeta(db, "schema_version", String(SCHEMA_VERSION))
   })()
+}
+
+/**
+ * Whether searches can read this file's vectors as they are: a read-only connection doesn't
+ * migrate it. Version 2 differs from 3 only in how the vectors table is laid out.
+ */
+export function readableSchema(db: Database): boolean {
+  const version = getMeta(db, "schema_version")
+  return version === String(SCHEMA_VERSION) || version === "2"
 }
 
 export function getMeta(db: Database, key: string): string | null {
