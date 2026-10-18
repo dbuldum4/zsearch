@@ -170,6 +170,7 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Ctrl-Shift-O</kbd> | Cycle name, size, date and path sorting |
 | <kbd>Ctrl-Shift-T</kbd> | Fold the preview around matches |
 | <kbd>Tab</kbd> / <kbd>Shift-Tab</kbd>, <kbd>Alt-1</kbd> / <kbd>Alt-2</kbd> / <kbd>Alt-3</kbd> | Switch between find, fuzzy and semantic |
+| <kbd>Alt-↑</kbd> / <kbd>Alt-↓</kbd> | Step back / forward through searches you opened results from |
 | <kbd>Ctrl-T</kbd> | Show or hide the preview |
 | <kbd>Shift-↑</kbd> <kbd>Shift-↓</kbd>, <kbd>Ctrl-D</kbd> <kbd>Ctrl-U</kbd>, wheel over the preview | Scroll the preview |
 | <kbd>Ctrl-F</kbd> / <kbd>Ctrl-B</kbd> | Jump to the next or previous match in the preview |
@@ -180,6 +181,23 @@ In fuzzy mode, `!word` excludes files whose path contains the word. A query made
 | <kbd>Esc</kbd> | Clear the query; press again to quit |
 
 Files you open through zsearch rank higher next time (frecency), and recently modified files get a small boost.
+
+**Saved searches and history.** A search you open a result from (<kbd>Enter</kbd>, <kbd>Ctrl-E</kbd> or <kbd>Ctrl-O</kbd>, and the same in the Mac app) is kept in the search history, newest first, once per query, up to 50; typing alone keeps nothing. <kbd>Alt-↑</kbd> brings back the query and mode of earlier ones. To keep a search under a name, use the bookmark menu next to the Mac app's search field (⌘S), or the command line:
+
+```sh
+zsearch saved add "Recent invoices" invoice type:pdf mtime:<30d
+zsearch saved add "Large downloads" in:~/Downloads size:>100mb sort:-size
+zsearch saved add "Project notes" -m fuzzy notes   # without -m: find, as `zsearch search`
+zsearch saved                        # list them
+zsearch saved run "recent invoices"  # print its matches, with `search`'s options (-l, --json, ...)
+zsearch saved rename "Project notes" Notes
+zsearch saved rm notes
+zsearch history                      # recent searches; `zsearch history clear` forgets them
+```
+
+Filters and sorting are part of the query, so a saved search keeps them. Names match without regard to case (the same in every locale), and saving under a name already used replaces that search. Saved searches and history are shared by the terminal app, the command line and the Mac app, in `searches.json` next to the index (mode 0600); deleting or rebuilding the index keeps them. Frontends changing it at the same time hold `searches.lock`, so no change is lost, and entries written by a newer version of zsearch are kept as they are. If the file cannot be read, the next change starts a new one and keeps the old one as `searches.json.damaged`.
+
+History can be turned off: `zsearch config set searchHistory false`, or **Keep recent searches** in the Mac app's settings. Then nothing is recorded and no frontend shows recent searches; what was kept before stays, shows again when it is turned back on, and `zsearch history clear` still forgets it.
 
 ## Indexing
 
@@ -243,7 +261,7 @@ Other formats, archives, applications and media without their helper are indexed
 
 The spoken language defaults to the Mac's system locale. Set **Transcript language** in Settings (press Return to save), or `zsearch config set content.transcriptionLocale en-US`, for recordings in another supported language. Language is not detected automatically. Apple may download shared language assets before the first transcript; recognition itself stays on-device, with no API key, paid service or server fallback. See [Apple's SpeechAnalyzer overview](https://developer.apple.com/videos/play/wwdc2025/277/).
 
-Recordings are streamed, one at a time after documents and images, at background priority under the index's power settings. Each reads up to the first **two hours**, with a **30-minute processing deadline** and at most **2 million transcript characters** (or the lower `content.maxChars`). Media do not use the PDF/Office file-size limit. Final segments carry `[hh:mm:ss]` timestamps in search previews; a **File/Transcript** switch in the Mac app lets you play the recording instead. Duration, output and deadline limits mark retained text `truncated`; timestamps are text, not playback seek links. Unchanged recordings reuse their indexed transcripts; an explicit rebuild transcribes them again. Silent/unsupported files and service failures appear in `status --errors`; failed speech jobs can retry on an index update after an hour, or after changing the speech settings. Asset preparation is attempted once per worker/run, so a failed download is not repeated for every recording.
+Recordings are streamed, one at a time after documents and images, at background priority under the index's power settings. Each reads up to the first **two hours**, with a **30-minute processing deadline** and at most **2 million transcript characters** (or the lower `content.maxChars`). Media do not use the PDF/Office file-size limit. Final segments carry `[hh:mm:ss]` timestamps in search previews, and JSON hits give each matching line's segment start as `startSeconds`. In the Mac app, clicking a timestamp in a transcript plays the recording from that moment, as do **Play from hh:mm:ss** above the preview and in a result's context menu; a **File/Transcript** switch shows the recording instead of its transcript. Duration, output and deadline limits mark retained text `truncated`. Unchanged recordings reuse their indexed transcripts; an explicit rebuild transcribes them again. Silent/unsupported files and service failures appear in `status --errors`; failed speech jobs can retry on an index update after an hour, or after changing the speech settings. Asset preparation is attempted once per worker/run, so a failed download is not repeated for every recording.
 
 `zsearch doctor` reports the helper path. For the terminal app, point `ZSEARCH_TRANSCRIBE` at the bundled helper, for example `ZSEARCH_TRANSCRIBE=~/Applications/zsearch.app/Contents/Helpers/zsearch-transcribe`. `ZSEARCH_TRANSCRIBE=0` disables discovery. Older macOS releases and unsupported hardware keep media searchable by name. First-index estimates list recordings separately because a count-only scan cannot estimate their transcription time.
 
@@ -290,6 +308,7 @@ Settings are stored in `~/.config/zsearch/config.json`. `zsearch config` prints 
 | `semantic.code` | `false` | ...and source code and data files |
 | `defaultMode` | `find` | Initial search mode (`find`, `fuzzy` or `semantic`) |
 | `preview` | `true` | Show the preview pane |
+| `searchHistory` | `true` | Keep the searches results were opened from; off records and shows none, until cleared |
 
 To update the index only when you ask (the Mac app's **Update Index Now**, `^R` in the terminal app, `zsearch index`, or the MCP `update_index` tool), set `autoRefreshMinutes` to `0` and `liveUpdates` to `false`: `zsearch config set autoRefreshMinutes 0` and `zsearch config set liveUpdates false`, or pick **Only when I ask** under "Update the index" in the Mac app. Changing folders or what to read then waits for the next update too, in both apps. With a schedule picked, the Mac app's **Also update as files change** switch sets `liveUpdates`. Setting up for the first time, and excluding a result, still update the index.
 
@@ -372,6 +391,8 @@ zsearch estimate [folders...]   how long a first index takes, roughly (--docs, -
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256
 zsearch exclude <path>          exclude an indexed file or folder and update
+zsearch saved [list|add|rename|rm|run]  saved searches: a query with its filters, sorting and mode
+zsearch history [clear]         searches you opened results from
 zsearch semantic [status|install|remove]  semantic search: download the model (--no-images), or delete it
 zsearch doctor                  check SQLite/FTS5, pdftotext, OCR, the embedding helper and the index
 zsearch reset                   delete the index

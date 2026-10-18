@@ -79,6 +79,11 @@ export interface Config {
   defaultMode: "find" | "fuzzy" | "semantic"
   /** Show the preview pane by default. */
   preview: boolean
+  /**
+   * Keep the searches results were opened from (src/searches.ts). Off, nothing is recorded and no
+   * frontend shows them; what was kept stays until it is cleared, and shows again once it is on.
+   */
+  searchHistory: boolean
 }
 
 /** Indexed unless the user picks something else: where people keep and receive documents. */
@@ -108,6 +113,7 @@ export function defaultConfig(): Config {
     // the default mode; until then this stays "find".
     defaultMode: "find",
     preview: true,
+    searchHistory: true,
   }
 }
 
