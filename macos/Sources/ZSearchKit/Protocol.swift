@@ -103,6 +103,8 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
     public var current: String
     public var elapsedMs: Double
     public var error: String?
+    /// The run updates the files that changed only, not every folder (older engines: nil).
+    public var partial: Bool?
     /// The semantic pass (semantic search), after the contents are read.
     public var meaning: MeaningProgress?
 

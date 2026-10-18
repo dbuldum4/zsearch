@@ -189,7 +189,8 @@ export function App(props: AppProps) {
       return
     }
     const other = svc.indexLockedBy()
-    if (other !== null && other !== process.pid) {
+    // A refresh of changed paths ends soon: a run asked for waits for it (see the index worker).
+    if (other !== null && other !== process.pid && (reason === "auto" || !svc.partialRunHolds?.())) {
       notify(`Another zsearch process (pid ${other}) is updating the index`, "warn")
       return
     }

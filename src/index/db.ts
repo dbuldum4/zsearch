@@ -358,6 +358,24 @@ export interface IndexStats {
 }
 
 /**
+ * Meta key: "1" when the run holding the index lock updates changed paths only (see
+ * `IndexOptions.paths`). Every run sets it just after it takes the lock.
+ */
+export const PARTIAL_RUN = "partial_run"
+
+/**
+ * Whether the run holding the index lock (in any process) only updates the paths file events
+ * named. Such a run ends soon, and does not stand for an update someone asks for: that waits for
+ * the lock instead of giving up.
+ */
+export function partialRunHolds(dbPath: string): boolean {
+  try {
+    const db = openDb(dbPath, { readonly: true })
+    try { return getMeta(db, PARTIAL_RUN) === "1" } finally { db.close() }
+  } catch { return false }
+}
+
+/**
  * Whether the timed refresh is due: `minutes` (0: never) have passed since the last full walk.
  * Refreshes of changed files do not count, since the full walk catches what file events missed.
  */

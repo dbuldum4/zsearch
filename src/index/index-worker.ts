@@ -1,7 +1,7 @@
 /** Worker entry that runs one indexing pass and streams progress to the parent. */
 import type { Database } from "bun:sqlite"
 import { type Config, configExists, loadConfig, resolvePath } from "../config.ts"
-import { clearIndex, getMeta, openDb } from "./db.ts"
+import { clearIndex, getMeta, openDb, PARTIAL_RUN, partialRunHolds, setMeta } from "./db.ts"
 import { Indexer, type IndexProgress } from "./indexer.ts"
 import { acquireLock } from "./lock.ts"
 import { PowerGate } from "./power.ts"
@@ -36,13 +36,27 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     running?.goNow()
     return
   }
-  const release = acquireLock(msg.lockPath)
+  let release = acquireLock(msg.lockPath)
+  // A refresh of changed paths (here or in another process) ends soon, and does not walk every
+  // root: an update someone asked for waits for it rather than give up.
+  if (!release && !msg.paths && !msg.background && partialRunHolds(msg.dbPath)) {
+    send({ type: "progress", progress: { ...idle(Date.now()), phase: "starting" } })
+    while (!release && !controller.signal.aborted && partialRunHolds(msg.dbPath)) {
+      await Bun.sleep(100)
+      release = acquireLock(msg.lockPath)
+    }
+  }
   if (!release) {
-    send({ type: "locked" })
+    if (controller.signal.aborted) send({ type: "done", progress: { ...idle(Date.now()), phase: "cancelled" } })
+    else send({ type: "locked" })
     return
   }
+  let db: Database | null = null
   try {
-    const db = openDb(msg.dbPath)
+    db = openDb(msg.dbPath)
+    // Left set when the run ends: a run waiting for this one then cannot mistake the moment
+    // between clearing it and releasing the lock for a full run holding the lock.
+    setMeta(db, PARTIAL_RUN, msg.paths ? "1" : "")
     if (msg.rebuild) clearIndex(db)
     let lastCommit = 0
     const onCommit = () => {
@@ -67,7 +81,7 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
     // runs already extracted, so testing semantic search never re-reads files for word search.
     // Folders no full run has read yet have no text to embed: those are read first.
     const startedAt = Date.now()
-    let result: IndexProgress = { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
+    let result: IndexProgress = idle(startedAt)
     const tool = embedToolPath()
     const blocked = semanticAvailable(msg.config, tool)
     if (!msg.meaningOnly || (!blocked && unreadRoots(db, msg.config))) result = await indexer.run()
@@ -92,17 +106,24 @@ self.onmessage = async (ev: MessageEvent<IndexWorkerIn>) => {
       if (summary.status === "cancelled") result.phase = "cancelled"
     }
     db.close()
+    db = null
     // Release before reporting: the parent terminates this worker as soon as it hears "done",
     // which could otherwise leave the lock behind and refuse the next run.
     release()
     send({ type: "commit" })
     send({ type: "done", progress: result })
   } catch (err) {
+    try { db?.close() } catch { /* already closed */ }
     release()
     send({ type: "fatal", error: (err as Error).message })
   } finally {
     release()
   }
+}
+
+/** A run that has done nothing yet. */
+function idle(startedAt: number): IndexProgress {
+  return { phase: "done", scanned: 0, added: 0, updated: 0, removed: 0, contentTotal: 0, contentDone: 0, contentBytes: 0, contentErrors: 0, current: "", startedAt, elapsedMs: 0 }
 }
 
 /** Whether a configured folder has never been read by a finished full run. */

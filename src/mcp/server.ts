@@ -10,7 +10,7 @@ import type { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import { progressLine } from "../util/progress.ts"
 import { type Config, configKeys, withConfigSetting, configExists, configStamp, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
-import { fullWalkDue, type IndexStats, openDb } from "../index/db.ts"
+import { fullWalkDue, type IndexStats, openDb, partialRunHolds } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import { policyFor, crawlOptionsFor } from "../index/policy.ts"
@@ -63,7 +63,11 @@ const AUTO_CHECK_MS = 60_000
 
 /* ----------------------------------------------------------------- host -- */
 
-type RunState = { handle: IndexRun; progress: IndexProgress | null; startedAt: number; reason: "requested" | "auto"; done: Promise<IndexOutcome> }
+/**
+ * `partial`: the run updates changed paths only (as far as known yet). `next`: the run its end
+ * started, one asked for meanwhile.
+ */
+type RunState = { handle: IndexRun; progress: IndexProgress | null; startedAt: number; reason: "requested" | "auto"; done: Promise<IndexOutcome>; partial: boolean; next?: RunState }
 type LastRun = { status: "done" | "cancelled" | "error" | "locked"; finishedAt: number; progress?: IndexProgress; error?: string }
 
 /** The engine behind the tools: the search worker, index runs and the settings. */
@@ -78,6 +82,8 @@ class Host {
     if (configExists()) this.startIndex(false, "auto", changed)
   })
   run: RunState | null = null
+  /** A run asked for while a refresh of changed paths runs: it starts when that one ends. */
+  followUp: { rebuild: boolean } | null = null
   lastRun: LastRun | null = null
   private listeners = new Set<(p: IndexProgress) => void>()
   private lastAutoAttempt = 0
@@ -220,22 +226,30 @@ class Host {
    * Start an index run with the current settings, unless one is running here or elsewhere.
    * `paths`: the files that changed, or null for file events that need every root walked.
    */
-  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested", paths?: string[] | null): { status: "started" | "running" } | { status: "busy"; pid: number } {
+  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested", paths?: string[] | null): { status: "started" | "running" | "queued" } | { status: "busy"; pid: number } {
     this.reloadConfig()
     if (this.run) {
-      // Asked for while one runs, perhaps waiting on power: that one goes on now.
-      if (reason !== "auto") this.run.handle.goNow()
-      return { status: "running" }
+      if (reason === "auto") return { status: "running" }
+      // Asked for while one runs, perhaps waiting on power: that one goes on now. A refresh of
+      // changed paths does not walk every root: a full update follows it.
+      this.run.handle.goNow()
+      if (!this.run.partial) return { status: "running" }
+      this.followUp = { rebuild: rebuild || (this.followUp?.rebuild ?? false) }
+      return { status: "queued" }
     }
     const other = lockHolder(this.paths.lock)
-    if (other !== null) return { status: "busy", pid: other }
+    // A run asked for waits for another process's refresh of changed paths (see the index worker).
+    if (other !== null && (reason === "auto" || !partialRunHolds(this.paths.db))) return { status: "busy", pid: other }
     const handle = new IndexRun(
       this.config,
       this.paths.db,
       this.paths.lock,
       {
         onProgress: (p) => {
-          if (this.run) this.run.progress = p
+          if (this.run === run) {
+            run.progress = p
+            if (p.phase !== "starting") run.partial = p.partial === true
+          }
           for (const l of this.listeners) l(p)
         },
         onCommit: () => this.client.refresh(),
@@ -245,7 +259,7 @@ class Host {
       false,
       paths ?? undefined,
     )
-    const run: RunState = { handle, progress: null, startedAt: Date.now(), reason, done: handle.done }
+    const run: RunState = { handle, progress: null, startedAt: Date.now(), reason, done: handle.done, partial: Array.isArray(paths) }
     this.run = run
     void handle.done.then((outcome) => {
       this.run = null
@@ -262,35 +276,45 @@ class Host {
           ? `Index updated in ${formatDuration(p.elapsedMs)}: ${formatCount(p.added)} new, ${formatCount(p.updated)} changed, ${formatCount(p.removed)} removed.`
           : `Indexing ${this.lastRun.status}${this.lastRun.error ? `: ${this.lastRun.error}` : ""}.`,
       )
+      const next = this.followUp
+      this.followUp = null
+      // A run that turned out to walk every root already did what a plain update asked for.
+      const covered = outcome.status === "done" && !outcome.progress.partial && !next?.rebuild
+      if (!next || outcome.status === "cancelled" || covered) return
+      const started = this.startIndex(next.rebuild)
+      if (started.status === "started") run.next = this.run!
+      else if (started.status === "busy") this.lastRun = { status: "locked", finishedAt: Date.now() }
     })
     return { status: "started" }
   }
 
   cancelIndex(): boolean {
+    this.followUp = null
     if (!this.run) return false
     this.run.handle.cancel()
     return true
   }
 
   /**
-   * Wait until the current run ends, `ms` pass or `signal` aborts, calling `onProgress` on
-   * each progress update meanwhile. True if the run ended.
+   * Wait until the current run ends, and the run asked for meanwhile that follows it, `ms` pass
+   * or `signal` aborts, calling `onProgress` on each progress update meanwhile. True if the
+   * runs ended.
    */
   async waitIndex(ms: number, signal: AbortSignal, onProgress: (p: IndexProgress) => void): Promise<boolean> {
-    const run = this.run
+    let run: RunState | undefined = this.run ?? undefined
     if (!run) return true
     this.listeners.add(onProgress)
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort = () => {}
     try {
-      return await Promise.race([
-        run.done.then(() => true),
-        new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms))),
-        new Promise<boolean>((r) => {
-          onAbort = () => r(false)
-          signal.addEventListener("abort", onAbort, { once: true })
-        }),
-      ])
+      const timedOut = new Promise<false>((r) => (timer = setTimeout(() => r(false), ms)))
+      const aborted = new Promise<false>((r) => {
+        onAbort = () => r(false)
+        signal.addEventListener("abort", onAbort, { once: true })
+      })
+      // The run's end starts its follow-up before anything awaiting `done` resumes.
+      for (; run; run = run.next) if (!(await Promise.race([run.done.then(() => true), timedOut, aborted]))) return false
+      return true
     } finally {
       clearTimeout(timer)
       signal.removeEventListener("abort", onAbort)
@@ -299,6 +323,7 @@ class Host {
   }
 
   async close() {
+    this.followUp = null
     this.watcher.close()
     if (this.timer) clearInterval(this.timer)
     const run = this.run
@@ -401,6 +426,8 @@ async function indexState(host: Host, opts: { errors?: number } = {}) {
         percent: p && p.phase === "content" && p.contentTotal ? Math.floor((p.contentDone / p.contentTotal) * 100) : null,
         current: p?.current ?? "",
         elapsedMs: Date.now() - host.run.startedAt,
+        changedFilesOnly: host.run.partial,
+        fullUpdateQueued: host.followUp !== null,
       }
     : other !== null
       ? { by: "another process" as const, pid: other }
@@ -454,7 +481,7 @@ function describeState(s: IndexState): string {
   out.push(s.lastIndexedAt ? `Last updated: ${formatDate(Date.parse(s.lastIndexedAt))}${s.lastDurationMs ? ` (took ${formatDuration(s.lastDurationMs)})` : ""}${s.stale ? ", due for an update" : ""}.` : "The index has never been completed: call update_index to build it.")
   if (s.indexing?.by === "this server") {
     const i = s.indexing
-    out.push(`Indexing now (${i.reason === "auto" ? "automatic update" : "requested"}): ${i.phase === "content" ? `reading contents, ${formatCount(i.contentDone)} of ${formatCount(i.contentTotal)} files${i.percent !== null ? ` (${i.percent}%)` : ""}` : i.phase === "cleanup" ? "removing deleted files" : `scanning, ${formatCount(i.scanned)} items so far`}, for ${formatDuration(i.elapsedMs)}.`)
+    out.push(`Indexing now (${i.changedFilesOnly ? "changed files" : i.reason === "auto" ? "automatic update" : "requested"}): ${i.phase === "content" ? `reading contents, ${formatCount(i.contentDone)} of ${formatCount(i.contentTotal)} files${i.percent !== null ? ` (${i.percent}%)` : ""}` : i.phase === "cleanup" ? "removing deleted files" : `scanning, ${formatCount(i.scanned)} items so far`}, for ${formatDuration(i.elapsedMs)}.${i.fullUpdateQueued ? " A full update follows it." : ""}`)
   } else if (s.indexing) out.push(`Another zsearch process (pid ${s.indexing.pid}) is updating the index.`)
   if (s.lastRun) {
     const r = s.lastRun
@@ -803,7 +830,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
       rebuild: bool("Throw away the index and build it again from scratch", false),
       wait_seconds: int("Wait this long for indexing to finish (0: return at once). Many apps stop waiting for a tool after about 60 seconds, so for a long run return at once and follow it with index_status", 0, 600, 0),
     }),
-    outputSchema: loose({ status: str("started, running (already), busy (another process is indexing), done, cancelled or error"), ...STATE_SCHEMA.properties }, ["status", "files", "indexing"]),
+    outputSchema: loose({ status: str("started, running (already), queued (after the refresh of changed files running now), busy (another process is indexing), done, cancelled or error"), ...STATE_SCHEMA.properties }, ["status", "files", "indexing"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     async run(args, ctx) {
       host.reloadConfig()
@@ -828,10 +855,12 @@ Give query (the same text or regex as in search) to mark the matching lines and 
           ? `Indexing started${args.rebuild === true ? " from scratch" : ""} (${s.roots.join(", ")}).`
           : status === "running"
             ? "Indexing was already running; it carries on."
-            : status === "done"
-              ? "Indexing finished."
-              : `Indexing ${status}.`
-      const tail = status === "started" || status === "running" ? "\nSearch works meanwhile, on what is indexed so far. Call index_status to follow progress." : ""
+            : status === "queued"
+              ? `A refresh of changed files is running; a full update${args.rebuild === true ? " from scratch" : ""} follows it.`
+              : status === "done"
+                ? "Indexing finished."
+                : `Indexing ${status}.`
+      const tail = status === "started" || status === "running" || status === "queued" ? "\nSearch works meanwhile, on what is indexed so far. Call index_status to follow progress." : ""
       return { text: `${lead}\n${describeState(s)}${tail}`, structured: { status, ...s } }
     },
   }

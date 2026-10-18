@@ -6,7 +6,7 @@ import { extOf, kindOf, type Kind, OCR_EXTS, TRANSCRIBE_EXTS } from "../kinds.ts
 import { ocrToolPath, transcriptionToolPath } from "../platform.ts"
 import { dirTokens, ftsBody, nameTokens } from "../util/text.ts"
 import { type CrawlOptions, type CrawlStats, crawl, crawlTargets } from "./crawler.ts"
-import { compactIndex, ContentState, decompressText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, pruneOcrCache, REMOVED_KEPT, setMeta } from "./db.ts"
+import { compactIndex, ContentState, decompressText, getMeta, loadVocabTerms, OCR_CACHE_VERSION, PARTIAL_RUN, pruneOcrCache, REMOVED_KEPT, setMeta } from "./db.ts"
 import { wantsContent } from "./extract/index.ts"
 import { holdsPrivateKey, SECRET_NOTE, secretFile } from "./secrets.ts"
 import { DATASET_NOTE, type DatasetFolder, datasetFolders } from "./datasets.ts"
@@ -41,6 +41,8 @@ export interface IndexProgress {
   startedAt: number
   elapsedMs: number
   error?: string
+  /** The run updates changed paths only (see `IndexOptions.paths`), not every root. */
+  partial?: boolean
   /** The semantic pass, when semantic search is on: files to embed and done, passages embedded and reused. */
   meaning?: { total: number; done: number; embedded: number; reused: number; error?: string }
 }
@@ -133,8 +135,6 @@ export class Indexer {
   private powerOverridden = false
   /** Folders whose images OCR leaves out (see `datasets.ts`). */
   private datasets = new Set<string>()
-  /** The run updates some paths only (see `IndexOptions.paths`). */
-  private partial = false
   /** The settings the walk follows: an update of some paths needs the last full walk's. */
   private walkPolicy = ""
   private st!: {
@@ -297,7 +297,7 @@ export class Indexer {
       setMeta(this.db, "last_indexed_at", String(now))
       setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
       // The timed refresh goes by the last full walk, to catch what file events missed.
-      if (!this.partial) {
+      if (!this.progress.partial) {
         setMeta(this.db, "last_full_walk_at", String(now))
         setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
         setMeta(this.db, "walk_policy", this.walkPolicy)
@@ -337,6 +337,16 @@ export class Indexer {
 
   /** Walk the roots, record new/changed files. Returns ids that disappeared. */
   private async scan(): Promise<number[]> {
+    const { transcribe, transcriptionLocale, ...ordinaryContent } = this.config.content
+    const contentPolicy = JSON.stringify([ordinaryContent, this.config.cloudContent, this.ocrTool])
+    // A helper becoming available retries just media, without re-extracting every document.
+    const speechPolicy = JSON.stringify([this.transcriptionTool, transcribe, transcriptionLocale])
+    const crawlOpts = crawlOptionsFor(this.config)
+    this.walkPolicy = JSON.stringify([{ ...crawlOpts, onlyChildren: [...crawlOpts.onlyChildren].map(([dir, names]) => [dir, [...names]]) }, contentPolicy, speechPolicy])
+    const targets = this.targets(crawlOpts)
+    // Known from the first progress on: an update asked for meanwhile walks every root after it.
+    if (targets) this.progress.partial = true
+    setMeta(this.db, PARTIAL_RUN, targets ? "1" : "")
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
@@ -345,18 +355,10 @@ export class Indexer {
       existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
       return r.id
     }
-    const { transcribe, transcriptionLocale, ...ordinaryContent } = this.config.content
-    const contentPolicy = JSON.stringify([ordinaryContent, this.config.cloudContent, this.ocrTool])
-    // A helper becoming available retries just media, without re-extracting every document.
-    const speechPolicy = JSON.stringify([this.transcriptionTool, transcribe, transcriptionLocale])
-    const crawlOpts = crawlOptionsFor(this.config)
-    this.walkPolicy = JSON.stringify([{ ...crawlOpts, onlyChildren: [...crawlOpts.onlyChildren].map(([dir, names]) => [dir, [...names]]) }, contentPolicy, speechPolicy])
-    const targets = this.targets(crawlOpts)
     /** With targets, the files under them: the only ones the run may find gone. */
     let scoped: Set<number> | null = null
     if (!targets) for (const r of this.db.query(columns).iterate() as IterableIterator<ExistingRow>) known(r)
     else {
-      this.partial = true
       const one = this.db.query(`${columns} WHERE path = ?`)
       const below = this.db.query(`${columns} WHERE path > ? AND path < ?`)
       const inRoot = (dir: string) => crawlOpts.roots.some((r) => r !== dir && under(dir, r))

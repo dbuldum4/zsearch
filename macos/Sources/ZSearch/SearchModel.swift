@@ -54,6 +54,8 @@ final class SearchModel {
     private(set) var semanticDownload: DownloadProgress?
     private(set) var downloadingModel = false
     private(set) var indexing = false
+    /// The run going updates the files that changed only: an update asked for follows it.
+    private(set) var refreshingChangedFiles = false
     private(set) var firstRun = false
     private(set) var notice: String?
     private(set) var engineFailure: String?
@@ -211,6 +213,7 @@ final class SearchModel {
         indexCancellationGeneration += 1
         engine = nil
         indexing = false
+        refreshingChangedFiles = false
         activity.progress = nil
         engineFailure = error.localizedDescription
         guard !automaticRestartUsed else { return }
@@ -244,16 +247,19 @@ final class SearchModel {
             }
         case let .indexProgress(p):
             if !indexing { indexing = true }
+            if (p.partial == true) != refreshingChangedFiles { refreshingChangedFiles = p.partial == true }
             activity.progress = p
         case let .indexDone(done):
             indexing = false
+            refreshingChangedFiles = false
             activity.progress = nil
             let followUp = indexAfterCurrentRun
             indexAfterCurrentRun = false
             switch done.status {
             case "done":
-                // Settings changed during the run still wait for the next one.
-                if indexedRevision == settingsRevision { needsReindex = false }
+                // Settings changed during the run still wait for the next one, as they do after
+                // an update of changed files only.
+                if indexedRevision == settingsRevision, done.progress?.partial != true { needsReindex = false }
                 if let p = done.progress, let m = p.meaning, p.scanned == 0 {
                     show("Semantic index updated · \(m.done.formatted()) files read · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused")
                 } else if let p = done.progress {
@@ -542,7 +548,10 @@ final class SearchModel {
         guard let engine else { return }
         if indexing {
             if afterCurrentRun { indexAfterCurrentRun = true }
-            return
+            // An update of changed files does not walk every folder: the engine runs the update
+            // asked for after it.
+            guard refreshingChangedFiles, !background else { return }
+            show("Updating the whole index after the changed files")
         }
         indexing = true
         indexedRevision = settingsRevision
