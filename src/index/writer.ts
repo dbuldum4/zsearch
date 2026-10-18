@@ -49,7 +49,7 @@ export class ContentWriter {
     this.manualDelete = getMeta(db, "fts_delete") === "manual"
     const q = (sql: string) => db.prepare(sql)
     this.st = {
-      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = ? WHERE id = ?"),
+      setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = ?, read_at = ? WHERE id = ?"),
       ftsInsert: q("INSERT INTO fts(rowid, name, dirs, body) VALUES (?, ?, ?, ?)"),
       ftsDeleteRow: q("DELETE FROM fts WHERE rowid = ?"),
       ftsDeleteManual: q("INSERT INTO fts(fts, rowid, name, dirs, body) VALUES ('delete', ?, ?, ?, ?)"),
@@ -99,12 +99,12 @@ export class ContentWriter {
       const text = same ? same.text : Number(this.st.textPut.run(r.compressed).lastInsertRowid)
       this.st.contentPut.run(r.id, text, r.hash)
       if (r.ocr && identity?.ino) this.st.ocrPut.run(identity.dev, identity.ino, identity.size, identity.mtime, OCR_CACHE_VERSION, r.ocr)
-      this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", r.id)
+      this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", Date.now(), r.id)
     } else {
       this.st.ftsInsert.run(r.id, name, dirs, "")
       this.st.contentDel.run(r.id)
-      if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, "", r.id)
-      else this.st.setState.run(ContentState.Error, 0, r.error, "", r.id)
+      if (r.status === "skip") this.st.setState.run(ContentState.Skipped, 0, r.reason, "", Date.now(), r.id)
+      else this.st.setState.run(ContentState.Error, 0, r.error, "", Date.now(), r.id)
     }
   }
 

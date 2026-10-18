@@ -55,6 +55,9 @@ final class SearchModel {
     /// Quick Look was opened from the floating panel, not the main window.
     private(set) var quickLookInPanel = false
     var showSetup = false
+    /// A file for the Indexing Problems window to explain ("Why Isn't This Searchable?").
+    var explaining: String?
+    @ObservationIgnored var openProblemsWindow: (() -> Void)?
     /// Bumped to ask the search field to take focus.
     private(set) var focusRequest = 0
     private(set) var response: SearchResponse? {
@@ -751,6 +754,25 @@ final class SearchModel {
         guard let engine, !roots.isEmpty else { return nil }
         guard case let .estimate(reply) = try? await engine.request(.estimate(roots: roots)) else { return nil }
         return reply.text
+    }
+
+    /// A request for the Indexing Problems window, which keeps its own state. Nil without an engine.
+    func problemsRequest(_ request: Request) async throws -> Message? {
+        guard let engine else { return nil }
+        return try await engine.request(request)
+    }
+
+    /// Why a result's contents are, or are not, searchable: in the Indexing Problems window.
+    func explain(_ hit: SearchHit) {
+        QuickPanel.shared.fileOpened()
+        explaining = hit.path
+        NSApp.activate(ignoringOtherApps: true)
+        if let openProblemsWindow {
+            openProblemsWindow()
+        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("problems") == true }) {
+            // Nothing has captured openWindow yet, but the window exists: bring it forward.
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     /// Update the index only when asked: no schedule and no file watching.

@@ -33,6 +33,8 @@ struct ZSearchApp: App {
                     .disabled(!model.indexing)
                 Button("Choose Folders…") { model.showSetup = true }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                IndexProblemsButton()
+                OpenWindowCapture(model: model)
             }
             CommandGroup(after: .pasteboard) {
                 Button(model.pickedCount > 1 ? "Copy \(model.pickedCount) Paths" : "Copy Path") { model.copySelectedPath() }
@@ -78,6 +80,15 @@ struct ZSearchApp: App {
             }
         }
 
+        Window("Indexing Problems", id: "problems") {
+            IndexProblemsView()
+                .environment(model)
+                .frame(minWidth: 720, minHeight: 400)
+                // Opened on its own (from the menu, before the main window): start the engine too.
+                .onAppear { model.start() }
+        }
+        .defaultSize(width: 980, height: 600)
+
         Settings {
             SettingsView()
                 .environment(model)
@@ -89,6 +100,26 @@ struct ZSearchApp: App {
         } label: {
             Image(systemName: model.indexing ? "arrow.triangle.2.circlepath" : "magnifyingglass")
         }
+    }
+}
+
+/// Captures the scene's openWindow action for the model. The commands exist from launch, before
+/// any window has appeared, and the quick panel has no scene of its own: without this, "Why
+/// Isn't This Searchable?" from the panel has no way to open the problems window until the main
+/// window first appears (see ContentView.onAppear).
+private struct OpenWindowCapture: View {
+    @Environment(\.openWindow) private var openWindow
+    let model: SearchModel
+
+    var body: some View {
+        let open = openWindow
+        // Menus are rebuilt often; only the first capture matters, and not during a view update.
+        DispatchQueue.main.async {
+            guard model.openProblemsWindow == nil else { return }
+            model.openMainWindow = { open(id: "main") }
+            model.openProblemsWindow = { open(id: "problems") }
+        }
+        return EmptyView()
     }
 }
 

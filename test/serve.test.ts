@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { acquireLock } from "../src/index/lock.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -331,6 +332,147 @@ test("serve: semantic search installed while an update runs gets a run of its ow
   expect((second.progress as { meaning?: unknown }).meaning).toBeDefined()
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
+test("serve: indexing problems are listed, explained and read again", async () => {
+  corpus.write("problems/broken.docx", "not really a docx")
+  corpus.write("problems/keys/server.pem", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n")
+  corpus.write("problems/fine.txt", "wallaby ledger\n")
+  const s = server({}, ".zsearch-problems")
+  await s.until((m) => m.type === "ready")
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~/problems"], autoRefreshMinutes: 0, liveUpdates: false } })
+  await s.reply(1)
+  s.send({ id: 2, type: "index" })
+  await s.reply(2)
+  expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+
+  s.send({ id: 3, type: "problems", categories: ["unreadable", "secret", "bogus"], limit: 10 })
+  const list = await s.reply(3)
+  expect(list.type).toBe("problems")
+  const problems = list.problems as { path: string; category: string; reason: string; detail: string | null; retry: boolean }[]
+  expect(problems.map((p) => [p.path.split("/").pop(), p.category, p.retry])).toEqual([
+    ["broken.docx", "unreadable", true],
+    ["server.pem", "secret", false],
+  ])
+  expect(problems[0]!.detail).toContain("not a valid Office file")
+  expect(list.total).toBe(2)
+  expect((list.categories as { category: string; count: number }[]).map((c) => [c.category, c.count])).toEqual([
+    ["unreadable", 1],
+    ["secret", 1],
+  ])
+  s.send({ id: 4, type: "problems", query: "server" })
+  expect(((await s.reply(4)).problems as unknown[]).length).toBe(1)
+
+  s.send({ id: 5, type: "explain", path: "~/problems/fine.txt" })
+  expect(((await s.reply(5)).explanation as { searchable: string }).searchable).toBe("content")
+  s.send({ id: 6, type: "explain", path: "~/problems/broken.docx" })
+  expect((await s.reply(6)).explanation).toMatchObject({ searchable: "name", category: "unreadable", retry: true })
+
+  // Keys are never read: a retry is refused, with why.
+  s.send({ id: 7, type: "retryProblems", category: "secret" })
+  expect(String((await s.reply(7)).error)).toContain("never read")
+  s.send({ id: 8, type: "retryProblems", category: "nonsense" })
+  expect((await s.reply(8)).type).toBe("error")
+  s.send({ id: 9, type: "retryProblems", paths: [join(corpus.home, "problems/broken.docx"), "~/problems/keys/server.pem"] })
+  const retried = await s.reply(9)
+  expect(retried).toMatchObject({ type: "retried", retried: 1, reading: "now" })
+  expect((retried.refused as { path: string }[]).map((r) => r.path.split("/").pop())).toEqual(["server.pem"])
+  // An update starts on its own and reads it again, even with updates only when asked.
+  const done = await s.until((m) => m.type === "indexDone")
+  expect((done.progress as { contentErrors: number }).contentErrors).toBe(1)
+
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)
+
+test("serve: a retry while another process updates starts its own update when that finishes", async () => {
+  corpus.write("held/broken.docx", "not really a docx")
+  const s = server({}, ".zsearch-held")
+  try {
+    await s.until((m) => m.type === "ready")
+    s.send({ id: 1, type: "setConfig", config: { roots: ["~/held"], autoRefreshMinutes: 0, liveUpdates: false, semantic: { enabled: false } } })
+    await s.reply(1)
+    s.send({ id: 2, type: "index" })
+    await s.reply(2)
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+
+    // Another zsearch process holds the lock: the file is marked, but no run can start.
+    const release = acquireLock(join(corpus.home, ".zsearch-held", "index.lock"))!
+    s.send({ id: 3, type: "retryProblems", category: "unreadable" })
+    expect(await s.reply(3)).toMatchObject({ type: "retried", retried: 1, reading: "waiting" })
+    s.send({ id: 4, type: "index" })
+    expect(String((await s.reply(4)).error)).toContain("another zsearch process")
+
+    // When it lets go, the marked file is read without being asked again.
+    release()
+    const done = await s.until((m) => m.type === "indexDone")
+    expect(done.status).toBe("done")
+    expect((done.progress as { contentErrors: number }).contentErrors).toBe(1)
+    s.proc.stdin.end()
+    expect(await s.proc.exited).toBe(0)
+  } finally { s.proc.kill() }
+}, 60_000)
+
+test("serve: files marked during a run are read by a following run, even when it is cancelled", async () => {
+  corpus.write("hold/broken.docx", "not really a docx")
+  const started = join(corpus.home, "transcribe-started")
+  const go = join(corpus.home, "transcribe-go")
+  // A transcription helper that blocks until `go` exists: the run stays in progress.
+  const helper = corpus.write("transcribe-helper", `#!${process.execPath}\nimport { writeFileSync, existsSync } from "node:fs"\nif (process.argv[2] === "--prepare") process.exit(0)\nwriteFileSync(${JSON.stringify(started)}, "started")\nwhile (!existsSync(${JSON.stringify(go)})) Bun.sleepSync(50)\nconsole.log('{"complete":true}')\n`)
+  chmodSync(helper, 0o700)
+  const s = server({ ZSEARCH_TRANSCRIBE: helper }, ".zsearch-hold")
+  try {
+    await s.until((m) => m.type === "ready")
+    s.send({ id: 1, type: "setConfig", config: { roots: ["~/hold"], autoRefreshMinutes: 0, liveUpdates: false, semantic: { enabled: false } } })
+    await s.reply(1)
+    s.send({ id: 2, type: "index" })
+    await s.reply(2)
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+
+    // A run that stays in progress, transcribing the recording.
+    corpus.write("hold/meeting.wav", "stand-in audio")
+    s.send({ id: 3, type: "index" })
+    await s.reply(3)
+    const deadline = Date.now() + 15_000
+    while (!existsSync(started) && Date.now() < deadline) await Bun.sleep(20)
+    expect(existsSync(started)).toBe(true)
+
+    // Marked while that run is going: read by the one that follows it, however it ends.
+    s.send({ id: 4, type: "retryProblems", category: "unreadable" })
+    expect(await s.reply(4)).toMatchObject({ type: "retried", retried: 1, reading: "next" })
+    s.send({ id: 5, type: "cancelIndex" })
+    await s.reply(5)
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("cancelled")
+    writeFileSync(go, "go")
+    const done = await s.until((m) => m.type === "indexDone" && m.status === "done")
+    expect((done.progress as { contentErrors: number }).contentErrors).toBe(1)
+    s.proc.stdin.end()
+    expect(await s.proc.exited).toBe(0)
+  } finally { s.proc.kill() }
+}, 60_000)
+
+test("serve: after the index is reset, problems come from the new file", async () => {
+  corpus.write("resettable/broken.docx", "not really a docx")
+  const s = server({}, ".zsearch-reset")
+  try {
+    await s.until((m) => m.type === "ready")
+    s.send({ id: 1, type: "setConfig", config: { roots: ["~/resettable"], autoRefreshMinutes: 0, liveUpdates: false, semantic: { enabled: false } } })
+    await s.reply(1)
+    s.send({ id: 2, type: "index" })
+    await s.reply(2)
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+    s.send({ id: 3, type: "problems" })
+    expect((await s.reply(3)).total).toBe(1)
+
+    // `zsearch reset`: the index file goes away; the next run builds a new one.
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(join(corpus.home, ".zsearch-reset", `index.db${suffix}`), { force: true })
+    s.send({ id: 4, type: "problems" })
+    expect((await s.reply(4)).total).toBe(0)
+    s.send({ id: 5, type: "explain", path: "~/resettable/broken.docx" })
+    expect((await s.reply(5)).explanation).toMatchObject({ searchable: "none" })
+    s.proc.stdin.end()
+    expect(await s.proc.exited).toBe(0)
+  } finally { s.proc.kill() }
 }, 60_000)
 
 test("serve: an update asked for during a refresh of changed files walks every folder after it", async () => {

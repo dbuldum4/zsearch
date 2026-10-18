@@ -7,13 +7,16 @@
  * supersedes an `explain` request.
  * The server exits when stdin closes.
  */
+import type { Database } from "bun:sqlite"
+import { statSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { type Config, configExists, configStamp, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
-import { type IndexStats, partialRunHolds } from "./index/db.ts"
+import { type IndexStats, openDb, partialRunHolds } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import { combine, describeEstimate, ESTIMATE_CANCELLED, estimateInBackground, type FolderEstimate } from "./index/estimate.ts"
 import type { IndexProgress } from "./index/indexer.ts"
 import { lockHolder } from "./index/lock.ts"
+import { type Explanation, isProblemCategory, listProblems, type ProblemList, explainPath, retryProblems, type RetryResult } from "./index/problems.ts"
 import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { SearchDiagnosis } from "./search/diagnose.ts"
@@ -40,6 +43,9 @@ type ServeIn =
   | { id?: number; type: "semanticInstall" }
   | { id?: number; type: "semanticCancelInstall" }
   | { id?: number; type: "semanticRemove" }
+  | { id?: number; type: "problems"; categories?: string[]; query?: string; offset?: number; limit?: number }
+  | { id?: number; type: "explain"; path: string }
+  | { id?: number; type: "retryProblems"; paths?: string[]; category?: string }
   | { id?: number; type: "searches" }
   | { id?: number; type: "saveSearch"; name: string; query: string; mode?: Mode }
   | { id?: number; type: "renameSearch"; name: string; to: string }
@@ -64,10 +70,18 @@ type ServeOut =
   | { type: "refreshed"; files: number; changed: boolean }
   | { id?: number; type: "semantic"; status: SemanticStatus }
   | { type: "semanticDownload"; file: string; received: number; total: number }
+  | ({ id?: number; type: "problems" } & ProblemList)
+  | { id?: number; type: "explanation"; explanation: Explanation }
+  | ({ id?: number; type: "retried" } & RetryResult & { reading?: RetryReading })
   | ({ id?: number; type: "searches" } & Searches)
 
 /** Progress events are throttled to this interval; the last one before `indexDone` always goes out. */
 const PROGRESS_MS = 100
+/** How often a waiting retry checks whether the process holding the index lock has finished. */
+const RETRY_POLL_MS = 2000
+
+/** When the files a retry marked will be read: a run starts now, one is running (its successor reads them), or another process holds the lock. */
+type RetryReading = "now" | "next" | "waiting"
 
 export async function serve(version: string): Promise<number> {
   const p = ensureDirs()
@@ -93,6 +107,30 @@ export async function serve(version: string): Promise<number> {
       ? { rebuild: followUp.rebuild || next.rebuild, background: followUp.background && next.background, meaningOnly: followUp.meaningOnly && next.meaningOnly }
       : next
   }
+  /** Files marked to be read again (a retry) that no update has started for yet. */
+  let retryWaiting = false
+  /** While set, checks for the process holding the index lock to finish, so the retry's update can start. */
+  let retryPoll: ReturnType<typeof setInterval> | null = null
+  /** A connection of this thread's own, for indexing problems: the search worker's protocol does not cover them. */
+  const own: { db: Database | null; stamp: string } = { db: null, stamp: "" }
+  const database = () => {
+    // `zsearch reset` deletes the index file; a new one gets another inode. A connection kept
+    // across that would go on reading the deleted file. (ctime too: an inode can be reused.)
+    let stamp = "gone"
+    try {
+      const s = statSync(p.db)
+      stamp = `${s.dev}:${s.ino}:${s.ctimeMs}`
+    } catch {}
+    if (own.db && own.stamp !== stamp) {
+      own.db.close()
+      own.db = null
+    }
+    if (!own.db) {
+      own.db = openDb(p.db)
+      own.stamp = stamp
+    }
+    return own.db
+  }
   /** The run going updates changed paths only (as far as known yet). */
   let partial = false
   const watcher = new RootWatcher((changed) => {
@@ -110,6 +148,22 @@ export async function serve(version: string): Promise<number> {
 
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
+
+  /**
+   * Start the update that reads the files a retry marked, as soon as the index is free: when a
+   * run ends (however it ends), and by polling while another process holds the lock.
+   */
+  const retryWhenPossible = () => {
+    if (closed || index || !retryWaiting) return
+    if (lockHolder(p.lock) === null) return startIndex(undefined, false, true)
+    retryPoll ??= setInterval(() => {
+      if (closed || index || !retryWaiting || lockHolder(p.lock) !== null) return
+      if (retryPoll) clearInterval(retryPoll)
+      retryPoll = null
+      startIndex(undefined, false, true)
+    }, RETRY_POLL_MS)
+    retryPoll.unref?.()
+  }
 
   /**
    * `background`: the run started on its own (file changes, the app's schedule), not on request.
@@ -154,13 +208,22 @@ export async function serve(version: string): Promise<number> {
       },
       onCommit: () => client.refresh(),
     }, rebuild, background, meaningOnly, paths ?? undefined)
+    // This run reads whatever a retry marked: nothing is waiting any more. Unless the run never
+    // takes the lock: then it read nothing, and the retry goes back to waiting.
+    const forRetry = retryWaiting
     index = run
+    retryWaiting = false
+    if (retryPoll) {
+      clearInterval(retryPoll)
+      retryPoll = null
+    }
     // Until its walk starts, a run with paths is taken to update just those.
     partial = Array.isArray(paths)
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
       if (trailing) clearTimeout(trailing)
       index = null
+      if (outcome.status === "locked" && forRetry) retryWaiting = true
       if (pending) send({ type: "indexProgress", progress: pending })
       client.refresh(true)
       if (paths !== undefined && outcome.status !== "done") watcher.carryOver(paths)
@@ -172,6 +235,7 @@ export async function serve(version: string): Promise<number> {
       // A run that turned out to walk every root already did what a plain update asked for.
       const covered = outcome.status === "done" && !outcome.progress.partial && !next?.rebuild && !next?.meaningOnly && !next?.background
       if (next && outcome.status !== "cancelled" && !covered) startIndex(undefined, next.rebuild, next.background, next.meaningOnly)
+      retryWhenPossible()
     })
   }
 
@@ -193,6 +257,11 @@ export async function serve(version: string): Promise<number> {
         return send(response ? { id, type: "results", response } : { id, type: "cancelled" })
       }
       case "explain": {
+        // Path explanations and empty-search diagnoses share the wire request name.
+        if ("path" in msg) {
+          if (typeof msg.path !== "string" || !msg.path.trim()) return send({ id, type: "error", error: "explain needs a path" })
+          return send({ id, type: "explanation", explanation: explainPath(database(), config, msg.path) })
+        }
         const query = String(msg.query ?? ""), m = mode(msg.mode)
         const reply = await client.explain(query, m, msg.limit ?? 200)
         return send(reply ? { id, type: "diagnosis", query, mode: m, ...(reply.diagnosis ? { diagnosis: reply.diagnosis } : {}) } : { id, type: "cancelled" })
@@ -299,6 +368,31 @@ export async function serve(version: string): Promise<number> {
         removeSemantic(p.db)
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       }
+      case "problems": {
+        const categories = Array.isArray(msg.categories) ? msg.categories.filter(isProblemCategory) : undefined
+        const list = listProblems(database(), config, {
+          categories,
+          query: typeof msg.query === "string" ? msg.query : undefined,
+          offset: typeof msg.offset === "number" ? msg.offset : 0,
+          limit: typeof msg.limit === "number" ? msg.limit : 200,
+        })
+        return send({ id, type: "problems", ...list })
+      }
+      case "retryProblems": {
+        const paths = Array.isArray(msg.paths) ? msg.paths.filter((path): path is string => typeof path === "string") : undefined
+        if (msg.category !== undefined && !isProblemCategory(msg.category)) return send({ id, type: "error", error: `unknown problem category "${msg.category}"` })
+        if (!msg.category && !paths?.length) return send({ id, type: "error", error: "retryProblems needs paths or a category" })
+        const result = await retryProblems(database(), config, msg.category ? { category: msg.category } : { paths })
+        // Read them now, even with Only when I ask: someone asked. A run going may have listed
+        // the files to read before these were marked, so one follows it (however it ends); while
+        // another process holds the lock, one starts when it finishes (see retryWhenPossible).
+        const reading: RetryReading | undefined = !result.retried ? undefined : index ? "next" : lockHolder(p.lock) !== null ? "waiting" : "now"
+        if (reading === "next" || reading === "waiting") retryWaiting = true
+        send({ id, type: "retried", ...result, ...(reading ? { reading } : {}) })
+        if (reading === "now") startIndex()
+        else retryWhenPossible()
+        return
+      }
       case "searches":
         return sendSearches(id, loadSearches())
       // A mode left out is the default one; one this version doesn't know is an error, not stored as another.
@@ -339,6 +433,7 @@ export async function serve(version: string): Promise<number> {
   }
   // stdin closed: finish what was asked, stop indexing cleanly, and exit.
   closed = true
+  if (retryPoll) clearInterval(retryPoll)
   downloading.run?.abort()
   estimating.run?.cancel()
   watcher.close()
@@ -350,5 +445,6 @@ export async function serve(version: string): Promise<number> {
     run.kill()
   }
   client.close()
+  own.db?.close()
   return 0
 }

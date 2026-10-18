@@ -18,6 +18,7 @@ import {
   tildify,
 } from "./config.ts"
 import { clearIndex, getMeta, indexStats, openDb, PARTIAL_RUN, partialRunHolds, setMeta } from "./index/db.ts"
+import { eachProblem, explainPath, isProblemCategory, PROBLEM_CATEGORIES, PROBLEM_LABELS, type ProblemCategory, problemCounts, RETRYABLE_CATEGORIES, retryProblems } from "./index/problems.ts"
 import { excludingPath } from "./index/exclude.ts"
 import { explainDiagnosis } from "./search/diagnose.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
@@ -44,6 +45,9 @@ Usage
   zsearch search <query>          print matches and exit
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
+  zsearch status --errors         files whose contents search cannot find, and why
+  zsearch why <path...>           why files' contents are, or are not, searchable
+  zsearch retry <path...|category>  read files that failed again, then update the index
   zsearch config [get|set|path|reset] [key] [value]
   zsearch estimate [folders...]   how long a first index takes, roughly (--docs|--home|--disk)
   zsearch duplicates [--json]      find identical indexed files
@@ -195,6 +199,10 @@ export async function main(argv: string[]): Promise<number> {
       }
       case "status":
         return cmdStatus(args)
+      case "why":
+        return cmdWhy(rest, args)
+      case "retry":
+        return await cmdRetry(rest, args)
       case "estimate":
         return cmdEstimate(rest, args)
       case "config":
@@ -508,8 +516,10 @@ function cmdStatus(args: Args): number {
   }
   const db = openDb(p.db)
   const s = indexStats(db, p.db)
+  const errors = flag(args, "errors")
+  const only = typeof errors === "string" ? problemCategory(errors) : undefined
   if (flag(args, "json")) {
-    console.log(JSON.stringify(s, null, 2))
+    console.log(JSON.stringify(errors ? { ...s, problems: [...eachProblem(db, config, { categories: only && [only] })] } : s, null, 2))
     db.close()
     return 0
   }
@@ -531,19 +541,95 @@ function cmdStatus(args: Args): number {
     const waiting = getMeta(db, "waiting_for")
     console.log(`Indexing     in progress (pid ${holder})${waiting ? `, waiting: ${waiting}` : ""}`)
   }
-  if (flag(args, "errors")) {
-    const rows = db.query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path LIMIT 200").all() as { path: string; note: string }[]
-    console.log(rows.length ? "\nUnreadable files:" : "\nNo unreadable files.")
-    for (const r of rows) console.log(`  ${tildify(r.path)}: ${r.note}`)
-    const secrets = db.query("SELECT path FROM files WHERE content_state = 3 AND note = 'secret' ORDER BY path LIMIT 200").values() as [string][]
-    if (secrets.length) console.log("\nKey or password files (indexed by name only):")
-    for (const [path] of secrets) console.log(`  ${tildify(path)}`)
-    const datasets = s.datasetImages ? s.datasetFolders : []
-    if (datasets.length) console.log("\nDataset folders (images not read with OCR):")
-    for (const f of datasets) console.log(`  ${tildify(f.dir)}: ${formatCount(f.images)} images`)
-  }
+  if (errors) printProblems(db, config, only)
+  else if (s.errors) console.log(`\n${formatCount(s.errors)} files could not be read: \`zsearch status --errors\` says which, and why.`)
   db.close()
   return 0
+}
+
+/* --------------------------------------------------------------- problems -- */
+
+/** Problems listed per category by `status --errors`; `--errors=<category>` lists all of one. */
+const PROBLEMS_SHOWN = 20
+
+function problemCategory(name: string): ProblemCategory {
+  if (!isProblemCategory(name)) throw new UsageError(`unknown problem category "${name}" (use ${PROBLEM_CATEGORIES.join(", ")})`)
+  return name
+}
+
+function printProblems(db: Database, config: Config, only?: ProblemCategory) {
+  const counts = problemCounts(db, config, only ? { categories: [only] } : {})
+  if (!counts.length) return console.log(only ? `\nNo files: ${PROBLEM_LABELS[only].toLowerCase()}.` : "\nNo indexing problems: every file's contents that can be read were read.")
+  const limit = only ? Infinity : PROBLEMS_SHOWN
+  for (const c of counts) {
+    console.log(`\n${c.label} (${formatCount(c.count)})${c.retry ? ` · zsearch retry ${c.category}` : ""}`)
+    let shown = 0
+    let reason = ""
+    for (const p of eachProblem(db, config, { categories: [c.category] })) {
+      if (shown++ >= limit) break
+      // Most files in a category share a reason: it is printed when it changes.
+      if (p.reason !== reason) console.log(`  ${(reason = p.reason)}`)
+      console.log(`    ${tildify(p.path)}${p.detail ? ` (${p.detail})` : ""}`)
+    }
+    if (c.count > limit) console.log(`    … and ${formatCount(c.count - limit)} more: zsearch status --errors=${c.category}`)
+  }
+}
+
+/** Each argument is a file, as with `retry`: a path with spaces in it is quoted. */
+function cmdWhy(rest: string[], args: Args): number {
+  if (!rest.length) throw new UsageError("why needs a file, e.g. zsearch why ~/Downloads/scan.pdf")
+  const p = paths()
+  if (!existsSync(p.db)) {
+    console.log("No index yet. Run `zsearch` or `zsearch index` to build one.")
+    return 1
+  }
+  const db = openDb(p.db)
+  try {
+    const config = loadConfig()
+    const explained = rest.map((path) => explainPath(db, config, path))
+    if (flag(args, "json")) {
+      console.log(JSON.stringify(explained.length === 1 ? explained[0] : explained, null, 2))
+      return 0
+    }
+    const what = { content: "its name and text are searchable", name: "only its name is searchable", none: "it is not in the index" }
+    for (const [i, e] of explained.entries()) {
+      if (i) console.log("")
+      console.log(`${tildify(e.path)}: ${e.category === "truncated" ? "only part of its text is searchable" : what[e.searchable]}.`)
+      console.log(e.reason)
+      if (e.detail) console.log(`Reader's error: ${e.detail}`)
+      if (e.setting) console.log(`Setting: ${e.setting} (zsearch config get ${e.setting})`)
+      if (e.retry) console.log(`To read it again: zsearch retry "${tildify(e.path)}"`)
+    }
+    return 0
+  } finally { db.close() }
+}
+
+async function cmdRetry(rest: string[], args: Args): Promise<number> {
+  if (!rest.length) throw new UsageError(`retry needs files or a category (${RETRYABLE_CATEGORIES.join(", ")})`)
+  const p = paths()
+  if (!existsSync(p.db)) {
+    console.log("No index yet. Run `zsearch` or `zsearch index` to build one.")
+    return 1
+  }
+  const category = rest.length === 1 && isProblemCategory(rest[0]) && !existsSync(resolvePath(rest[0]!)) ? rest[0] : undefined
+  const db = openDb(p.db)
+  let retried: number
+  try {
+    const result = await retryProblems(db, loadConfig(), category ? { category } : { paths: rest })
+    for (const r of result.refused) console.error(`${tildify(r.path)}: ${r.reason}`)
+    retried = result.retried
+  } finally { db.close() }
+  if (!retried) {
+    console.error("No files to read again.")
+    return 1
+  }
+  console.error(`${formatCount(retried)} ${retried === 1 ? "file is" : "files are"} read again with the next index update.`)
+  const holder = lockHolder(p.lock)
+  if (holder !== null) {
+    console.error(`Another zsearch process (pid ${holder}) is updating the index: the update after it reads them.`)
+    return 0
+  }
+  return await cmdIndex([], args)
 }
 
 /* ----------------------------------------------------------------- config -- */
@@ -785,6 +871,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>", saved: "saved [list [--json]|add <name> <query> [-e] [--sort key] [-m mode, default find]|rename <name> <new name>|rm <name>|run <name> [search options]]", history: "history [list [--json]|clear]" }
+  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors[=<category>]] [--json]", why: "why <path...> [--json]", retry: "retry <path...|unreadable|timeout|transcription|no-text> [-q]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>", saved: "saved [list [--json]|add <name> <query> [-e] [--sort key] [-m mode, default find]|rename <name> <new name>|rm <name>|run <name> [search options]]", history: "history [list [--json]|clear]" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

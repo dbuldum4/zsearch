@@ -157,4 +157,49 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - 2 * hour, lastAttempt: now - 60_000, now: now))
         XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - 2 * hour, lastAttempt: now - hour, now: now))
     }
+
+    func testIndexingProblemsRequestsAndReplies() throws {
+        func json(_ request: Request) throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: request.encoded(id: 7)) as? [String: Any])
+        }
+        let all = try json(.problems())
+        XCTAssertEqual(all["type"] as? String, "problems")
+        XCTAssertNil(all["categories"])
+        XCTAssertNil(all["query"])
+        XCTAssertEqual(all["limit"] as? Int, 200)
+        let some = try json(.problems(categories: ["unreadable"], query: "scan", offset: 200, limit: 50))
+        XCTAssertEqual(some["categories"] as? [String], ["unreadable"])
+        XCTAssertEqual(some["query"] as? String, "scan")
+        XCTAssertEqual(some["offset"] as? Int, 200)
+        let fileExplanation = try json(.explainPath(path: "/a/b.pdf"))
+        XCTAssertEqual(fileExplanation["type"] as? String, "explain")
+        XCTAssertEqual(fileExplanation["path"] as? String, "/a/b.pdf")
+        XCTAssertNil(fileExplanation["query"])
+        let paths = try json(.retryProblems(paths: ["/a/b.pdf"]))
+        XCTAssertEqual(paths["type"] as? String, "retryProblems")
+        XCTAssertEqual(paths["paths"] as? [String], ["/a/b.pdf"])
+        let category = try json(.retryCategory("timeout"))
+        XCTAssertEqual(category["type"] as? String, "retryProblems")
+        XCTAssertEqual(category["category"] as? String, "timeout")
+
+        let list = #"{"id":3,"type":"problems","problems":[{"path":"/Users/me/Documents/scan.pdf","size":2048,"mtime":1700000000000,"category":"unreadable","reason":"It looks damaged.","detail":"corrupt xref","at":1700000001000,"retry":true,"setting":null},{"path":"/Users/me/.ssh/id_ed25519","size":400,"mtime":1700000000000,"category":"secret","reason":"It looks like a key.","detail":null,"at":null,"retry":false,"setting":null}],"total":2,"categories":[{"category":"unreadable","label":"Could not be read","count":1,"retry":true},{"category":"secret","label":"Keys and passwords, name only","count":1,"retry":false}]}"#
+        let envelope = try Envelope.decode(Data(list.utf8))
+        XCTAssertEqual(envelope.id, 3)
+        guard case let .problems(problems) = envelope.message else { return XCTFail("expected problems") }
+        XCTAssertEqual(problems.total, 2)
+        XCTAssertEqual(problems.problems.map(\.name), ["scan.pdf", "id_ed25519"])
+        XCTAssertEqual(problems.problems[0].detail, "corrupt xref")
+        XCTAssertNil(problems.problems[1].at)
+        XCTAssertEqual(problems.categories.map(\.label), ["Could not be read", "Keys and passwords, name only"])
+
+        let why = #"{"id":4,"type":"explanation","explanation":{"path":"/a/b.pdf","searchable":"none","category":null,"reason":"It is not in a folder zsearch indexes.","detail":null,"retry":false,"setting":"roots","at":null}}"#
+        guard case let .explanation(e) = try Envelope.decode(Data(why.utf8)).message else { return XCTFail("expected explanation") }
+        XCTAssertEqual(e.searchable, "none")
+        XCTAssertEqual(e.setting, "roots")
+
+        let retried = #"{"id":5,"type":"retried","retried":1,"refused":[{"path":"/k.pem","reason":"Keys are never read."}]}"#
+        guard case let .retried(r) = try Envelope.decode(Data(retried.utf8)).message else { return XCTFail("expected retried") }
+        XCTAssertEqual(r.retried, 1)
+        XCTAssertEqual(r.refused.first?.path, "/k.pem")
+    }
 }

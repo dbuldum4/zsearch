@@ -14,6 +14,7 @@ import { fullWalkDue, type IndexStats, openDb, partialRunHolds } from "../index/
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import { policyFor, crawlOptionsFor } from "../index/policy.ts"
+import { eachProblem, PROBLEM_CATEGORIES, PROBLEM_LABELS, type ProblemCategory, type ProblemCount } from "../index/problems.ts"
 import { excludingPath } from "../index/exclude.ts"
 import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
@@ -45,6 +46,7 @@ const INSTRUCTIONS = `zsearch searches the user's indexed files on this computer
 
 - \`search\` finds the exact text you give in file names and contents by default (case-insensitive unless the query has a capital letter); set \`regex\` for a regular expression, or mode "fuzzy" for a file name you only half remember. Narrow results with \`type\` (doc, pdf, sheet, slides, code, image, folder…), \`ext\`, \`folder\`, \`modified\` and \`size\`. An empty query lists recently opened and modified files.
 - \`read_file\` reads the text zsearch extracted, so it works for PDFs and Office files too. Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
+- When a file the user expects is not found by its contents, \`index_status\` with \`errors\` (or \`errors_category\`) says which files could not be read and why.
 - Everything stays on this computer.`
 
 /** Lines, and characters, of text a read_file call returns at most. */
@@ -210,18 +212,46 @@ class Host {
     return this.db
   }
 
-  /** Files whose contents could not be read, leaving out any the current settings no longer allow. */
-  async unreadable(limit: number): Promise<{ path: string; reason: string }[]> {
+  /**
+   * Files whose contents search cannot find, or finds only in part (by default, those that could
+   * not be read), leaving out any the current settings no longer allow.
+   */
+  async problems(limit: number, categories: ProblemCategory[] = FAILED): Promise<ProblemFile[]> {
     await this.client.waitReady()
-    const check = policyFor(crawlOptionsFor(this.reloadConfig()))
-    const out: { path: string; reason: string }[] = []
-    const rows = this.database().query("SELECT path, note FROM files WHERE content_state = 2 ORDER BY path")
-    for (const r of rows.iterate() as Iterable<{ path: string; note: string | null }>) {
-      if (!check(r.path).allowed) continue
-      out.push({ path: r.path, reason: r.note ?? "error" })
+    const config = this.reloadConfig()
+    const check = policyFor(crawlOptionsFor(config))
+    const out: ProblemFile[] = []
+    for (const p of eachProblem(this.database(), config, { categories })) {
+      if (!check(p.path).allowed) continue
+      out.push({ path: p.path, category: p.category, reason: p.reason, detail: p.detail, retry: p.retry })
       if (out.length >= limit) break
     }
     return out
+  }
+
+  /**
+   * Problems by category: only categories that have some. Counted over the same policy filter as
+   * the listing, so a file the current settings exclude is not counted either. A fresh checker
+   * per call (never reused, like search): the cost is a stat per problem file.
+   */
+  async problemCounts(): Promise<ProblemCount[]> {
+    await this.client.waitReady()
+    const config = this.reloadConfig()
+    const check = policyFor(crawlOptionsFor(config))
+    const counts = new Map<ProblemCategory, { n: number; retry: boolean }>()
+    for (const p of eachProblem(this.database(), config)) {
+      if (!check(p.path).allowed) continue
+      const c = counts.get(p.category) ?? { n: 0, retry: false }
+      c.n += 1
+      c.retry ||= p.retry
+      counts.set(p.category, c)
+    }
+    return PROBLEM_CATEGORIES.filter((category) => counts.has(category)).map((category) => ({
+      category,
+      label: PROBLEM_LABELS[category],
+      count: counts.get(category)!.n,
+      retry: counts.get(category)!.retry,
+    }))
   }
 
   /**
@@ -411,8 +441,22 @@ function describeHit(h: SearchHit): string {
   return bits.join(" · ")
 }
 
+/** The problems `index_status` lists unless asked for others: files that could not be read. */
+const FAILED: ProblemCategory[] = ["unreadable", "timeout", "transcription"]
+
+interface ProblemFile {
+  path: string
+  category: ProblemCategory
+  /** Why, in plain words. */
+  reason: string
+  /** The reader's own error, for files that could not be read. */
+  detail: string | null
+  /** Reading it again may help: an index update after the file changes does. */
+  retry: boolean
+}
+
 /** Status of the index, for index_status, update_index and the status resource. */
-async function indexState(host: Host, opts: { errors?: number } = {}) {
+async function indexState(host: Host, opts: { errors?: number; categories?: ProblemCategory[] } = {}) {
   const config = host.reloadConfig()
   const { stats } = await host.stats()
   const other = host.run ? null : lockHolder(host.paths.lock)
@@ -467,7 +511,8 @@ async function indexState(host: Host, opts: { errors?: number } = {}) {
           ...(last.error ? { error: last.error } : {}),
         }
       : null,
-    ...(opts.errors ? { unreadableFiles: await host.unreadable(opts.errors) } : {}),
+    problems: await host.problemCounts(),
+    ...(opts.errors ? { unreadableFiles: await host.problems(opts.errors, opts.categories) } : {}),
   }
 }
 
@@ -493,9 +538,10 @@ function describeState(s: IndexState): string {
         : `Last run here: ${r.status}${r.error ? ` (${r.error})` : ""}.`,
     )
   }
+  if (s.problems.length) out.push(`Files whose contents are not fully searchable: ${s.problems.map((c) => `${formatCount(c.count)} ${c.label.toLowerCase()}`).join("; ")}.${s.unreadableFiles ? "" : " Set errors to list them, with why."}`)
   if (s.unreadableFiles) {
-    out.push(s.unreadableFiles.length ? "Unreadable files:" : "No unreadable files.")
-    for (const f of s.unreadableFiles) out.push(`  ${f.path}: ${f.reason}`)
+    out.push(s.unreadableFiles.length ? "Files:" : "No such files.")
+    for (const f of s.unreadableFiles) out.push(`  ${f.path}: ${f.reason}${f.detail ? ` (${f.detail})` : ""}`)
   }
   return out.join("\n")
 }
@@ -530,6 +576,11 @@ const STATE_SCHEMA = loose(
     stale: bool("No full walk for longer than autoRefreshMinutes, or the index was never completed"),
     indexing: { type: ["object", "null"], description: "The index run in progress, if any" },
     lastRun: { type: ["object", "null"], description: "How the last run started by this server ended" },
+    problems: {
+      type: "array",
+      description: "Files whose contents search cannot find, or finds only in part, by category",
+      items: loose({ category: str("Problem category"), label: str("The category in plain words"), count: { type: "integer" }, retry: bool("Reading the files again may help") }, ["category", "count"]),
+    },
   },
   ["roots", "files", "folders", "lastIndexedAt", "stale", "indexing"],
 )
@@ -815,15 +866,17 @@ Give query (the same text or regex as in search) to mark the matching lines and 
   const status: Tool = {
     name: "index_status",
     title: "Index status",
-    description: "What zsearch has indexed: the folders, how many files (and how many with readable text), when the index was last updated, and whether indexing is running now, with its progress. Set errors to list files whose contents could not be read, with the reason.",
+    description: "What zsearch has indexed: the folders, how many files (and how many with readable text), when the index was last updated, and whether indexing is running now, with its progress. It counts the files whose contents search cannot find, by category (problems). Set errors to list files whose contents could not be read, with the reason in plain words; errors_category lists another category (a password file read by name only, say, or a file too large to read).",
     inputSchema: obj({
-      errors: bool("Also list the files that could not be read", false),
-      errors_limit: int("Unreadable files to list at most", 1, 1000, 100),
+      errors: bool("Also list the files that could not be read (or those of errors_category)", false),
+      errors_limit: int("Files to list at most", 1, 1000, 100),
+      errors_category: str("List the files of this problem category instead of those that could not be read", { enum: [...PROBLEM_CATEGORIES] }),
     }),
     outputSchema: STATE_SCHEMA,
     annotations: { readOnlyHint: true, openWorldHint: false },
     async run(args) {
-      const s = await indexState(host, { errors: args.errors === true ? (args.errors_limit as number) : 0 })
+      const category = args.errors_category as ProblemCategory | undefined
+      const s = await indexState(host, { errors: args.errors === true || category ? (args.errors_limit as number) : 0, categories: category ? [category] : undefined })
       return { text: describeState(s), structured: s }
     },
   }

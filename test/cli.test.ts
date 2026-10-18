@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs, progressLine } from "../src/cli.ts"
+import { acquireLock } from "../src/index/lock.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
@@ -138,6 +139,52 @@ describe("zsearch command line", () => {
     const d = await zs("doctor")
     expect(d.code).toBe(0)
     expect(d.out).toContain("FTS5")
+  })
+
+  test("indexing problems: status --errors, why and retry", async () => {
+    corpus.write("Documents/broken.docx", "not really a docx")
+    expect((await zs("index", "--quiet")).code).toBe(0)
+    const s = await zs("status", "--errors")
+    expect(s.code).toBe(0)
+    expect(s.out).toContain("Could not be read (1) · zsearch retry unreadable")
+    expect(s.out).toContain("It is not in the format its name suggests, or it is damaged.")
+    expect(s.out).toContain("~/Documents/broken.docx (not a valid Office file")
+    const only = await zs("status", "--errors=secret", "--json")
+    expect(JSON.parse(only.out).problems.every((p: { category: string }) => p.category === "secret")).toBe(true)
+    expect((await zs("status", "--errors=bogus")).code).toBe(2)
+
+    const why = await zs("why", "~/Documents/broken.docx")
+    expect(why.out).toContain("only its name is searchable")
+    expect(why.out).toContain('zsearch retry "~/Documents/broken.docx"')
+    expect(JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt")).out).searchable).toBe("content")
+    // Several files: each is explained, not one path made of them all.
+    const both = await zs("why", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")
+    expect(both.code).toBe(0)
+    expect(both.out).toContain("~/notes/recipes/pancakes.txt: its name and text are searchable.")
+    expect(both.out).toContain("~/Documents/broken.docx: only its name is searchable.")
+    const json = JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")).out) as { searchable: string }[]
+    expect(json.map((e) => e.searchable)).toEqual(["content", "name"])
+
+    expect((await zs("retry", "secret")).err).toContain("never read")
+    const retry = await zs("retry", "unreadable", "--quiet")
+    expect(retry.code).toBe(0)
+    expect(retry.err).toContain("1 file is read again with the next index update.")
+    expect((await zs("retry", "~/notes/recipes/pancakes.txt")).code).toBe(1)
+  })
+
+  test("retry while another process holds the lock says the files wait for it", async () => {
+    corpus.write("Documents/stuck.docx", "not really a docx")
+    expect((await zs("index", "--quiet")).code).toBe(0)
+    // Held from here, as another zsearch process would hold it.
+    const release = acquireLock(join(corpus.home, ".zsearch-data", "index.lock"))!
+    try {
+      const r = await zs("retry", "unreadable")
+      expect(r.code).toBe(0)
+      expect(r.err).toContain("read again with the next index update")
+      expect(r.err).toContain("is updating the index")
+    } finally {
+      release()
+    }
   })
 
   test("config get/set/path with validation", async () => {
