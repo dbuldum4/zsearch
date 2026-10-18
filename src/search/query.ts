@@ -58,6 +58,8 @@ export interface ParsedQuery {
   typing: boolean
   /** Errors in filters (shown in the status bar). */
   warnings: string[]
+  /** Where each filter is in `raw`, by key (`-key` when negated; a glob is a `name` filter). */
+  filterSpans: { key: string; start: number; end: number }[]
 }
 
 function emptyFilters(): Filters {
@@ -171,6 +173,8 @@ export function parseQuery(raw: string, now = Date.now(), mode?: Mode): ParsedQu
   // Remove filter tokens, keep the rest of the text verbatim (regexes care about spacing).
   const tokens = tokenize(s)
   const cut: [number, number][] = []
+  const filterSpans: ParsedQuery["filterSpans"] = []
+  const offset = raw.length - s.length
   const semantic = (forcedMode ?? mode) === "semantic"
   for (const t of tokens) {
     if (t.quoted) continue
@@ -182,7 +186,8 @@ export function parseQuery(raw: string, now = Date.now(), mode?: Mode): ParsedQu
       cut.push([t.start, t.end]); continue
     }
     if (!regex && forcedMode !== "fuzzy" && !semantic && /[?*]/.test(t.text) && !t.text.includes("/") && !t.text.includes(":")) {
-      ;(filters.names ??= []).push({ source: globPattern(t.text), flags: "i" }); cut.push([t.start, t.end]); continue
+      ;(filters.names ??= []).push({ source: globPattern(t.text), flags: "i" }); cut.push([t.start, t.end])
+      filterSpans.push({ key: "name", start: offset + t.start, end: offset + t.end }); continue
     }
     const m = /^(-?)([a-z]+):(.*)$/i.exec(t.text)
     if (!m || !FILTER_KEYS.has(m[2]!.toLowerCase())) continue
@@ -199,7 +204,10 @@ export function parseQuery(raw: string, now = Date.now(), mode?: Mode): ParsedQu
       const n = Number(value); if (!Number.isInteger(n) || n < 0 || n > 1000) warnings.push("near expects a word distance from 0 to 1000"); else { near = n; all = true }
       cut.push([t.start, t.end]); continue
     }
-    if (applyFilter(filters, key, value, neg, now, warnings)) cut.push([t.start, t.end])
+    if (applyFilter(filters, key, value, neg, now, warnings)) {
+      cut.push([t.start, t.end])
+      filterSpans.push({ key: neg ? `-${key}` : key, start: offset + t.start, end: offset + t.end })
+    }
   }
   let text = ""
   let pos = 0
@@ -229,7 +237,19 @@ export function parseQuery(raw: string, now = Date.now(), mode?: Mode): ParsedQu
       } else words.push(t.text)
     }
   }
-  return { raw, text, filters, forcedMode, regex, regexFlags, all, fold, wholeWord, caseMode, diacritics, near, words, phrases, negated, typing, warnings }
+  return { raw, text, filters, forcedMode, regex, regexFlags, all, fold, wholeWord, caseMode, diacritics, near, words, phrases, negated, typing, warnings, filterSpans }
+}
+
+/** The query without its filters with these keys (negated ones stay), the rest of its text as written. */
+export function withoutFilters(raw: string, keys: readonly string[], mode?: Mode): string {
+  let out = raw
+  for (const span of parseQuery(raw, Date.now(), mode).filterSpans.filter((s) => keys.includes(s.key)).reverse()) {
+    let { start, end } = span
+    while (end < out.length && out[end] === " ") end++
+    if (end === out.length) while (start > 0 && out[start - 1] === " ") start--
+    out = out.slice(0, start) + out.slice(end)
+  }
+  return out
 }
 
 function applyFilter(f: Filters, key: string, value: string, neg: boolean, now: number, warnings: string[]): boolean {

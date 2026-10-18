@@ -1,5 +1,6 @@
 import type { Config } from "../config.ts"
 import type { IndexStats } from "../index/db.ts"
+import type { SearchDiagnosis } from "./diagnose.ts"
 import type { Preview, SearchResponse } from "./engine.ts"
 import type { SearchIn, SearchOut } from "./protocol.ts"
 import type { Mode } from "./query.ts"
@@ -109,6 +110,7 @@ export class SearchClient {
         this.settle()
         break
       case "results":
+      case "diagnosis":
       case "preview":
       case "previews":
       case "stats":
@@ -116,7 +118,7 @@ export class SearchClient {
         const p = this.pending.get(m.qid)
         if (!p) break
         this.pending.delete(m.qid)
-        p.resolve(m.type === "results" ? m.response : m.type === "preview" ? m.preview : m.type === "previews" ? m.previews : m.type === "read" ? { result: m.result, error: m.error } : { stats: m.stats })
+        p.resolve(m.type === "results" ? m.response : m.type === "diagnosis" ? { diagnosis: m.diagnosis } : m.type === "preview" ? m.preview : m.type === "previews" ? m.previews : m.type === "read" ? { result: m.result, error: m.error } : { stats: m.stats })
         break
       }
       case "refreshed":
@@ -149,9 +151,10 @@ export class SearchClient {
       this.spawn()
     }
     const qid = ++this.qid
-    // Supersede older requests of the same kind.
+    // Supersede older requests of the same kind. A search supersedes explanations as well: the
+    // worker drops them (see search-worker.ts).
     for (const [id, p] of this.pending) {
-      if (p.kind === kind) {
+      if (p.kind === kind || (kind === "search" && p.kind === "explain")) {
         p.resolve(null)
         this.pending.delete(id)
       }
@@ -172,8 +175,17 @@ export class SearchClient {
     await this.settled
   }
 
-  search(query: string, mode: Mode, limit = 200): Promise<SearchResponse | null> {
-    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit }))
+  /** `explain`: explain an empty result before replying (see `explain` for searches while typing). */
+  search(query: string, mode: Mode, limit = 200, explain = true): Promise<SearchResponse | null> {
+    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit, explain }))
+  }
+
+  /**
+   * Why `query` finds nothing (`diagnosis` is left out when it finds something, or there is nothing
+   * to say). Null when superseded by a newer explanation or search.
+   */
+  explain(query: string, mode: Mode, limit = 200): Promise<{ diagnosis?: SearchDiagnosis } | null> {
+    return this.request<{ diagnosis?: SearchDiagnosis }>("explain", (qid) => ({ type: "explain", qid, query, mode, limit }))
   }
 
   preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null> {

@@ -131,6 +131,27 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
     [999_999, 1],
   ])
 
+  // An empty result replies at once, and says what would match when asked.
+  s.send({ id: 43, type: "search", query: "pancakes type:pdf", mode: "find" })
+  const empty = (await s.reply(43)).response as { hits: unknown[]; diagnosis?: unknown }
+  expect(empty.hits).toEqual([])
+  expect(empty.diagnosis).toBeUndefined()
+  s.send({ id: 44, type: "explain", query: "pancakes type:pdf", mode: "find" })
+  const explained = await s.reply(44)
+  expect(explained).toMatchObject({ type: "diagnosis", query: "pancakes type:pdf", mode: "find" })
+  expect((explained.diagnosis as { filters?: { filter: string; query: string }[] }).filters?.map((f) => [f.filter, f.query])).toEqual([["type", "pancakes"]])
+  // A query that finds something has nothing to explain; a search inline when asked to.
+  s.send({ id: 45, type: "explain", query: "pancakes", mode: "find" })
+  expect(await s.reply(45)).toEqual({ id: 45, type: "diagnosis", query: "pancakes", mode: "find" })
+  s.send({ id: 46, type: "search", query: "pancakes type:pdf", mode: "find", explain: true })
+  expect(((await s.reply(46)).response as { diagnosis?: { filters?: unknown[] } }).diagnosis?.filters).toHaveLength(1)
+  // A newer search supersedes an explanation.
+  s.send({ id: 47, type: "explain", query: "pancakes type:pdf", mode: "find" })
+  s.send({ id: 48, type: "search", query: "pancakes", mode: "find" })
+  const [first, second] = [await s.until((m) => m.id === 47 || m.id === 48), await s.until((m) => m.id === 47 || m.id === 48)]
+  expect([first, second].find((m) => m.id === 48)!.type).toBe("results")
+  expect(["cancelled", "diagnosis"]).toContain([first, second].find((m) => m.id === 47)!.type as string)
+
   // Rebuilding empties the index in place and indexes again.
   s.send({ id: 41, type: "index", rebuild: true })
   expect(await s.reply(41)).toEqual({ id: 41, type: "ok" })
