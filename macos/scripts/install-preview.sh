@@ -1,8 +1,7 @@
 #!/bin/bash
 # Install a GitHub-authenticated preview, without Apple credentials or quarantine.
 # Requires a current GitHub CLI (brew install gh); no GitHub login is needed.
-# Usage: install-preview.sh <main|PR-number> [--semantic] [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]
-# --semantic installs zsearch Semantic.app, the app with Semantic as its only search mode, instead.
+# Usage: install-preview.sh <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]
 set -euo pipefail
 umask 077
 
@@ -15,15 +14,14 @@ DEST=${ZSEARCH_APP_DIR:-$HOME/Applications}
 WHICH=${1:-}
 case "$WHICH" in
   main) CHANNEL=main; REF=refs/heads/main; EVENT=push ;;
-  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--semantic] [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]" ;;
+  ''|*[!0-9]*|0*) die "usage: $0 <main|PR-number> [--build RUN_ID-ATTEMPT] [--allow-downgrade] [--open]" ;;
   *) CHANNEL="pr-$WHICH"; REF="refs/pull/$WHICH/merge"; EVENT=pull_request ;;
 esac
 shift
 BUILD=; ALLOW_DOWNGRADE=0; OPEN=0
-APP=zsearch.app; APP_ID=io.github.dbuldum4.zsearch; PROCESS=ZSearch; VARIANT=
+APP=zsearch.app; APP_ID=io.github.dbuldum4.zsearch; PROCESS=ZSearch
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --semantic) APP="zsearch Semantic.app"; APP_ID=io.github.dbuldum4.zsearch.semantic; PROCESS=ZSearchSemantic; VARIANT=-semantic; shift ;;
     --open) OPEN=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --build) [ "$#" -ge 2 ] || die "--build needs RUN_ID-ATTEMPT"; BUILD=$2; shift 2 ;;
@@ -166,7 +164,7 @@ STATE_DIR="$DEST/.zsearch-preview-state"
 [ ! -L "$STATE_DIR" ] || die "refusing symlinked installation state"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
-STATE="$STATE_DIR/$CHANNEL$VARIANT"
+STATE="$STATE_DIR/$CHANNEL"
 OLD_NUMBER=0; OLD_ATTEMPT=0; OLD_DIGEST=
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   [ -f "$STATE" ] && [ ! -L "$STATE" ] || die "invalid installation state"
@@ -185,7 +183,7 @@ fi
 mkdir -p "$MOUNT"
 hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MOUNT" "$TMP/zsearch.dmg"
 MOUNTED=1
-[ -d "$MOUNT/$APP" ] && [ ! -L "$MOUNT/$APP" ] || die "missing app bundle${VARIANT:+ (this build has no $APP)}"
+[ -d "$MOUNT/$APP" ] && [ ! -L "$MOUNT/$APP" ] || die "missing app bundle"
 codesign --verify --deep --strict "$MOUNT/$APP"
 STAGE=$(mktemp -d "$DEST/.zsearch-stage.XXXXXX")
 ditto --noqtn "$MOUNT/$APP" "$STAGE/$APP"

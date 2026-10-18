@@ -764,6 +764,19 @@ export class SearchEngine {
   private usable: (UsableRows & { index: VectorIndex; config: Config; stamp: string }) | null = null
 
   /**
+   * How far semantic search has caught up with the files it should know: those with vectors made
+   * from their text as it is (`current`), and those still waiting for them (`pending`). Null when
+   * semantic search is off or cannot run (no model or helper, contents off).
+   */
+  semanticCoverage(): Omit<SemanticCoverage, "matched"> | null {
+    const snapshot = this.semanticIndex()
+    if ("index" in snapshot) return { files: snapshot.usable.files, current: snapshot.usable.current, pending: snapshot.usable.pending.size }
+    if (!snapshot.waiting) return null
+    const files = this.semanticFiles().sigs.size
+    return { files, current: 0, pending: files }
+  }
+
+  /**
    * Which passages of a snapshot may answer now (1): those of files the user may read by content
    * whose vectors were made from their text as it is (`semanticCandidates`), for the settings
    * and index as they are. The vectors of a file deleted, excluded, made names-only, changed, or
@@ -844,9 +857,12 @@ export class SearchEngine {
     const text = [...q.words, ...q.phrases].join(" ")
     const cat = this.catalog
     let check = policyFor(crawlOptionsFor(this.config))
+    // Code and data files are left out with their vectors when `semantic.code` is off, words
+    // included, unless the query asks for them by type.
+    const code = this.config.semantic.code || q.filters.kinds?.has("code") || q.filters.kinds?.has("data")
     const usable = (id: number): number | undefined => {
       const i = cat.indexOf(id)
-      return i !== undefined && cat.passes(i, q.filters) && !cat.isDir[i] && !semanticExcluded(cat.paths[i]!) ? i : undefined
+      return i !== undefined && cat.passes(i, q.filters) && !cat.isDir[i] && !semanticExcluded(cat.paths[i]!) && (code || (cat.kinds[i] !== "code" && cat.kinds[i] !== "data")) ? i : undefined
     }
 
     // Query Granite's vectors of files as they are; words stand in for the rest.

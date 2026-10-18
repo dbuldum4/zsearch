@@ -68,13 +68,6 @@ final class NoResultsHelpTests: XCTestCase {
         XCTAssertEqual(NoResultsHelp(nil, indexing: true).items.map(\.text), ["Indexing is still running: results may be incomplete."])
     }
 
-    func testQueriesLoseThePrefixTheAppAdded() throws {
-        let d = try diagnosis(#"{"filters":[{"filter":"type","query":"semantic:lease","count":2,"more":false}],"suggestion":"semantic:lease"}"#)
-        let help = NoResultsHelp(d, sentPrefix: "semantic:")
-        XCTAssertEqual(help.items.map(\.action), [.query("lease"), .query("lease")])
-        XCTAssertEqual(help.items[0].text, "2 results without the type filter.")
-    }
-
     func testEncodesTheRequest() throws {
         let json = String(decoding: try Request.explain(query: "a b", mode: .fuzzy).encoded(id: 7), as: UTF8.self)
         XCTAssertEqual(json, #"{"id":7,"limit":200,"mode":"fuzzy","query":"a b","type":"explain"}"#)

@@ -105,6 +105,16 @@ public struct IndexStats: Decodable, Hashable, Sendable {
     /// When a run last walked every folder, which the timed update goes by (older engines: nil).
     public var lastFullWalkAt: Double?
     public var roots: [String]
+    /// How far semantic search has caught up, or nil when it is off or cannot run.
+    public var semantic: SemanticCoverage?
+}
+
+/// The files semantic search should know: how many have vectors made from their text as it is
+/// (`current`), and how many still wait for them (`pending`).
+public struct SemanticCoverage: Decodable, Hashable, Sendable {
+    public var files: Int
+    public var current: Int
+    public var pending: Int
 }
 
 public struct IndexProgress: Decodable, Hashable, Sendable {

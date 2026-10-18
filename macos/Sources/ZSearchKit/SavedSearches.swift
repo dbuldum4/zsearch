@@ -62,12 +62,12 @@ public enum SavedSearches {
         return newest.query != q || newest.mode != mode
     }
 
-    /// A search as a menu item: its query, shortened, and its mode unless that is Find or the app
-    /// has only one mode.
-    public static func menuTitle(query: String, mode: Mode, showsMode: Bool = true) -> String {
+    /// A search as a menu item: its query, shortened, and its mode unless that is Semantic, the
+    /// app's own.
+    public static func menuTitle(query: String, mode: Mode) -> String {
         let q = normalized(query)
         let shown = q.count > 60 ? String(q.prefix(60)).trimmingCharacters(in: .whitespaces) + "…" : q
-        guard showsMode, mode != .find else { return shown }
+        guard mode != .semantic else { return shown }
         return "\(shown) · \(mode.rawValue.capitalized)"
     }
 }

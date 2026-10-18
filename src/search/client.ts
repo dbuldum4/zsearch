@@ -1,14 +1,13 @@
 import type { Config } from "../config.ts"
-import type { IndexStats } from "../index/db.ts"
 import type { SearchDiagnosis } from "./diagnose.ts"
 import type { Preview, SearchResponse } from "./engine.ts"
-import type { SearchIn, SearchOut } from "./protocol.ts"
+import type { SearchIn, SearchOut, StatsWithSemantic } from "./protocol.ts"
 import type { Mode } from "./query.ts"
 import type { ReadOptions, ReadResult } from "./read.ts"
 import { workerUrl } from "../util/workers.ts"
 
 export interface StatsReply {
-  stats: IndexStats
+  stats: StatsWithSemantic
 }
 
 /**

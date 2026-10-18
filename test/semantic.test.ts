@@ -819,6 +819,8 @@ describe("semantic index and search", () => {
       expect(r.strategy).toStartWith("semantic + words")
       expect(r.hits.map((h) => h.display)).not.toContain("notes/zz-picnic.txt")
       expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
+      // The app waits for this to reach 0 pending before first-run setup is done.
+      expect(e.semanticCoverage()).toEqual({ files: r.semantic!.files, current: r.semantic!.current, pending: 1 })
       const words = await e.search("quinoa", "semantic")
       expect(words.hits[0]!.display).toBe("notes/zz-picnic.txt")
       expect(words.semantic).toMatchObject({ pending: 1, matched: 1 })
@@ -828,6 +830,20 @@ describe("semantic index and search", () => {
       rmSync(join(corpus.home, "notes/zz-picnic.txt"), { force: true })
       await new Indexer(db, config, { inProcess: true }).run()
       expect((await semantic()).status).toBe("done")
+    }
+  })
+
+  test("coverage: null with semantic search off, every file pending before the first pass", async () => {
+    const e = engine()
+    try {
+      e.config = { ...config, semantic: { ...config.semantic, enabled: false } }
+      expect(e.semanticCoverage()).toBeNull()
+      e.config = config
+      const done = e.semanticCoverage()!
+      expect(done.files).toBeGreaterThan(0)
+      expect(done).toEqual({ files: done.files, current: done.files, pending: 0 })
+    } finally {
+      e.closeSemantic()
     }
   })
 
@@ -865,6 +881,30 @@ describe("semantic index and search", () => {
       rmSync(join(corpus.home, "notes/fleet.txt"), { force: true })
       rmSync(join(corpus.home, "private"), { recursive: true, force: true })
       rmSync(join(corpus.home, "code/cars.py"), { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
+
+  test("with semantic.code off, code files stay out of the semantic tab, word matches too, unless asked for by type", async () => {
+    corpus.write("code/garage.py", "# sedan tyres: rotate the sedan tyres\nclass Garage:\n    pass\n")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect((await semantic()).status).toBe("done")
+    const e = engine()
+    const shown = async (query: string, settings: Config) => {
+      e.config = settings
+      return (await e.search(query, "semantic")).hits.map((h) => h.display)
+    }
+    try {
+      expect(await shown("sedan tyres", config)).not.toContain("code/garage.py")
+      expect(await shown("sedan tyres type:code", config)).toContain("code/garage.py")
+      expect(await shown("sedan tyres", { ...config, semantic: { ...config.semantic, code: true } })).toContain("code/garage.py")
+      // Find still finds it.
+      e.config = config
+      expect((await e.search("sedan tyres", "find")).hits.map((h) => h.display)).toContain("code/garage.py")
+    } finally {
+      e.closeSemantic()
+      rmSync(join(corpus.home, "code/garage.py"), { force: true })
       await new Indexer(db, config, { inProcess: true }).run()
       expect((await semantic()).status).toBe("done")
     }

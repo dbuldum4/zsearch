@@ -406,6 +406,11 @@ export class Indexer {
     // retries: it reaches every failed recording, and restarts the wait for all of them.
     const retrySpeech = !targets && Date.now() - Number(getMeta(this.db, "transcription_attempt_at") ?? "0") >= 60 * 60_000
     let attemptedSpeech = false
+    // Images whose OCR ran out of time (a recognizer that hung, say) are read again the same way.
+    const retryOcr = !targets && this.ocrTool !== null && Date.now() - Number(getMeta(this.db, "ocr_attempt_at") ?? "0") >= 60 * 60_000
+    const ocrTimedOut = retryOcr
+      ? new Set((this.db.query("SELECT id FROM files WHERE content_state = ? AND kind = 'image' AND (note = 'timed out' OR note LIKE 'OCR timed out%')").values(ContentState.Error) as number[][]).map((r) => r[0]!))
+      : new Set<number>()
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }
     const resolveTargets = this.config.followSymlinks || crawlOpts.roots.some((root) => { try { return realpathSync(root) !== root } catch { return false } })
@@ -471,7 +476,7 @@ export class Indexer {
         const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir && prev.sourcePath === storedSource && (!prev.ino || (prev.ino === e.ino && prev.dev === e.dev))
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
-          if (wants && (prev.state === ContentState.None || policyChanged || (TRANSCRIBE_EXTS.has(ext) && (speechChanged || (retrySpeech && prev.state === ContentState.Error)))))
+          if (wants && (prev.state === ContentState.None || policyChanged || (TRANSCRIBE_EXTS.has(ext) && (speechChanged || (retrySpeech && prev.state === ContentState.Error))) || ocrTimedOut.has(prev.id)))
             batch.push(() => {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
               waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
@@ -541,6 +546,7 @@ export class Indexer {
       setMeta(this.db, "transcription_policy", speechPolicy)
       // New recordings must not postpone the retry window for older failed recordings.
       if (attemptedSpeech && retrySpeech) setMeta(this.db, "transcription_attempt_at", String(Date.now()))
+      if (ocrTimedOut.size) setMeta(this.db, "ocr_attempt_at", String(Date.now()))
     }).immediate()
     this.progress.removed = removed.length
     return removed

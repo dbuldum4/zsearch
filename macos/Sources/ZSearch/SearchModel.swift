@@ -21,7 +21,8 @@ final class SearchModel {
         // Semantic search runs the model on the query: wait for a pause in typing.
         didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.1 : 0.016) } }
     }
-    var mode: Mode = Edition.semanticOnly ? .semantic : .find {
+    /// Semantic, which the app is built around, unless switched for this session.
+    var mode: Mode = .semantic {
         didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
     }
     var selection: SearchHit.ID? {
@@ -79,6 +80,11 @@ final class SearchModel {
     /// The run going updates the files that changed only: an update asked for follows it.
     private(set) var refreshingChangedFiles = false
     private(set) var firstRun = false
+    /// First-run setup is over (see `SetupGate`): until then the window shows its progress instead
+    /// of search. Kept, so later updates never hide search again.
+    private(set) var setupComplete = UserDefaults.standard.bool(forKey: AppSettings.setupComplete)
+    /// Why the model download failed, until it is tried again.
+    private(set) var installError: String?
     private(set) var notice: String?
     private(set) var engineFailure: String?
     /// Settings changed that only apply after the next index update.
@@ -125,7 +131,7 @@ final class SearchModel {
 
     var hits: [SearchHit] { response?.hits ?? [] }
     /// Why the query as it is now found nothing, when the engine has said.
-    var currentDiagnosis: SearchDiagnosis? { NoResultsHelp.current(diagnosis, sentQuery: Self.sent(query), mode: mode) }
+    var currentDiagnosis: SearchDiagnosis? { NoResultsHelp.current(diagnosis, sentQuery: query, mode: mode) }
     var selectedHit: SearchHit? { hits.first { $0.id == selection } }
 
     /// A preview is for a file as the result list shows it: one changed on disk since (or whose
@@ -156,11 +162,6 @@ final class SearchModel {
     }
 
     // MARK: - Engine
-
-    /// The query text sent to the engine. The semantic-only app never lets a prefix switch modes.
-    private static func sent(_ query: String) -> String {
-        Edition.semanticOnly ? QueryFilters.semanticOnly(query) : query
-    }
 
     /// The engine binary: in debug builds $ZSEARCH_ENGINE when set (`swift run`), else the one
     /// inside the app bundle. A released app never runs a binary named by its environment.
@@ -255,16 +256,18 @@ final class SearchModel {
         case let .ready(ready):
             config = ready.config
             firstRun = ready.firstRun
-            mode = Edition.semanticOnly ? .semantic : Mode(rawValue: ready.config.defaultMode) ?? .find
             Task {
                 await refreshStats()
                 await refreshSemantic()
                 await refreshSearches()
-                // Semantic search's Granite model downloads when the app starts, unless it was turned off.
-                // The semantic-only app always downloads it: it has no other way to search.
-                if let s = semantic, !s.declined || Edition.semanticOnly, !s.model.ready { installSemantic() }
+                // Semantic search's Granite model downloads when the app starts: search is built on it.
+                if let s = semantic, s.helper != nil, !s.model.ready { installSemantic() }
+                checkSetup()
                 if ready.firstRun {
                     showSetup = true
+                } else if !setupComplete {
+                    // Setup carries on where it stopped (an earlier launch, or Only when I ask).
+                    if !indexing { startIndex() }
                 } else if indexIsStale {
                     startIndex(background: true)
                 }
@@ -300,6 +303,7 @@ final class SearchModel {
             Task {
                 await refreshStats()
                 await refreshSemantic()
+                checkSetup(after: done)
             }
             scheduleSearch(delay: 0)
             if followUp { startIndex() }
@@ -347,7 +351,7 @@ final class SearchModel {
         guard let engine else { return }
         let (query, mode) = (self.query, self.mode)
         do {
-            guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode, groupDuplicates: UserDefaults.standard.object(forKey: AppSettings.groupDuplicates) as? Bool ?? true)) else { return }
+            guard case let .results(r) = try await engine.request(.search(query: query, mode: mode, groupDuplicates: UserDefaults.standard.object(forKey: AppSettings.groupDuplicates) as? Bool ?? true)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // The explanation was for the index as it was: a refresh asks again after the delay.
             diagnosis = nil
@@ -374,7 +378,7 @@ final class SearchModel {
     private func scheduleExplain() {
         explainTask?.cancel()
         explainTask = nil
-        let (sent, mode) = (Self.sent(query), self.mode)
+        let (sent, mode) = (query, self.mode)
         guard NoResultsHelp.shouldExplain(response, sentQuery: sent, mode: mode), let engine else { return }
         explainTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(NoResultsHelp.explainDelay * 1_000_000_000))
@@ -410,7 +414,7 @@ final class SearchModel {
             return
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
-        let request = Request.preview(file: hit.id, query: Self.sent(query), mode: mode, focusLine: focus)
+        let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: focus)
         let epoch = previewEpoch
         previewTask = Task { [weak self] in
             let reply = try? await engine.request(request)
@@ -457,7 +461,7 @@ final class SearchModel {
             guard !Task.isCancelled else { return }
             // Each with its hit's first matching line, as `loadPreview` asks: the engine cannot always
             // find the match itself (a typo-tolerant one, say) and would show the top of the file.
-            let request = Request.previews(files: keys.map(\.file), query: Self.sent(query), mode: mode, focusLines: keys.map(\.focus))
+            let request = Request.previews(files: keys.map(\.file), query: query, mode: mode, focusLines: keys.map(\.focus))
             guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
             guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
             let byFile = Dictionary(keys.map { ($0.file, $0) }, uniquingKeysWith: { first, _ in first })
@@ -575,7 +579,7 @@ final class SearchModel {
     /// Search again as before: the query, with its filters and sorting, in its mode.
     func restore(query: String, mode: Mode) {
         // The mode first: the query's search waits as long as the mode needs.
-        if !Edition.semanticOnly { self.mode = mode }
+        self.mode = mode
         self.query = query
         requestSearchFocus()
     }
@@ -635,11 +639,24 @@ final class SearchModel {
         if case let .semantic(s)? = try? await engine.request(.semanticStatus) { semantic = s }
     }
 
+    /// Setup is done once the index is ready to search (`SetupGate`), or `done`, the run that just
+    /// finished, completed it. Search shows from then on.
+    private func checkSetup(after done: IndexDone? = nil) {
+        guard !setupComplete, !firstRun else { return }
+        let ready = SetupGate.isReady(stats: stats, semantic: semantic, contentsOn: config?.content.enabled ?? true, indexing: indexing)
+        guard ready || done.map({ SetupGate.completes($0, semantic: semantic) }) == true else { return }
+        setupComplete = true
+        UserDefaults.standard.set(true, forKey: AppSettings.setupComplete)
+        scheduleSearch(delay: 0)
+        requestSearchFocus()
+    }
+
     /// Download Granite and turn semantic search on; the engine then reads the files for it.
     func installSemantic() {
         guard let engine, !downloadingModel else { return }
         downloadingModel = true
         semanticDownload = nil
+        installError = nil
         Task {
             defer {
                 downloadingModel = false
@@ -648,10 +665,14 @@ final class SearchModel {
             do {
                 let reply = try await engine.request(.semanticInstall)
                 if case let .semantic(s) = reply { semantic = s }
-                if case let .error(text) = reply { show(text) }
+                if case let .error(text) = reply {
+                    installError = text
+                    show(text)
+                }
                 if case let .config(c)? = try? await engine.request(.config) { config = c }
                 scheduleSearch(delay: 0)
             } catch {
+                installError = error.localizedDescription
                 show(error.localizedDescription)
             }
         }
@@ -660,21 +681,6 @@ final class SearchModel {
     func cancelSemanticInstall() {
         guard let engine else { return }
         Task { _ = try? await engine.request(.semanticCancelInstall) }
-    }
-
-    func removeSemantic() {
-        guard let engine else { return }
-        Task {
-            do {
-                let reply = try await engine.request(.semanticRemove)
-                if case let .semantic(s) = reply { semantic = s }
-                if case let .error(text) = reply { show(text) }
-                if case let .config(c)? = try? await engine.request(.config) { config = c }
-                if mode == .semantic { scheduleSearch(delay: 0) }
-            } catch {
-                show(error.localizedDescription)
-            }
-        }
     }
 
     /// `background`: the app started it on its own, so a big one may wait on power.
@@ -781,10 +787,10 @@ final class SearchModel {
     }
 
     /// Save what to index (first run or File › Choose Folders…) and start indexing. With
-    /// "Only when I ask", a later change waits for Update Index, as other settings do.
+    /// "Only when I ask", a change after setup waits for Update Index, as other settings do.
     func applySetup(roots: [String], readContents: Bool) {
         guard let engine else { return }
-        let waits = !firstRun && manualIndexing
+        let waits = setupComplete && manualIndexing
         let cancellation = indexCancellationGeneration
         settingsRevision += 1
         Task {
@@ -972,7 +978,7 @@ final class SearchModel {
             return
         }
         // The preview holds the lines around its focus only: ask for the ones around the target.
-        let request = Request.preview(file: p.id, query: Self.sent(key.query), mode: key.mode, focusLine: target)
+        let request = Request.preview(file: p.id, query: key.query, mode: key.mode, focusLine: target)
         let epoch = previewEpoch
         previewTask?.cancel()
         previewTask = Task { [weak self] in

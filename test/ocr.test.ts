@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { openDb } from "../src/index/db.ts"
+import { ContentState, openDb } from "../src/index/db.ts"
 import { DEFAULT_EXTRACT, extract, wantsContent } from "../src/index/extract/index.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { ocrToolPath } from "../src/platform.ts"
@@ -58,6 +58,19 @@ describe("OCR", () => {
     expect(r.status === "ok" && r.text.split("\f")).toEqual(["", "Calvin cycle on the second page", "", "Krebs cycle on the fourth page"])
   })
 
+  test("a helper whose accurate recognizer hangs is asked for fast recognition, then and from then on", async () => {
+    const log = join(dir, "hung.log")
+    const hung = join(dir, "hung-ocr")
+    writeFileSync(hung, `#!/bin/sh\necho "$*" >> "${log}"\ncase "$*" in *--fast*) echo "Fast read of $(basename "$2")" ;; *) exit 75 ;; esac\n`)
+    chmodSync(hung, 0o755)
+    const img = join(dir, "hung.png")
+    writeFileSync(img, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]))
+    const opts = { ...DEFAULT_EXTRACT, ocrTool: hung }
+    expect(await extract(img, statSync(img).size, "png", "image", opts)).toEqual({ status: "ok", text: "Fast read of hung.png", truncated: false })
+    expect(await extract(img, statSync(img).size, "png", "image", opts)).toEqual({ status: "ok", text: "Fast read of hung.png", truncated: false })
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([`image ${img}`, `image ${img} --fast`, `image ${img} --fast`])
+  })
+
   test("ZSEARCH_OCR names the helper, and 0 turns it off", () => {
     const before = process.env.ZSEARCH_OCR
     try {
@@ -108,6 +121,36 @@ describe("indexing with OCR", () => {
     off.content.ocr = false
     await new Indexer(db, off, { inProcess: true }).run()
     expect(await found()).toEqual([])
+    db.close()
+  })
+
+  test("images whose OCR timed out are read again by the next full walk", async () => {
+    const file = join(corpus.home, ".zsearch-data", "index.db")
+    const db = openDb(file)
+    const engine = new SearchEngine(openDb(file), homeConfig())
+    const found = async () => (await engine.search("receipt total", "find")).hits.map((h) => h.display)
+    // The same helper (another one would change the content policy and read everything again):
+    // killed, as a timeout kills it, until it is told to work.
+    const works = join(dir, "works")
+    const flaky = join(dir, "flaky-ocr")
+    writeFileSync(flaky, `#!/bin/sh\n[ -e "${works}" ] || kill -9 $$\necho "Receipt total 42.00 from $(basename "$2")"\n`)
+    chmodSync(flaky, 0o755)
+    process.env.ZSEARCH_OCR = flaky
+    await new Indexer(db, homeConfig(), { inProcess: true }).run()
+    expect(await found()).toEqual([])
+    expect(db.query("SELECT note FROM files WHERE path LIKE '%holiday-beach.jpg'").get()).toEqual({ note: expect.stringContaining("timed out") })
+
+    writeFileSync(works, "")
+    await new Indexer(db, homeConfig(), { inProcess: true }).run()
+    expect(await found()).toEqual(["Pictures/holiday-beach.jpg"])
+
+    // At most once an hour: a file that keeps timing out is not read on every walk.
+    rmSync(works)
+    db.query("UPDATE files SET content_state = ?, note = 'timed out' WHERE path LIKE '%holiday-beach.jpg'").run(ContentState.Error)
+    const attempts = () => db.query("SELECT value FROM meta WHERE key = 'ocr_attempt_at'").get()
+    const before = attempts()
+    await new Indexer(db, homeConfig(), { inProcess: true }).run()
+    expect(attempts()).toEqual(before)
     db.close()
   })
 })

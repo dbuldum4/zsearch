@@ -22,8 +22,8 @@ final class QuickPanel: NSObject, NSWindowDelegate {
     }
 
     func show(_ model: SearchModel) {
-        // Choosing what to index needs the main window.
-        if model.firstRun || model.showSetup || model.engineFailure != nil { return model.showMainWindow() }
+        // Choosing what to index, and setup's progress, need the main window.
+        if model.firstRun || model.showSetup || !model.setupComplete || model.engineFailure != nil { return model.showMainWindow() }
         let panel = self.panel ?? make(model)
         self.panel = panel
         if !panel.isVisible { place(panel) }
@@ -149,11 +149,9 @@ struct PanelShortcuts: View {
         }
         Group {
             Button("Search Field") { model.requestSearchFocus() }.keyboardShortcut("l")
-            if !Edition.semanticOnly {
-                Button("Find") { model.mode = .find }.keyboardShortcut("1")
-                Button("Fuzzy") { model.mode = .fuzzy }.keyboardShortcut("2")
-                Button("Semantic") { model.mode = .semantic }.keyboardShortcut("3")
-            }
+            Button("Semantic") { model.mode = .semantic }.keyboardShortcut("1")
+            Button("Find") { model.mode = .find }.keyboardShortcut("2")
+            Button("Fuzzy") { model.mode = .fuzzy }.keyboardShortcut("3")
             Button("Next Result") { model.moveSelection(by: 1) }.keyboardShortcut("j")
             Button("Previous Result") { model.moveSelection(by: -1) }.keyboardShortcut("k")
             Button("Select All Results") { model.selectAllResults() }.keyboardShortcut("a", modifiers: [.command, .shift])

@@ -22,14 +22,29 @@ async function memoOcr(memo: OcrMemo | undefined, tool: string, args: string[], 
   return r.text
 }
 
+/**
+ * The helper's exit status when Vision's accurate recognizer did not answer in time. On some macOS
+ * builds it never does, and a hung request stalls every later one in the same process, so the
+ * helper gives up on it and leaves the retry to us.
+ */
+export const OCR_ACCURATE_HUNG = 75
+
+/** Helpers whose accurate recognizer hung: they read with `--fast` from then on. */
+const fastOnly = new Set<string>()
+
 /** Run the OCR helper (`zsearch-ocr`, see `ocrToolPath`) and return what it prints, and whether that is all of it. */
 async function runOcr(tool: string, args: string[], timeoutMs: number, partial = false): Promise<{ text: string; complete: boolean }> {
-  const p = trackProcess(Bun.spawn([tool, ...args], { stdout: "pipe", stderr: "pipe" }))
+  const fast = fastOnly.has(tool)
+  const p = trackProcess(Bun.spawn([tool, ...args, ...(fast ? ["--fast"] : [])], { stdout: "pipe", stderr: "pipe" }))
   const timer = setTimeout(() => p.kill(), timeoutMs)
   try {
     const [out, err, code] = await Promise.all([cappedText(p.stdout, 8 * 1024 * 1024, () => p.kill()), cappedText(p.stderr, 8192, () => p.kill()), p.exited])
     if (p.signalCode && !(partial && out.includes("\f"))) throw new Error(`OCR timed out after ${timeoutMs / 1000}s`)
     if (p.signalCode && partial) return { text: out.slice(0, out.lastIndexOf("\f")), complete: false }
+    if (code === OCR_ACCURATE_HUNG && !fast) {
+      fastOnly.add(tool)
+      return runOcr(tool, args, timeoutMs, partial)
+    }
     if (code !== 0) throw new Error(`OCR failed (${code}): ${err.trim().slice(0, 200)}`)
     return { text: out, complete: true }
   } finally {

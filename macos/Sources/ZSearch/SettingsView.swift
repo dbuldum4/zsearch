@@ -19,12 +19,6 @@ struct SettingsView: View {
     }
 }
 
-/// Which app this is: the full app, or the semantic-only one (`ZSearchSemanticOnly` in its Info.plist),
-/// which has Semantic as its one search mode. Both run the same engine on the same index.
-enum Edition {
-    static let semanticOnly = Bundle.main.object(forInfoDictionaryKey: "ZSearchSemanticOnly") as? Bool ?? false
-}
-
 /// Preferences that belong to the app (not the engine), kept in UserDefaults.
 enum AppSettings {
     static let showMenuBarItem = "showMenuBarItem"
@@ -47,6 +41,8 @@ enum AppSettings {
     static let editor = "editor"
     /// What the global shortcut shows (see `ShortcutTarget`).
     static let shortcutOpens = "shortcutOpens"
+    /// First-run setup finished: search no longer waits for indexing (see `SetupGate`).
+    static let setupComplete = "setupComplete"
 }
 
 /// What the global shortcut shows.
@@ -74,15 +70,6 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            if !Edition.semanticOnly {
-                Picker("Search mode at start", selection: defaultMode) {
-                    Text("Find (exact text, /regex/)").tag(Mode.find)
-                    Text("Fuzzy (forgiving names)").tag(Mode.fuzzy)
-                    if model.config?.semantic?.enabled == true {
-                        Text("Semantic (describe what you're looking for)").tag(Mode.semantic)
-                    }
-                }
-            }
             Toggle("Keep recent searches", isOn: searchHistory)
             Text("Searches a result was opened from, in the bookmark menu. Off, nothing new is kept or shown; earlier ones stay until cleared (zsearch history clear).")
                 .font(.caption)
@@ -139,13 +126,6 @@ private struct GeneralSettings: View {
         EditorApp.known.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil }
     }
 
-    private var defaultMode: Binding<Mode> {
-        Binding(
-            get: { Mode(rawValue: model.config?.defaultMode ?? "find") ?? .find },
-            set: { model.updateConfig(ConfigPatch(defaultMode: $0.rawValue), reindex: false) }
-        )
-    }
-
     private var searchHistory: Binding<Bool> {
         Binding(
             get: { model.config?.searchHistory ?? true },
@@ -169,12 +149,11 @@ private struct GeneralSettings: View {
 /// Semantic search uses Granite locally after its current index is complete.
 private struct SemanticSettings: View {
     @Environment(SearchModel.self) private var model
-    @State private var confirmRemove = false
 
     var body: some View {
         Form {
             Section {
-                Text("Finds files by what they are about, not only by their words: “the lease for the flat in Lisbon”. It runs on this Mac with IBM's Granite embedding model (Apache 2.0), downloaded when zsearch starts. Granite reads stored text in the background. Word matches remain available until semantic indexing finishes. Results mix meaning with your words, using DigUp's ranking. Find and Fuzzy don't need it.")
+                Text("Finds files by what they are about, not only by their words: “the lease for the flat in Lisbon”. It runs on this Mac with IBM's Granite embedding model (Apache 2.0), downloaded when zsearch first starts. Granite reads new and changed files in the background. Results mix meaning with your words, using DigUp's ranking. Find and Fuzzy, in the search bar, don't need it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let s = model.semantic {
@@ -202,16 +181,8 @@ private struct SemanticSettings: View {
                         }
                         Toggle("Source code and data files", isOn: semanticFlag(\.code))
                             .help("Off by default: words find code better than meaning does.")
-                        HStack {
-                            Button("Build Semantic Index Only") { model.buildMeaningIndex() }
-                                .disabled(model.indexing || s.blocked != nil)
-                            Spacer()
-                            // The semantic-only app downloads the model again at its next start.
-                            if !Edition.semanticOnly {
-                                Button("Turn Off and Delete Model…", role: .destructive) { confirmRemove = true }
-                                    .disabled(model.indexing)
-                            }
-                        }
+                        Button("Build Semantic Index Only") { model.buildMeaningIndex() }
+                            .disabled(model.indexing || s.blocked != nil)
                         Text("Builds only the semantic index from text earlier updates already read. It does not scan folders or rebuild the word index, so the word index only changes when you run a full update.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -250,11 +221,6 @@ private struct SemanticSettings: View {
         }
         .formStyle(.grouped)
         .onAppear { Task { await model.refreshSemantic() } }
-        .confirmationDialog("Turn off semantic search?", isPresented: $confirmRemove) {
-            Button("Turn Off and Delete", role: .destructive) { model.removeSemantic() }
-        } message: {
-            Text("The model and what was read for semantic search are deleted, and it is no longer downloaded when zsearch starts. Find and Fuzzy keep working.")
-        }
     }
 
     private func semanticFlag(_ path: WritableKeyPath<SemanticConfig, Bool>) -> Binding<Bool> {

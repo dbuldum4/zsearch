@@ -19,20 +19,25 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            SearchBar(focused: $searchFocused)
-            FilterBar()
-            Divider()
-            if let failure = model.engineFailure {
-                EngineFailureView(message: failure)
+            // Until first-run setup is done, the window shows its progress instead of search.
+            if !model.setupComplete, model.engineFailure == nil, !isPanel {
+                SetupProgressView()
             } else {
-                SplitPanes {
-                    ResultsList()
-                } right: {
-                    PreviewPane(isPanel: isPanel)
+                SearchBar(focused: $searchFocused)
+                FilterBar()
+                Divider()
+                if let failure = model.engineFailure {
+                    EngineFailureView(message: failure)
+                } else {
+                    SplitPanes {
+                        ResultsList()
+                    } right: {
+                        PreviewPane(isPanel: isPanel)
+                    }
                 }
+                Divider()
+                StatusBar()
             }
-            Divider()
-            StatusBar()
         }
         .background { if isPanel { PanelShortcuts() } }
         // The setup sheet belongs to the main window.
@@ -50,6 +55,8 @@ struct ContentView: View {
             model.openProblemsWindow = { open(id: "problems") }
         }
         .onChange(of: model.focusRequest) { searchFocused = true }
+        // The search field appears with this change: focus it once it is there.
+        .onChange(of: model.setupComplete) { Task { @MainActor in searchFocused = true } }
         // Quick Look is driven from the window it was opened in.
         .quickLookPreview(isPanel == model.quickLookInPanel ? $model.quickLookURL : .constant(nil), in: model.quickLookItems)
     }
@@ -65,7 +72,7 @@ struct SearchBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search names and contents   ext:pdf  in:~/Documents  /regex/", text: $model.query)
+            TextField(placeholder, text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused(focused)
@@ -90,20 +97,26 @@ struct SearchBar: View {
                     return .handled
                 }
             SearchesMenu()
-            if !Edition.semanticOnly {
-                Picker("Mode", selection: $model.mode) {
-                    Text("Find").tag(Mode.find)
-                    Text("Fuzzy").tag(Mode.fuzzy)
-                    Text("Semantic").tag(Mode.semantic)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .help("Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching. Semantic: files about what you describe (turn it on in Settings › Semantic).")
+            Picker("Mode", selection: $model.mode) {
+                Text("Semantic").tag(Mode.semantic)
+                Text("Find").tag(Mode.find)
+                Text("Fuzzy").tag(Mode.fuzzy)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Semantic: files about what you describe. Find: exact text in names and contents (/…/ for a regex). Fuzzy: forgiving name matching.")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    private var placeholder: String {
+        switch model.mode {
+        case .semantic: return "Describe what you're looking for   ext:pdf  in:~/Documents"
+        case .find: return "Search names and contents   ext:pdf  in:~/Documents  /regex/"
+        case .fuzzy: return "Search file names"
+        }
     }
 }
 
@@ -199,7 +212,7 @@ private struct NoResultsNote: View {
                 Text("No recent files")
                     .foregroundStyle(.secondary)
             } else {
-                NoResultsHelpView(help: NoResultsHelp(model.currentDiagnosis, sentPrefix: Edition.semanticOnly ? "semantic:" : "", indexing: model.indexing))
+                NoResultsHelpView(help: NoResultsHelp(model.currentDiagnosis, indexing: model.indexing))
             }
         }
     }

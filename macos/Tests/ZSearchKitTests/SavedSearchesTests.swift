@@ -48,10 +48,10 @@ final class SavedSearchesTests: XCTestCase {
     }
 
     func testMenuTitles() {
-        XCTAssertEqual(SavedSearches.menuTitle(query: "budget", mode: .find), "budget")
+        XCTAssertEqual(SavedSearches.menuTitle(query: "budget", mode: .semantic), "budget")
+        XCTAssertEqual(SavedSearches.menuTitle(query: "budget", mode: .find), "budget · Find")
         XCTAssertEqual(SavedSearches.menuTitle(query: "budget", mode: .fuzzy), "budget · Fuzzy")
-        XCTAssertEqual(SavedSearches.menuTitle(query: "budget", mode: .semantic, showsMode: false), "budget")
-        XCTAssertTrue(SavedSearches.menuTitle(query: String(repeating: "a", count: 80), mode: .find).hasSuffix("…"))
+        XCTAssertTrue(SavedSearches.menuTitle(query: String(repeating: "a", count: 80), mode: .semantic).hasSuffix("…"))
     }
 
     func testRequestsAndReplies() throws {

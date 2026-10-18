@@ -117,7 +117,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
       }
       case "stats": {
         if (!engine) break
-        send({ type: "stats", qid: msg.qid, stats: indexStats(engine.db, dbPath) })
+        send({ type: "stats", qid: msg.qid, stats: { ...indexStats(engine.db, dbPath), semantic: engine.semanticCoverage() } })
         break
       }
     }

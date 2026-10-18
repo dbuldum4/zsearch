@@ -24,7 +24,7 @@ struct SearchesMenu: View {
             if !recent.isEmpty {
                 Section("Recent Searches") {
                     ForEach(recent.prefix(12)) { entry in
-                        Button(SavedSearches.menuTitle(query: entry.query, mode: entry.mode, showsMode: !Edition.semanticOnly)) {
+                        Button(SavedSearches.menuTitle(query: entry.query, mode: entry.mode)) {
                             model.restore(query: entry.query, mode: entry.mode)
                         }
                     }
@@ -97,7 +97,7 @@ struct ManageSearchesView: View {
                         Text(saved.name)
                             .fontWeight(.medium)
                             .lineLimit(1)
-                        Text(SavedSearches.menuTitle(query: saved.query, mode: saved.mode, showsMode: !Edition.semanticOnly))
+                        Text(SavedSearches.menuTitle(query: saved.query, mode: saved.mode))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

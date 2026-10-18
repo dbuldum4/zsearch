@@ -1,9 +1,12 @@
 import type { Config } from "../config.ts"
 import type { IndexStats } from "../index/db.ts"
 import type { SearchDiagnosis } from "./diagnose.ts"
-import type { Preview, SearchResponse } from "./engine.ts"
+import type { Preview, SearchResponse, SemanticCoverage } from "./engine.ts"
 import type { Mode } from "./query.ts"
 import type { ReadOptions, ReadResult } from "./read.ts"
+
+/** Index stats, with how far semantic search has caught up (`SearchEngine.semanticCoverage`). */
+export type StatsWithSemantic = IndexStats & { semantic: Omit<SemanticCoverage, "matched"> | null }
 
 export type SearchIn =
   | { type: "init"; dbPath: string; config: Config }
@@ -26,6 +29,6 @@ export type SearchOut =
   | { type: "preview"; qid: number; preview: Preview }
   | { type: "previews"; qid: number; previews: Preview[] }
   | { type: "refreshed"; files: number; changed: boolean }
-  | { type: "stats"; qid: number; stats: IndexStats }
+  | { type: "stats"; qid: number; stats: StatsWithSemantic }
   | { type: "read"; qid: number; result: ReadResult | null; error?: string }
   | { type: "error"; qid?: number; error: string }

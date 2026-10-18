@@ -1,12 +1,13 @@
 // zsearch-ocr: reads the text in images and in scanned PDF pages with the Vision framework.
 // The engine runs it from the app bundle (Contents/Helpers) while indexing.
 //
-//   zsearch-ocr image <path>                       the text in an image
-//   zsearch-ocr pdf <path> [--max-pages N]          every page, separated by form feeds: the text
+//   zsearch-ocr image <path> [--fast]               the text in an image
+//   zsearch-ocr pdf <path> [--max-pages N] [--fast] every page, separated by form feeds: the text
 //                                                   OCR reads on pages without text of their own,
 //                                                   and nothing on the others
 //
 // Exits with 0 and prints the text (possibly nothing), or exits with 1 and an error on stderr.
+// Exits with 75 when the accurate recognizer did not answer in time: read again with --fast.
 #if os(macOS)
 import AppKit
 import Foundation
@@ -18,13 +19,33 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
-/// Lines of text Vision recognizes, top to bottom.
-func recognize(_ handler: VNImageRequestHandler) throws -> String {
+/// How long the accurate recognizer gets per image or page. On some macOS builds it never
+/// answers, and a request stuck in it holds up every later one in this process, fast ones too.
+let accurateDeadline = 20
+let accurateHung: Int32 = 75
+
+/// Lines of text Vision recognizes, top to bottom. `fast`: Vision's fast recognizer, which has no
+/// deadline here (the engine still has its own).
+func recognize(_ handler: VNImageRequestHandler, fast: Bool) throws -> String {
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
+    request.recognitionLevel = fast ? .fast : .accurate
     request.usesLanguageCorrection = true
     request.automaticallyDetectsLanguage = true
-    try handler.perform([request])
+    if fast {
+        try handler.perform([request])
+    } else {
+        let done = DispatchSemaphore(value: 0)
+        var failure: Error?
+        DispatchQueue.global(qos: .utility).async {
+            do { try handler.perform([request]) } catch { failure = error }
+            done.signal()
+        }
+        if done.wait(timeout: .now() + .seconds(accurateDeadline)) == .timedOut {
+            FileHandle.standardError.write(Data("accurate text recognition did not finish in \(accurateDeadline)s\n".utf8))
+            exit(accurateHung)
+        }
+        if let failure { throw failure }
+    }
     let observations = request.results ?? []
     // Vision reports lines in reading order for one column; sort top to bottom, then left to right,
     // so lines on the same row stay together.
@@ -67,13 +88,14 @@ func hasText(_ page: PDFPage) -> Bool {
 setpriority(PRIO_PROCESS, 0, 10)
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { fail("usage: zsearch-ocr image <path> | pdf <path> [--max-pages N]") }
+guard args.count >= 3 else { fail("usage: zsearch-ocr image <path> [--fast] | pdf <path> [--max-pages N] [--fast]") }
 let url = URL(fileURLWithPath: args[2])
+let fast = args.dropFirst(3).contains("--fast")
 
 switch args[1] {
 case "image":
     do {
-        print(try recognize(VNImageRequestHandler(url: url)))
+        print(try recognize(VNImageRequestHandler(url: url), fast: fast))
     } catch {
         fail("could not read the image: \(error.localizedDescription)")
     }
@@ -92,7 +114,7 @@ case "pdf":
         // Each page in a pool of its own: rendered pages are large.
         let text: String = autoreleasepool {
             guard let image = render(page) else { return "" }
-            return (try? recognize(VNImageRequestHandler(cgImage: image))) ?? ""
+            return (try? recognize(VNImageRequestHandler(cgImage: image), fast: fast)) ?? ""
         }
         // Stream complete pages, so a deadline preserves everything already recognized.
         FileHandle.standardOutput.write(Data((text + "\u{0C}").utf8))

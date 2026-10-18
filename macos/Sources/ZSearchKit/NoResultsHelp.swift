@@ -67,13 +67,9 @@ public struct NoResultsHelp: Hashable, Sendable {
 
     public var items: [Item] = []
 
-    /// `sentPrefix`: what the app puts before the typed query when it sends it (`semantic:` in the
-    /// semantic-only app), taken off the engine's queries again. `indexing`: the app is running an update.
-    public init(_ diagnosis: SearchDiagnosis?, sentPrefix: String = "", indexing: Bool = false) {
+    /// `indexing`: the app is running an update.
+    public init(_ diagnosis: SearchDiagnosis?, indexing: Bool = false) {
         let d = diagnosis
-        func typed(_ query: String) -> String {
-            !sentPrefix.isEmpty && query.hasPrefix(sentPrefix) ? String(query.dropFirst(sentPrefix.count)) : query
-        }
         for f in d?.folders ?? [] {
             switch f.reason {
             case "outside": items.append(Item(text: "\(f.path) is not in the indexed folders.", button: "Settings…", action: .settings))
@@ -89,11 +85,10 @@ public struct NoResultsHelp: Hashable, Sendable {
             items.append(Item(
                 text: "\(Self.results(f.count, more: f.more)) without \(all ? "filters" : "the \(label.lowercased()) filter").",
                 button: all ? "Remove All Filters" : "Remove \(label) Filter",
-                action: .query(typed(f.query))
+                action: .query(f.query)
             ))
         }
-        if let s = d?.suggestion {
-            let query = typed(s)
+        if let query = d?.suggestion {
             items.append(Item(text: "Did you mean “\(query)”?", button: "Search for It", action: .query(query)))
         }
         for m in d?.modes ?? [] {
