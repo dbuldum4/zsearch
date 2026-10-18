@@ -71,13 +71,24 @@ test("zsearch index waits for a refresh of changed paths, then walks every folde
   const proc = Bun.spawn(["bun", MAIN, "index"], {
     cwd: dir,
     env: { ...process.env, HOME: dir, ZSEARCH_HOME: data },
-    stdout: "pipe",
+    stdout: "ignore",
     stderr: "pipe",
   })
-  await Bun.sleep(1000)
+  let err = ""
+  const drain = (async () => {
+    const decoder = new TextDecoder()
+    for (const reader = proc.stderr.getReader(); ;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      err += decoder.decode(value, { stream: true })
+    }
+  })()
+  // The child announces it is waiting before the lock is let go, however long its startup takes.
+  const deadline = Date.now() + 20_000
+  while (!err.includes("Waiting for the update of changed files to finish") && Date.now() < deadline) await Bun.sleep(20)
+  expect(err).toContain("Waiting for the update of changed files to finish")
   release()
   expect(await proc.exited).toBe(0)
-  const err = await new Response(proc.stderr).text()
-  expect(err).toContain("Waiting for the update of changed files to finish")
+  await drain
   expect(err).toContain("2 items scanned")
 }, 30_000)
