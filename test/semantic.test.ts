@@ -674,6 +674,41 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("an engine kept across index runs follows the files they add, change and remove", async () => {
+    const e = engine()
+    const idOf = (p: string) => (db.query("SELECT id FROM files WHERE path = ?").get(p) as { id: number } | null)?.id
+    try {
+      expect((await semantic()).status).toBe("done")
+      const fleet = corpus.write("notes/zz-fleet.txt", "Fleet vehicle: a sedan.\n")
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+      // Searches see the index as its other connections do.
+      e.refresh(true)
+      expect((await e.search("automobile", "semantic")).hits.map((h) => h.display)).toContain("notes/zz-fleet.txt")
+      const id = idOf(fleet)
+      rmSync(fleet)
+      await new Indexer(db, config, { inProcess: true }).run()
+      // The newest file's id goes to the next new one.
+      const picnic = corpus.write("notes/zz-picnic.txt", "Picnic list: quinoa salad and lemonade.\n")
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect(idOf(picnic)).toBe(id!)
+      e.refresh(true)
+      const r = await e.search("automobile", "semantic")
+      expect(r.strategy).toStartWith("semantic + words")
+      expect(r.hits.map((h) => h.display)).not.toContain("notes/zz-picnic.txt")
+      expect(r.semantic).toMatchObject({ pending: 1, matched: 0 })
+      const words = await e.search("quinoa", "semantic")
+      expect(words.hits[0]!.display).toBe("notes/zz-picnic.txt")
+      expect(words.semantic).toMatchObject({ pending: 1, matched: 1 })
+    } finally {
+      e.closeSemantic()
+      rmSync(join(corpus.home, "notes/zz-fleet.txt"), { force: true })
+      rmSync(join(corpus.home, "notes/zz-picnic.txt"), { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
+
   test("vectors of deleted, excluded, names-only and no longer embedded files never answer", async () => {
     corpus.write("notes/fleet.txt", "Fleet vehicle: a sedan.\n")
     corpus.write("private/garage-log.txt", "Took the sedan in for new tyres.\n")

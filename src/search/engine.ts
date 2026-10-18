@@ -569,7 +569,7 @@ export class SearchEngine {
     return { index, usable }
   }
 
-  private usable: (UsableRows & { index: VectorIndex; config: Config; revision: number; stamp: string }) | null = null
+  private usable: (UsableRows & { index: VectorIndex; config: Config; stamp: string }) | null = null
 
   /**
    * Which passages of a snapshot may answer now (1): those of files the user may read by content
@@ -578,29 +578,54 @@ export class SearchEngine {
    * no longer embedded under the settings never answer, whether or not a pass has caught up.
    */
   private usableRows(index: VectorIndex): UsableRows {
-    // `revision` follows changes made by other connections only: an index run on this one counts too.
-    const stamp = `${getMeta(this.db, "change_seq") ?? 0}:${(this.db.query("SELECT COALESCE(MAX(n), 0) AS n FROM removed").get() as { n: number }).n}`
+    const { sigs, stamp } = this.semanticFiles()
     const cached = this.usable
-    if (cached?.index === index && cached.config === this.config && cached.revision === this.revision && cached.stamp === stamp) return cached
-    const check = policyFor(crawlOptionsFor(this.config))
+    if (cached?.index === index && cached.config === this.config && cached.stamp === stamp) return cached
     const current = new Set<number>()
     const pending = new Set<number>()
-    for (const c of semanticCandidates(this.db, this.config, check)) (index.madeFrom(c.id) === c.sig ? current : pending).add(c.id)
-    const byFile = new Map<number, number>()
+    for (const [file, sig] of sigs) (index.madeFrom(file) === sig ? current : pending).add(file)
     const rows = new Uint8Array(index.size)
     let count = 0
     for (let row = 0; row < rows.length; row++) {
       const file = Math.abs(index.file[row]!)
-      let ok = byFile.get(file)
-      if (ok === undefined) {
-        const i = this.catalog.indexOf(file)
-        byFile.set(file, (ok = current.has(file) && i !== undefined && this.contentAuthorized(i, check) ? 1 : 0))
-      }
-      rows[row] = ok
-      count += ok
+      rows[row] = current.has(file) && this.catalog.indexOf(file) !== undefined ? 1 : 0
+      count += rows[row]!
     }
-    this.usable = { index, config: this.config, revision: this.revision, stamp, rows, count, files: current.size + pending.size, current: current.size, pending }
+    this.usable = { index, config: this.config, stamp, rows, count, files: current.size + pending.size, current: current.size, pending }
     return this.usable
+  }
+
+  private candidates: { config: Config; stamp: string; generation: string; seq: number; removed: number; sigs: Map<number, string> } | null = null
+
+  /**
+   * The files that should have vectors, with what those must be made from (`semanticCandidates`),
+   * and a stamp of the index they were read from. Only new settings or a rebuilt index check every
+   * file again: checking a path against the settings reads the disk, too slow to do for every
+   * file at each keystroke while an index run writes. Otherwise only the files added, changed or
+   * removed since are checked.
+   */
+  private semanticFiles(): { sigs: Map<number, string>; stamp: string } {
+    return this.db.transaction(() => {
+      const generation = `${getMeta(this.db, "generation") ?? 0}:${getMeta(this.db, "schema_version")}`
+      const seq = Number(getMeta(this.db, "change_seq") ?? 0)
+      const removed = (this.db.query("SELECT COALESCE(MAX(n), 0) AS n FROM removed").get() as { n: number }).n
+      const stamp = `${generation}:${seq}:${removed}`
+      const c = this.candidates
+      if (c?.config === this.config && c.stamp === stamp) return c
+      this.candidates = null
+      const check = policyFor(crawlOptionsFor(this.config))
+      const first = (this.db.query("SELECT MIN(n) AS n FROM removed").get() as { n: number | null }).n
+      let sigs: Map<number, string>
+      if (c?.config === this.config && c.generation === generation && !(first !== null && first > c.removed + 1)) {
+        sigs = c.sigs
+        // Removed first: SQLite gives a new row the id of a removed one when that was the highest.
+        for (const [id] of this.db.query("SELECT id FROM removed WHERE n > ?").values(c.removed) as number[][]) sigs.delete(id!)
+        for (const [id] of this.db.query("SELECT id FROM files WHERE seq > ?").values(c.seq) as number[][]) sigs.delete(id!)
+        for (const f of semanticCandidates(this.db, this.config, check, c.seq)) sigs.set(f.id, f.sig)
+      } else sigs = new Map(semanticCandidates(this.db, this.config, check).map((f) => [f.id, f.sig]))
+      this.candidates = { config: this.config, stamp, generation, seq, removed, sigs }
+      return this.candidates
+    })()
   }
 
   /** How semantic results are put together (benchmarks try others). */
@@ -613,6 +638,7 @@ export class SearchEngine {
     this.vectors?.close()
     this.vectors = null
     this.usable = null
+    this.candidates = null
   }
 
   /**

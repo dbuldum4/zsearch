@@ -504,15 +504,16 @@ export class SemanticIndexer {
 /**
  * The files that should have vectors, with what their vectors depend on (`sig`). Search uses a
  * file's stored vectors only while it is one of these with the same `sig`. `policy`: a checker
- * to share with other checks of the same settings.
+ * to share with other checks of the same settings. `since`: only files added or changed after
+ * this `change_seq`.
  */
-export function semanticCandidates(main: Database, config: Config, policy = policyFor(crawlOptionsFor(config))): Candidate[] {
+export function semanticCandidates(main: Database, config: Config, policy = policyFor(crawlOptionsFor(config)), since?: number): Candidate[] {
   const kinds = [...TEXT_KINDS, ...(config.semantic.code ? CODE_KINDS : [])]
   const out: Candidate[] = []
   // Searches ask for these after every index change: most indexed files can be code, left out here rather than read.
   const rows = main
-    .query(`SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0 AND kind IN (${kinds.map(() => "?").join(", ")})`)
-    .all(ContentState.Indexed, ...kinds) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
+    .query(`SELECT id, path, name, kind, size, mtime, content_len AS len, source_path AS source FROM files WHERE is_dir = 0 AND content_state = ? AND content_len > 0 AND kind IN (${kinds.map(() => "?").join(", ")})${since === undefined ? "" : " AND seq > ?"}`)
+    .all(ContentState.Indexed, ...kinds, ...(since === undefined ? [] : [since])) as { id: number; path: string; name: string; kind: Kind; size: number; mtime: number; len: number; source: string }[]
   for (const r of rows) {
     if (semanticExcluded(r.path)) continue
     const p = policy(r.path)
