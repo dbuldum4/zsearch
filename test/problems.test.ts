@@ -163,4 +163,32 @@ describe("indexing problems", () => {
     expect(hasReadAt(reopened)).toBe(true)
     reopened.close()
   })
+
+  test("path search keeps non-ASCII letters as they are", () => {
+    const own = openDb(":memory:")
+    try {
+      own.query("INSERT INTO files(path, name, ext, kind, content_state, note) VALUES (?, 'Übersicht.docx', 'docx', 'doc', 2, 'corrupt piece table')").run(at("Documents/Übersicht.docx"))
+      expect(listProblems(own, config(), { query: "Übersicht" }).problems.map((p) => p.path)).toEqual([at("Documents/Übersicht.docx")])
+      expect(listProblems(own, config(), { query: "DOCUMENTS/Ü" }).total).toBe(1)
+    } finally {
+      own.close()
+    }
+  })
+
+  test("leaving a listing early does not pin the connection to an old snapshot", () => {
+    const path = join(corpus.home, "snapshot.db")
+    const reader = openDb(path)
+    const writer = openDb(path)
+    try {
+      const add = (name: string) => writer.query("INSERT INTO files(path, name, ext, kind, content_state, note) VALUES (?, ?, 'docx', 'doc', 2, 'corrupt piece table')").run(at(name), name)
+      add("a.docx")
+      add("b.docx")
+      for (const _ of eachProblem(reader, config())) break
+      add("c.docx")
+      expect(problemCounts(reader, config())).toMatchObject([{ category: "unreadable", count: 3 }])
+    } finally {
+      reader.close()
+      writer.close()
+    }
+  })
 })

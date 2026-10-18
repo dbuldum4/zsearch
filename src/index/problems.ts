@@ -235,7 +235,8 @@ function offlineFiles(db: Database, c: Context): number[] {
 
 function filterSql(filter: ProblemFilter, p: Params, withCategories = true): string {
   let sql = "rank IS NOT NULL"
-  const q = filter.query?.trim().toLowerCase()
+  // SQLite's lower() leaves letters outside ASCII as they are: so must the query.
+  const q = filter.query?.trim().replace(/[A-Z]+/g, (s) => s.toLowerCase())
   if (q) sql += ` AND instr(lower(path), ${p.add(q)}) > 0`
   if (withCategories && filter.categories) sql += ` AND rank IN (${filter.categories.map(rank).join(", ") || "-1"})`
   return sql
@@ -278,7 +279,14 @@ export function listProblems(db: Database, config: Config, opts: ProblemFilter &
 /** Every problem the filter matches, by category and then path. */
 export function* eachProblem(db: Database, config: Config, filter: ProblemFilter = {}): Generator<IndexProblem> {
   const { c, p, inner } = prepare(db, config, filter)
-  for (const r of db.query(`SELECT * FROM (${inner}) WHERE ${filterSql(filter, p)} ORDER BY rank, path`).iterate(p.values) as IterableIterator<Row>) yield problemOf(r, c)
+  // A statement left part-way through keeps its read transaction open: the connection would see
+  // the index as it was from then on, and the log could not be checkpointed past it.
+  const statement = db.prepare(`SELECT * FROM (${inner}) WHERE ${filterSql(filter, p)} ORDER BY rank, path`)
+  try {
+    for (const r of statement.iterate(p.values) as IterableIterator<Row>) yield problemOf(r, c)
+  } finally {
+    statement.finalize()
+  }
 }
 
 function problemOf(r: Row, c: Context): IndexProblem {
