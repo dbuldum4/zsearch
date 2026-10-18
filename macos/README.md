@@ -100,7 +100,7 @@ Each line is one JSON object. Requests may carry a numeric `id`, and the reply c
 | Request | Reply |
 | --- | --- |
 | `{"id":1,"type":"search","query":"budget","mode":"find","limit":200}` | `results` with `response` (hits, strategy, timing) |
-| `{"id":9,"type":"search","query":"budget","mode":"find","groupDuplicates":true}` | `results` where byte-identical files are one hit, whose `copies` lists the others (`id`, `path`, `display`, `mtime`) |
+| `{"id":9,"type":"search","query":"budget","mode":"find","groupDuplicates":true}` | `results` where byte-identical files are one hit, whose `copies` lists the others (`id`, `path`, `display`, `mtime`; `copiesMore` when more may exist beyond the page) |
 | `{"id":2,"type":"preview","file":17,"query":"budget","mode":"find","focusLine":3}` | `preview` with numbered lines and match ranges |
 | `{"id":6,"type":"previews","files":[17,18,19],"query":"budget","mode":"find"}` | `previews`: several at once, for prefetching |
 | `{"id":3,"type":"stats"}` | `stats` |

@@ -285,7 +285,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
     const badge = c.magenta(KIND_BADGE[h.kind].padEnd(4))
     const nameStart = h.display.lastIndexOf("/") + 1
     const shown = highlightPositions(h.display, h.namePositions, c.match, nameStart, c.bold)
-    console.log(`${badge} ${shown}${h.isDir ? "/" : ""}  ${c.dim(`${h.isDir ? "" : formatBytes(h.size) + " · "}${formatAge(h.mtime)}${h.copies ? ` · ${h.copies.length + 1} identical copies` : ""}`)}`)
+    console.log(`${badge} ${shown}${h.isDir ? "/" : ""}  ${c.dim(`${h.isDir ? "" : formatBytes(h.size) + " · "}${formatAge(h.mtime)}${h.copies ? ` · ${h.copies.length + 1}${h.copiesMore ? "+" : ""} identical copies` : ""}`)}`)
     for (const copy of h.copies?.slice(0, 5) ?? []) console.log(c.dim(`     = ${copy.display}`))
     if (h.copies && h.copies.length > 5) console.log(c.dim(`     = … ${h.copies.length - 5} more (--json lists them all)`))
     for (const l of h.lines.slice(0, 3)) {
@@ -300,7 +300,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
 }
 
 function jsonHit(h: SearchHit) {
-  return { path: h.path, kind: h.kind, isDir: h.isDir, size: h.size, mtime: new Date(h.mtime).toISOString(), score: h.score, sources: h.sources, lines: h.lines, matchCount: h.matchCount, ...(h.copies ? { copies: h.copies.map((c) => ({ path: c.path, mtime: new Date(c.mtime).toISOString() })) } : {}) }
+  return { path: h.path, kind: h.kind, isDir: h.isDir, size: h.size, mtime: new Date(h.mtime).toISOString(), score: h.score, sources: h.sources, lines: h.lines, matchCount: h.matchCount, ...(h.copies ? { copies: h.copies.map((c) => ({ path: c.path, mtime: new Date(c.mtime).toISOString() })), ...(h.copiesMore ? { copiesMore: true } : {}) } : {}) }
 }
 
 function highlightPositions(s: string, pos: number[], hi: (s: string) => string, boldFrom: number, bold: (s: string) => string): string {

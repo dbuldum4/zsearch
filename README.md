@@ -379,7 +379,7 @@ zsearch search -0 'type:pdf invoice mtime:<30d' | xargs -0 -I{} cp {} ~/invoices
 zsearch search --json -e 'TODO\(\w+\)' | jq '.hits[].path'
 ```
 
-With `--group-duplicates`, byte-identical files (same size and SHA-256, or hard links) are one result: the best ranked, listing where the others are (`copies` in `--json`). Only results of the same size are read and compared, up to 64 MB each and for at most 40 ms per search; their hashes are kept for the next searches. Without the flag every file is a result of its own, as before. The Mac app groups copies unless turned off in Settings.
+With `--group-duplicates`, byte-identical files (same size and SHA-256, or hard links) are one result: the best ranked, listing where the others are (`copies` in `--json`, flagged `copiesMore` when the page may not hold them all). Only results of the same size are read and compared, up to 64 MB each. Hashing runs off the search's way, smallest files first, resuming half-read files where they stopped; a keystroke waits at most 40 ms for it, the CLI its whole time budget. Without the flag every file is a result of its own, as before. The Mac app groups copies unless turned off in Settings.
 
 ## How it works
 

@@ -90,11 +90,12 @@ final class ProtocolTests: XCTestCase {
             #"{"groupDuplicates":true,"id":7,"limit":200,"mode":"find","query":"q","type":"search"}"#
         )
         let fields = #""path":"/Users/me/Documents/a.pdf","display":"Documents/a.pdf","kind":"pdf","isDir":false,"size":10,"mtime":1700000000000,"score":1,"sources":["name"],"namePositions":[],"lines":[],"matchCount":0"#
-        let copies = #""copies":[{"id":2,"path":"/Users/me/Downloads/a (1).pdf","display":"Downloads/a (1).pdf","mtime":1600000000000}]"#
+        let copies = #""copies":[{"id":2,"path":"/Users/me/Downloads/a (1).pdf","display":"Downloads/a (1).pdf","mtime":1600000000000}],"copiesMore":true"#
         let hits = #"[{"id":1,\#(fields),\#(copies)},{"id":4,\#(fields)}]"#
         let line = #"{"id":3,"type":"results","response":{"query":"a","mode":"find","resolved":"find","strategy":"recent","hits":\#(hits),"total":2,"elapsedMs":1,"partial":false}}"#
         guard case let .results(r) = try Envelope.decode(Data(line.utf8)).message else { return XCTFail("expected results") }
         XCTAssertEqual(r.hits[0].copyCount, 2)
+        XCTAssertEqual(r.hits[0].copiesMore, true)
         XCTAssertEqual(r.hits[0].copies?.first?.name, "a (1).pdf")
         XCTAssertEqual(r.hits[0].copies?.first?.folder, "Downloads")
         XCTAssertNil(r.hits[1].copies)

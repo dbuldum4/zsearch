@@ -26,6 +26,8 @@ public struct SearchHit: Decodable, Hashable, Identifiable, Sendable {
     public var matchCount: Int
     /// Byte-identical files folded into this one, when the search asked for `groupDuplicates`.
     public var copies: [FileCopy]?
+    /// More indexed files share this hit's size than the copies listed: there may be more of them.
+    public var copiesMore: Bool?
 
     public var name: String { (path as NSString).lastPathComponent }
     public var folder: String { (display as NSString).deletingLastPathComponent }

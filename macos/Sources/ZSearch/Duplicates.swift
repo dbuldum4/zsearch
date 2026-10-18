@@ -18,7 +18,7 @@ struct DuplicateCopies: View {
                 Button {
                     expanded.toggle()
                 } label: {
-                    Label("\(hit.copyCount) identical copies", systemImage: expanded ? "chevron.down" : "chevron.right")
+                    Label(hit.copiesMore == true ? "At least \(hit.copyCount) identical copies" : "\(hit.copyCount) identical copies", systemImage: expanded ? "chevron.down" : "chevron.right")
                 }
                 .buttonStyle(.borderless)
                 .help("Files with exactly the same contents (same size and SHA-256), in other places")

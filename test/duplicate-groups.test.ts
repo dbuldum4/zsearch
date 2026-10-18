@@ -6,6 +6,10 @@ import { defaultConfig } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
+import { CopyHashes, type FileOpener } from "../src/search/copy-hashes.ts"
+import { createHash } from "node:crypto"
+import { constants } from "node:fs"
+import { open } from "node:fs/promises"
 
 async function corpus(files: Record<string, string>, run: (e: SearchEngine, docs: string, reindex: () => Promise<void>) => Promise<void>, links: [string, string][] = []) {
   const root = mkdtempSync(join(tmpdir(), "zsearch-copies-")), docs = join(root, "docs")
@@ -59,7 +63,12 @@ test("hard links group by inode; a deleted copy leaves its group", async () => c
   let hits = (await e.search("wombat", "find", { groupDuplicates: true })).hits
   expect(hits).toHaveLength(1)
   expect(names([hits[0]!, ...hits[0]!.copies!])).toEqual(["linked/data.csv", "one/data.csv", "two/data.csv"])
-  // Names-only files are not read: a hard link still groups by inode, a copy does not.
+  // Only one of the links is where contents may not be read: it still groups with the rest.
+  e.config.namesOnly = [join(docs, "one")]
+  hits = (await e.search("data.csv", "find", { groupDuplicates: true })).hits
+  expect(hits).toHaveLength(1)
+  expect(names([hits[0]!, ...hits[0]!.copies!])).toEqual(["linked/data.csv", "one/data.csv", "two/data.csv"])
+  // Neither link readable: they group by inode without reading, the unread copy does not.
   e.config.namesOnly = [join(docs, "one"), join(docs, "linked")]
   hits = (await e.search("data.csv", "find", { groupDuplicates: true })).hits
   expect(hits.map((h) => [h, ...(h.copies ?? [])].length).sort()).toEqual([1, 2])
@@ -93,3 +102,107 @@ test("a copy changed on disk is compared again", async () => corpus({
   writeFileSync(join(docs, "y/plan.md"), "numbat plaN")
   expect((await e.search("numbat", "find", { groupDuplicates: true })).hits).toHaveLength(2)
 }))
+
+test("grouped boolean queries fold copies", async () => corpus({
+  "p/q.txt": "quokka shared",
+  "q/q.txt": "quokka shared",
+  "r/w.txt": "wombat solo",
+}, async (e) => {
+  const hits = (await e.search("quokka OR wombat", "find", { groupDuplicates: true })).hits
+  expect(hits).toHaveLength(2)
+  const group = hits.find((h) => h.copies)!
+  expect(names([group, ...group.copies!])).toEqual(["p/q.txt", "q/q.txt"])
+}))
+
+test("copies past the fetched page are flagged", async () => corpus(
+  Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`c${String(i).padStart(2, "0")}/clone.txt`, "quokka clone"])),
+  async (e) => {
+    const one = await e.search("quokka", "find", { groupDuplicates: true, limit: 1 })
+    expect(one.hits).toHaveLength(1)
+    expect(one.hits[0]!.copies).toHaveLength(20)
+    expect(one.hits[0]!.copiesMore).toBe(true)
+    const all = await e.search("quokka", "find", { groupDuplicates: true })
+    expect(all.hits).toHaveLength(1)
+    expect(all.hits[0]!.copies).toHaveLength(24)
+    expect(all.hits[0]!.copiesMore).toBeUndefined()
+  }))
+
+test("a stalled read does not hold results past the budget; copies group once it answers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "zsearch-stall-")), docs = join(root, "docs")
+  mkdirSync(join(docs, "a"), { recursive: true })
+  writeFileSync(join(docs, "a/slow.dat"), "quokka stalled")
+  writeFileSync(join(docs, "slow.dat"), "quokka stalled")
+  const config = { ...defaultConfig(), roots: [docs], indexLoad: 100 }, db = openDb(join(root, "index.db"))
+  try {
+    await new Indexer(db, config, { inProcess: true }).run()
+    let hanging = true
+    const openFile: FileOpener = async (path) => {
+      if (hanging) await new Promise(() => {})
+      const fh = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      return {
+        stat: () => fh.stat(),
+        read: async (buffer, position) => (await fh.read(buffer, 0, buffer.length, position)).bytesRead,
+        close: () => fh.close(),
+      }
+    }
+    const e = new SearchEngine(db, config, undefined, undefined, new CopyHashes({ open: openFile, stallMs: 20, retryMs: 0 }))
+    const stalled = await e.search("quokka", "find", { groupDuplicates: true })
+    // The open never answers: the search returns what it has instead of waiting for it.
+    expect(stalled.elapsedMs).toBeLessThan(2000)
+    expect(stalled.hits).toHaveLength(2)
+    hanging = false
+    const unblocked = await e.search("quokka", "find", { groupDuplicates: true })
+    expect(unblocked.hits).toHaveLength(1)
+    expect(unblocked.hits[0]!.copies).toHaveLength(1)
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test("CopyHashes hashes the smallest first and resumes where it stopped", async () => {
+  const bytes = { small: Buffer.alloc(100, 1), big: Buffer.alloc(900_000, 2), other: Buffer.alloc(50, 3) }
+  type Name = keyof typeof bytes
+  const meta: Record<Name, { dev: number; ino: number }> = { small: { dev: 1, ino: 11 }, big: { dev: 1, ino: 12 }, other: { dev: 1, ino: 13 } }
+  const targetOf = (name: Name) => ({ path: `/fake/${name}`, ...meta[name], size: bytes[name].length, mtimeMs: 1000, ctimeMs: 1000 })
+  const opened: string[] = [], reads: { name: string; position: number }[] = []
+  const gates: (() => void)[] = []
+  const openFile: FileOpener = async (path) => {
+    const name = path.slice(6) as Name
+    opened.push(name)
+    return {
+      stat: async () => ({ ...targetOf(name), isFile: () => true }),
+      read: (buffer, position) => new Promise<number>((resolve) => {
+        reads.push({ name, position })
+        gates.push(() => { const chunk = bytes[name].subarray(position, position + buffer.length); buffer.set(chunk); resolve(chunk.length) })
+      }),
+      close: async () => {},
+    }
+  }
+  const hashes = new CopyHashes({ open: openFile })
+  const until = async (n: number) => { while (reads.length < n) await new Promise((r) => setImmediate(r)) }
+  const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex")
+  const deadline = () => performance.now() + 5000
+
+  const first = hashes.hash([targetOf("big"), targetOf("small")], deadline())
+  await until(1)
+  // The big file was asked for first, but the small one is read first.
+  expect(opened).toEqual(["small"])
+  gates.shift()!()
+  await until(2)
+  expect(opened).toEqual(["small", "big"])
+  expect(hashes.get(targetOf("small"))).toBe(sha(bytes.small))
+  // A new request makes the big file wait; what was read of it is kept.
+  const second = hashes.hash([targetOf("other")], deadline())
+  gates.shift()!()
+  await until(3)
+  gates.shift()!()
+  await second
+  await first
+  expect(hashes.get(targetOf("big"))).toBeUndefined()
+  const third = hashes.hash([targetOf("big")], deadline())
+  await until(4); gates.shift()!()
+  await until(5); gates.shift()!()
+  await until(6); gates.shift()!()
+  await third
+  expect(hashes.get(targetOf("big"))).toBe(sha(bytes.big))
+  // Resumed, not restarted: every chunk of the big file was read exactly once.
+  expect(reads.filter((r) => r.name === "big").map((r) => r.position)).toEqual([0, 262144, 524288, 786432])
+})

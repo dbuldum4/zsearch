@@ -14,7 +14,7 @@ import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } fro
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
 import { clipLine, diacriticPattern, findLines, type Folded, foldText, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
-import { fileDigest } from "./duplicates.ts"
+import { CopyHashes, type HashTarget } from "./copy-hashes.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { listFolder, noTextReason, pageStartsOf } from "./read.ts"
 import { TopK } from "../util/top-k.ts"
@@ -48,6 +48,8 @@ export interface SearchHit {
   matchCount: number
   /** Byte-identical files folded into this one (with `groupDuplicates`), in rank order. */
   copies?: FileCopy[]
+  /** More indexed files share this hit's size than the copies found: there may be more of them. */
+  copiesMore?: boolean
 }
 
 export interface FileCopy {
@@ -131,13 +133,12 @@ const BRANCH_LIMIT = 5000
 /** Hits beyond this many get no snippet lines (fuzzy and semantic): lines cost a text read each. */
 const SNIPPET_HITS = 60
 /**
- * Grouping copies: hits fetched beyond the limit, the largest file read to compare, the
- * time reading may take per search, and how many file hashes are kept for the next keystrokes.
+ * Grouping copies: hits fetched beyond the limit, the largest file read to compare, and how
+ * long a search waits for hashes (they are computed in the background, see CopyHashes).
  */
 const COPY_EXTRA = 20
 const COPY_MAX_BYTES = 64 * 1024 * 1024
 const COPY_BUDGET_MS = 40
-const COPY_DIGESTS = 20_000
 
 /**
  * Decoded texts by file id, least recently used first. Searching while typing reads the same
@@ -247,6 +248,7 @@ export class SearchEngine {
     /** How many decoded characters to keep (UTF-16, so about twice that in bytes). */
     textCacheChars = 24_000_000,
     private clock: RetryClock = retryClock,
+    private copyHashes: CopyHashes = new CopyHashes(),
   ) {
     this.texts = new TextCache(textCacheChars)
     this.refresh(true)
@@ -299,7 +301,8 @@ export class SearchEngine {
     if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
-    const limit = ((opts.branch ? undefined : q.filters.limit) ?? opts.limit ?? 100) + (opts.extra ?? 0)
+    // The extra hits are for copies at the top level only: a branch has no page to keep full.
+    const limit = ((opts.branch ? undefined : q.filters.limit) ?? opts.limit ?? 100) + (opts.branch ? 0 : (opts.extra ?? 0))
     const effective: Mode = q.forcedMode ?? mode
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
@@ -354,15 +357,14 @@ export class SearchEngine {
     return res
   }
 
-  /** SHA-256 of file contents by `dev:ino:size:mtime:ctime`, oldest first: hard links share one. */
-  private digests = new Map<string, string>()
-
   private async searchGrouped(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
     const t0 = performance.now()
     const limit = parseQuery(rawQuery, Date.now(), mode).filters.limit ?? opts.limit ?? 100
     const res = await this.search(rawQuery, mode, { ...opts, groupDuplicates: false, extra: COPY_EXTRA })
     const fetched = res.hits.length
-    const rows = this.groupCopies(res.hits, performance.now() + COPY_BUDGET_MS)
+    // A one-shot search (the CLI's budgetMs) waits for hashing as long as searching; a
+    // keystroke waits only COPY_BUDGET_MS and groups what the background has hashed so far.
+    const rows = await this.groupCopies(res.hits, performance.now() + (opts.budgetMs ?? COPY_BUDGET_MS))
     res.total = res.total > fetched ? Math.max(rows.length, res.total - (fetched - rows.length)) : rows.length
     res.hits = rows.slice(0, limit)
     res.elapsedMs = performance.now() - t0
@@ -372,16 +374,19 @@ export class SearchEngine {
   /**
    * Fold byte-identical files into the first (best ranked) of them. Only files of a size another
    * hit has are looked at: hard links are known by their inode, other files by a SHA-256 of their
-   * bytes, cached by file identity and read only where contents may be, up to COPY_MAX_BYTES.
-   * Files not reached by `deadline` stay hits of their own.
+   * bytes, read only where contents may be, up to COPY_MAX_BYTES. Hashing runs in the background
+   * (CopyHashes); a search waits for it at most until `deadline`, and files not hashed by then
+   * stay hits of their own and group on a later search once their hash is cached.
    */
-  private groupCopies(hits: SearchHit[], deadline: number): SearchHit[] {
+  private async groupCopies(hits: SearchHit[], deadline: number): Promise<SearchHit[]> {
     const candidate = (h: SearchHit) => !h.isDir && h.size > 0
     const sizes = new Map<number, number>()
     for (const h of hits) if (candidate(h)) sizes.set(h.size, (sizes.get(h.size) ?? 0) + 1)
     if (![...sizes.values()].some((n) => n > 1)) return hits
     const check = policyFor(crawlOptionsFor(this.config))
     const keys = new Map<number, string>()
+    const inodeById = new Map<number, string>()
+    const toHash = new Map<number, { hit: SearchHit; target: HashTarget }>()
     for (const h of hits) {
       if (performance.now() > deadline) break
       if (!candidate(h) || sizes.get(h.size)! < 2) continue
@@ -391,19 +396,29 @@ export class SearchEngine {
       let st: Stats
       try { st = statSync(path) } catch { continue }
       if (!st.isFile() || st.size !== h.size) continue
-      const inode = `${st.dev}:${st.ino}`, identity = `${inode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`
-      let digest: string | null | undefined
-      if (this.contentAuthorized(i, check)) {
-        digest = this.digests.get(identity)
-        if (digest === undefined && h.size <= COPY_MAX_BYTES) {
-          digest = fileDigest(path, st, deadline)
-          if (digest) {
-            this.digests.set(identity, digest)
-            if (this.digests.size > COPY_DIGESTS) this.digests.delete(this.digests.keys().next().value!)
-          }
-        }
+      const inode = `${st.dev}:${st.ino}`
+      keys.set(h.id, `inode:${inode}`)
+      inodeById.set(h.id, inode)
+      if (h.size <= COPY_MAX_BYTES && this.contentAuthorized(i, check)) {
+        const digest = this.copyHashes.get(st)
+        if (digest !== undefined) keys.set(h.id, `sha:${h.size}:${digest}`)
+        else toHash.set(h.id, { hit: h, target: { path, dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs } })
       }
-      keys.set(h.id, digest ? `sha:${h.size}:${digest}` : `inode:${inode}`)
+    }
+    if (toHash.size && performance.now() < deadline) {
+      await this.copyHashes.hash([...toHash.values()].map(({ target }) => target), deadline)
+      for (const [id, { hit, target }] of toHash) {
+        const digest = this.copyHashes.get(target)
+        if (digest !== undefined) keys.set(id, `sha:${hit.size}:${digest}`)
+      }
+    }
+    // Hard links are the same file whether or not contents may be read from where they are: a
+    // link that was not read joins the group its readable siblings hashed into.
+    const shaByInode = new Map<string, string>()
+    for (const [id, key] of keys) if (!key.startsWith("inode:")) shaByInode.set(inodeById.get(id)!, key)
+    for (const [id, key] of keys) {
+      const sha = key.startsWith("inode:") ? shaByInode.get(key.slice("inode:".length)) : undefined
+      if (sha) keys.set(id, sha)
     }
     const groups = new Map<string, SearchHit[]>(), rows: SearchHit[][] = []
     for (const h of hits) {
@@ -412,7 +427,25 @@ export class SearchEngine {
       rows.push([h])
       if (key !== undefined) groups.set(key, rows[rows.length - 1]!)
     }
-    return rows.map(([first, ...rest]) => (rest.length ? { ...first!, copies: rest.map((h) => ({ id: h.id, path: h.path, display: h.display, mtime: h.mtime })) } : first!))
+    return rows.map(([first, ...rest]) => {
+      if (!rest.length) return first!
+      const copies = rest.map((h) => ({ id: h.id, path: h.path, display: h.display, mtime: h.mtime }))
+      // Copies are sought among the fetched hits only; more indexed files of the same size may be copies.
+      const more = this.sizeCount(first!.size) > rest.length + 1
+      return { ...first!, copies, ...(more ? { copiesMore: true } : {}) }
+    })
+  }
+
+  /** Indexed non-empty files per size, rebuilt when the catalog changes. */
+  private sizeCounts: { revision: number; counts: Map<number, number> } | null = null
+
+  private sizeCount(size: number): number {
+    if (this.sizeCounts?.revision !== this.revision) {
+      const counts = new Map<number, number>(), c = this.catalog
+      for (let i = 0; i < c.size; i++) if (!c.isDir[i] && c.sizes[i]! > 0) counts.set(c.sizes[i]!, (counts.get(c.sizes[i]!) ?? 0) + 1)
+      this.sizeCounts = { revision: this.revision, counts }
+    }
+    return this.sizeCounts!.counts.get(size) ?? 0
   }
 
   private contentAuthorized(i: number, check = policyFor(crawlOptionsFor(this.config))): boolean {
