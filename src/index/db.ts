@@ -178,7 +178,7 @@ export function clearIndex(db: Database): void {
     db.exec("DELETE FROM removed")
     setMeta(db, "generation", String(Number(getMeta(db, "generation") ?? 0) + 1))
     // Empty until a run completes: it must not look up to date meanwhile.
-    db.exec("DELETE FROM meta WHERE key IN ('last_indexed_at', 'last_duration_ms')")
+    db.exec("DELETE FROM meta WHERE key IN ('last_indexed_at', 'last_duration_ms', 'last_full_walk_at')")
   })()
   compact(db)
 }
@@ -348,10 +348,39 @@ export interface IndexStats {
   datasetFolders: { dir: string; images: number }[]
   contentBytes: number
   dbBytes: number
+  /** When a run last updated the index: a full walk, or a refresh of the files that changed. */
   lastIndexedAt: number | null
   lastDurationMs: number | null
+  /** When a run last walked every root (see `fullWalkDue`). */
+  lastFullWalkAt: number | null
   roots: string[]
   generation: number
+}
+
+/**
+ * Meta key: "1" when the run holding the index lock updates changed paths only (see
+ * `IndexOptions.paths`). Every run sets it just after it takes the lock.
+ */
+export const PARTIAL_RUN = "partial_run"
+
+/**
+ * Whether the run holding the index lock (in any process) only updates the paths file events
+ * named. Such a run ends soon, and does not stand for an update someone asks for: that waits for
+ * the lock instead of giving up.
+ */
+export function partialRunHolds(dbPath: string): boolean {
+  try {
+    const db = openDb(dbPath, { readonly: true })
+    try { return getMeta(db, PARTIAL_RUN) === "1" } finally { db.close() }
+  } catch { return false }
+}
+
+/**
+ * Whether the timed refresh is due: `minutes` (0: never) have passed since the last full walk.
+ * Refreshes of changed files do not count, since the full walk catches what file events missed.
+ */
+export function fullWalkDue(stats: Pick<IndexStats, "lastFullWalkAt">, minutes: number, now = Date.now()): boolean {
+  return minutes > 0 && (stats.lastFullWalkAt === null || now - stats.lastFullWalkAt >= minutes * 60_000)
 }
 
 export function indexStats(db: Database, dbPath?: string): IndexStats {
@@ -378,6 +407,9 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
   }
   const last = getMeta(db, "last_indexed_at")
   const dur = getMeta(db, "last_duration_ms")
+  // Indexes from before refreshes of changed files have no full-walk time: every run they
+  // finished walked every root. An index without it never had such a refresh (see `Indexer.targets`).
+  const walked = getMeta(db, "last_full_walk_at") ?? last
   return {
     unreadableFolders: JSON.parse(getMeta(db, "unreadable_folders") ?? "[]"),
     files: counts.files ?? 0,
@@ -393,6 +425,7 @@ export function indexStats(db: Database, dbPath?: string): IndexStats {
     dbBytes,
     lastIndexedAt: last ? Number(last) : null,
     lastDurationMs: dur ? Number(dur) : null,
+    lastFullWalkAt: walked ? Number(walked) : null,
     roots: JSON.parse(getMeta(db, "roots") ?? "[]"),
     generation: Number(getMeta(db, "generation") ?? 0),
   }
