@@ -379,6 +379,8 @@ private struct IndexSettings: View {
                     Button("Rebuild…") { confirmRebuild = true }
                         .disabled(model.indexing && !model.refreshingChangedFiles)
                     Spacer()
+                    IndexProblemsButton(title: "Problems…")
+                        .help("Files whose contents search cannot find, and why")
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([SearchModel.indexFolder.appendingPathComponent("index.db")])
                     }

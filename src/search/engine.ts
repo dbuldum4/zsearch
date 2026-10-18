@@ -26,6 +26,7 @@ import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { helperVectorVersion, mainGeneration, semanticCandidates, semanticFingerprint } from "../semantic/indexer.ts"
+import { diagnose, type SearchDiagnosis } from "./diagnose.ts"
 
 type Source = "name" | "content"
 
@@ -72,6 +73,8 @@ export interface SearchResponse {
   partial: boolean
   notice?: string
   error?: string
+  /** Why nothing matched, and what would (see `diagnose`): only on responses without hits. */
+  diagnosis?: SearchDiagnosis
   /** Semantic searches that used Granite: how much of the collection its vectors covered. */
   semantic?: SemanticCoverage
 }
@@ -129,6 +132,11 @@ interface SearchOptions {
   groupDuplicates?: boolean
   /** Hits beyond the limit, for copies to fold into without shortening the page. */
   extra?: number
+  /**
+   * Explain an empty result (see `diagnose`) before replying. Off for the searches that explaining
+   * runs, and for searches while typing, which ask separately (`explain`) once the query is stable.
+   */
+  explain?: boolean
 }
 
 /** One part of a grouped query: its hits, and whether they are all of its matches. */
@@ -320,7 +328,27 @@ export class SearchEngine {
   /* ------------------------------------------------------------ public -- */
 
   async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
-    if (opts.groupDuplicates && !opts.branch) return this.searchGrouped(rawQuery, mode, opts)
+    const res = opts.groupDuplicates && !opts.branch
+      ? await this.searchGrouped(rawQuery, mode, opts)
+      : await this.searchOnce(rawQuery, mode, opts)
+    if (!res.hits.length && !res.error && !opts.branch && opts.explain !== false) {
+      const diagnosis = await diagnose(this, res, opts.cancelled)
+      if (diagnosis) res.diagnosis = diagnosis
+    }
+    return res
+  }
+
+  /**
+   * Why `rawQuery` finds nothing (see `diagnose`): undefined when it finds something, when there
+   * is nothing to say, or when `opts.cancelled` (a newer search superseded this one).
+   */
+  async explain(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchDiagnosis | undefined> {
+    const res = await this.searchOnce(rawQuery, mode, opts)
+    if (res.hits.length || res.error || opts.cancelled?.()) return undefined
+    return diagnose(this, res, opts.cancelled)
+  }
+
+  private async searchOnce(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
     const t0 = performance.now()
     this.refresh()
     const q = parseQuery(rawQuery, Date.now(), mode)
@@ -354,11 +382,31 @@ export class SearchEngine {
     } catch (err) {
       res.error = (err as Error).message
     }
-    if (!res.error && !res.hits.length && !q.regex && q.words.length && effective !== "semantic") {
-      const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
-      if (alternatives.some((w, i) => w !== q.words[i])) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
+    if (!res.error && !res.hits.length && effective !== "semantic") {
+      const alternatives = this.similarWords(q)
+      if (alternatives) res.notice = [res.notice, `Did you mean: ${alternatives.join(" ")}`].filter(Boolean).join("; ")
     }
     return this.done(res, t0)
+  }
+
+  /** The query's words with similar indexed words the user may read in place of unknown ones, or null if none. */
+  similarWords(q: ParsedQuery): string[] | null {
+    if (q.regex || !q.words.length) return null
+    // An empty search looks them up for its notice, and its diagnosis again.
+    const key = q.words.join("\0"), cached = this.similar
+    if (cached?.key === key && cached.revision === this.revision && cached.config === this.config) return cached.words
+    const alternatives = q.words.map((w) => this.vocab.similar(foldTerm(w)).find((t) => t !== foldTerm(w) && this.visibleTerm(t)) ?? w)
+    const words = alternatives.some((w, i) => w !== q.words[i]) ? alternatives : null
+    this.similar = { key, revision: this.revision, config: this.config, words }
+    return words
+  }
+
+  private similar: { key: string; revision: number; config: Config; words: string[] | null } | null = null
+
+  /** Semantic search is on and set up, but its index is not complete for the current files yet. */
+  semanticWaiting(): boolean {
+    const snapshot = this.semanticIndex()
+    return "waiting" in snapshot && snapshot.waiting === true
   }
 
   private done(res: SearchResponse, t0: number): SearchResponse {
@@ -386,7 +434,7 @@ export class SearchEngine {
   private async searchGrouped(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
     const t0 = performance.now()
     const limit = parseQuery(rawQuery, Date.now(), mode).filters.limit ?? opts.limit ?? 100
-    const res = await this.search(rawQuery, mode, { ...opts, groupDuplicates: false, extra: COPY_EXTRA })
+    const res = await this.search(rawQuery, mode, { ...opts, groupDuplicates: false, explain: false, extra: COPY_EXTRA })
     // A one-shot search (the CLI's budgetMs) waits for hashing as long as searching; a
     // keystroke waits only COPY_BUDGET_MS and groups what the background has hashed so far.
     const rows = await this.groupCopies(res, performance.now() + (opts.budgetMs ?? COPY_BUDGET_MS))
@@ -527,7 +575,7 @@ export class SearchEngine {
   }
 
   private async searchExpression(expr: QueryExpression, query: string, mode: Mode, opts: SearchOptions, started: number): Promise<SearchResponse> {
-    if (expr.op === "leaf") { const res = await this.search(expr.text, mode, opts); res.query = query; return res }
+    if (expr.op === "leaf") { const res = await this.search(expr.text, mode, { ...opts, explain: false }); res.query = query; return res }
     const deadline = performance.now() + (opts.budgetMs ?? 2500)
     const revision = this.revision, config = this.config
     const result = await this.evaluateGroup(expr, mode, opts, deadline)

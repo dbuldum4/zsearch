@@ -33,9 +33,11 @@ struct ZSearchApp: App {
                     .disabled(!model.indexing)
                 Button("Choose Folders…") { model.showSetup = true }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                IndexProblemsButton()
+                OpenWindowCapture(model: model)
             }
             CommandGroup(after: .pasteboard) {
-                Button("Copy Path") { model.copySelectedPath() }
+                Button(model.pickedCount > 1 ? "Copy \(model.pickedCount) Paths" : "Copy Path") { model.copySelectedPath() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(!model.hasSelection)
                 Button("Show in Finder") { model.revealSelected() }
@@ -67,6 +69,9 @@ struct ZSearchApp: App {
                     .keyboardShortcut("j")
                 Button("Previous Result") { model.moveSelection(by: -1) }
                     .keyboardShortcut("k")
+                Button("Select All Results") { model.selectAllResults() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(!model.hasSelection)
                 Divider()
                 Button("Next Match in Preview") { model.jumpToMatch(by: 1) }
                     .keyboardShortcut("g")
@@ -74,6 +79,15 @@ struct ZSearchApp: App {
                     .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
+
+        Window("Indexing Problems", id: "problems") {
+            IndexProblemsView()
+                .environment(model)
+                .frame(minWidth: 720, minHeight: 400)
+                // Opened on its own (from the menu, before the main window): start the engine too.
+                .onAppear { model.start() }
+        }
+        .defaultSize(width: 980, height: 600)
 
         Settings {
             SettingsView()
@@ -86,6 +100,26 @@ struct ZSearchApp: App {
         } label: {
             Image(systemName: model.indexing ? "arrow.triangle.2.circlepath" : "magnifyingglass")
         }
+    }
+}
+
+/// Captures the scene's openWindow action for the model. The commands exist from launch, before
+/// any window has appeared, and the quick panel has no scene of its own: without this, "Why
+/// Isn't This Searchable?" from the panel has no way to open the problems window until the main
+/// window first appears (see ContentView.onAppear).
+private struct OpenWindowCapture: View {
+    @Environment(\.openWindow) private var openWindow
+    let model: SearchModel
+
+    var body: some View {
+        let open = openWindow
+        // Menus are rebuilt often; only the first capture matters, and not during a view update.
+        DispatchQueue.main.async {
+            guard model.openProblemsWindow == nil else { return }
+            model.openMainWindow = { open(id: "main") }
+            model.openProblemsWindow = { open(id: "problems") }
+        }
+        return EmptyView()
     }
 }
 
@@ -121,6 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var hotKeyChoice: HotKeyChoice?
     private var defaultsObserver: NSObjectProtocol?
+    private var menuObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when started with `swift run` (no app bundle); harmless otherwise.
@@ -129,6 +164,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHotKey()
         defaultsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHotKey() }
+        }
+        // Posted synchronously around the action, so the list's new set arrives in between.
+        menuObservers = [NSMenu.willSendActionNotification, NSMenu.didSendActionNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
+                MainActor.assumeIsolated {
+                    let item = note.userInfo?["MenuItem"] as? NSMenuItem
+                    self?.model?.menuSelectsAll = name == NSMenu.willSendActionNotification && item?.action == #selector(NSText.selectAll(_:))
+                }
+            }
         }
     }
 

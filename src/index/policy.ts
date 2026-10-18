@@ -112,6 +112,21 @@ export function policyFor(opts: CrawlOptions) {
     }
     return true
   }
+  // Why a path that cannot be read is denied: the reason an existing one there would get, if
+  // any, so that "file unavailable" never tells which excluded or out-of-root files exist.
+  const unavailable = (path: string, root: string): string => {
+    let dir = dirname(path)
+    while (dir !== root && under(dir, root) && !existsSync(dir)) dir = dirname(dir)
+    let realDir: string
+    try { realDir = realpathSync(dir) } catch { return "file unavailable" }
+    const targetRoot = realRoots.find((r) => under(realDir, r))
+    if (!targetRoot) return "symbolic link target is outside indexed folders"
+    if (!opts.followSymlinks && realDir !== join(canonicalRoots.get(root)!, relative(root, dir))) return "symbolic links are disabled"
+    const real = join(realDir, relative(dir, path))
+    // Unknown whether it would be a file or a folder: excluded if either would be.
+    const excluded = [false, true].some((isDir) => !passes(path, root, isDir) || (real !== path && !passes(real, targetRoot, isDir)))
+    return excluded ? "file is excluded by current settings" : "file unavailable"
+  }
   const evaluate = (path: string): { allowed: boolean; content: boolean; reason?: string; real?: string } => {
     const root = roots.find((r) => under(path, r))
     if (!root) return deny("outside indexed folders")
@@ -126,7 +141,7 @@ export function policyFor(opts: CrawlOptions) {
         if (!realParent) { realParent = realpathSync(parent); realDirectories.set(parent, realParent) }
         real = join(realParent, basename(path))
       }
-    } catch { return deny("file unavailable") }
+    } catch { return deny(unavailable(path, root)) }
     const targetRoot = realRoots.find((r) => under(real, r))
     if (!targetRoot) return deny("symbolic link target is outside indexed folders")
     if (!opts.followSymlinks && real !== join(canonicalRoots.get(root)!, relative(root, path))) return deny("symbolic links are disabled")

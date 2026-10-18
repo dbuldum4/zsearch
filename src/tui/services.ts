@@ -9,12 +9,16 @@ import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
 import { copyToClipboard, editorCommand, isTerminalEditor, openWithDefault, revealInFileManager } from "../platform.ts"
 import { SearchClient, type StatsReply } from "../search/client.ts"
+import type { SearchDiagnosis } from "../search/diagnose.ts"
 import type { Preview, SearchResponse } from "../search/engine.ts"
 import type { Mode } from "../search/query.ts"
 import { loadSearches, type RecentSearch, rememberSearch } from "../searches.ts"
 
 export interface SearchService {
-  search(query: string, mode: Mode, limit?: number): Promise<SearchResponse | null>
+  /** `explain`: explain an empty result before replying; the app asks separately (`explain`) instead. */
+  search(query: string, mode: Mode, limit?: number, explain?: boolean): Promise<SearchResponse | null>
+  /** Why `query` finds nothing (see `SearchClient.explain`); null when superseded. */
+  explain(query: string, mode: Mode, limit?: number): Promise<{ diagnosis?: SearchDiagnosis } | null>
   preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null>
   stats(): Promise<StatsReply | null>
   refresh(force?: boolean): void

@@ -10,6 +10,7 @@ declare const self: Worker
 let engine: SearchEngine | null = null
 let dbPath = ""
 let latestSearch = 0
+let latestExplain = 0
 let latestPreview = 0
 const send = (m: SearchOut) => postMessage(m)
 
@@ -52,8 +53,18 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
         if (!engine) throw new Error("search worker not initialised")
         latestSearch = msg.qid
         const qid = msg.qid
-        const response = await engine.search(msg.query, msg.mode, { limit: msg.limit, groupDuplicates: msg.groupDuplicates, cancelled: () => latestSearch !== qid })
+        const response = await engine.search(msg.query, msg.mode, { limit: msg.limit, explain: msg.explain, groupDuplicates: msg.groupDuplicates, cancelled: () => latestSearch !== qid })
         if (latestSearch === qid) send({ type: "results", qid, response })
+        break
+      }
+      case "explain": {
+        if (!engine) throw new Error("search worker not initialised")
+        latestExplain = msg.qid
+        // A newer explanation or any newer search makes this one moot.
+        const qid = msg.qid, search = latestSearch
+        const cancelled = () => latestExplain !== qid || latestSearch !== search
+        const diagnosis = await engine.explain(msg.query, msg.mode, { limit: msg.limit, cancelled })
+        if (!cancelled()) send({ type: "diagnosis", qid, diagnosis })
         break
       }
       case "preview": {

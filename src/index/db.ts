@@ -88,6 +88,11 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
 
 const JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
 
+/** `files.read_at` came after version 11: indexes opened read-only may not have it yet. */
+export function hasReadAt(db: Database): boolean {
+  return db.query("SELECT 1 FROM pragma_table_info('files') WHERE name = 'read_at'").get() !== null
+}
+
 function migrate(db: Database, opts: OpenOptions) {
   db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
   const version = Number(getMeta(db, "schema_version") ?? 0)
@@ -96,6 +101,10 @@ function migrate(db: Database, opts: OpenOptions) {
     db.exec(REMOVED_TABLE)
     db.exec(OCR_CACHE_TABLE)
     db.exec(OCR_CACHE_KEY)
+    if (!hasReadAt(db)) {
+      // Another process opening the same index may add it first.
+      try { db.exec("ALTER TABLE files ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0") } catch (e) { if (!hasReadAt(db)) throw e }
+    }
     return
   }
   db.transaction(() => {
@@ -120,6 +129,8 @@ function migrate(db: Database, opts: OpenOptions) {
       content_len INTEGER NOT NULL DEFAULT 0,
       in_fts INTEGER NOT NULL DEFAULT 0,
       note TEXT,
+      -- When its contents were last read (ms), or 0: says when a problem with them was recorded.
+      read_at INTEGER NOT NULL DEFAULT 0,
       -- Bumped each time an existing row's metadata changes, so readers can reload just those rows.
       seq INTEGER NOT NULL DEFAULT 0
     )`)
