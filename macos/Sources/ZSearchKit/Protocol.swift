@@ -78,9 +78,12 @@ public struct IndexStats: Decodable, Hashable, Sendable {
     public var pending: Int
     public var contentBytes: Int
     public var dbBytes: Int
-    /// Milliseconds since 1970, or nil if no index run has finished.
+    /// Milliseconds since 1970, or nil if no index run has finished: when a run last updated
+    /// the index, a full walk or a refresh of the files that changed.
     public var lastIndexedAt: Double?
     public var lastDurationMs: Double?
+    /// When a run last walked every folder, which the timed update goes by (older engines: nil).
+    public var lastFullWalkAt: Double?
     public var roots: [String]
 }
 
@@ -100,6 +103,8 @@ public struct IndexProgress: Decodable, Hashable, Sendable {
     public var current: String
     public var elapsedMs: Double
     public var error: String?
+    /// The run updates the files that changed only, not every folder (older engines: nil).
+    public var partial: Bool?
     /// The semantic pass (semantic search), after the contents are read.
     public var meaning: MeaningProgress?
 

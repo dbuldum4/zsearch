@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { defaultConfig, saveConfig, withConfigSetting } from "../src/config.ts"
+import { type Config, defaultConfig, saveConfig, withConfigSetting } from "../src/config.ts"
 import { checkArgs, McpServer, type Tool, ToolError } from "../src/mcp/rpc.ts"
 import { buildQuery, CONFIG_KEYS, withSetting } from "../src/mcp/server.ts"
 import { clearIndex, openDb } from "../src/index/db.ts"
@@ -193,16 +193,15 @@ beforeAll(() => {
 afterAll(() => corpus.cleanup())
 
 /** Start `zsearch mcp` and talk JSON-RPC to it. */
-function client() {
-  const local = { ...defaultConfig(), roots: ["~"] }
+function client(local: Config = { ...defaultConfig(), roots: ["~"] }, data = ".zsearch-mcp", env: Record<string, string> = {}) {
   const previous = process.env.ZSEARCH_HOME
-  process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-mcp")
+  process.env.ZSEARCH_HOME = join(corpus.home, data)
   saveConfig(local)
   if (previous === undefined) delete process.env.ZSEARCH_HOME
   else process.env.ZSEARCH_HOME = previous
   const proc = Bun.spawn(["bun", MAIN, "mcp"], {
     cwd: corpus.home,
-    env: { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, ".zsearch-mcp") },
+    env: { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, data), ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -438,3 +437,36 @@ test("mcp: index, search, read and configure over stdio", async () => {
   expect(await c.proc.exited).toBe(0)
   expect(await new Response(c.proc.stderr).text()).not.toContain("Error")
 }, 120_000)
+
+test("mcp: an update asked for during a refresh of changed files is queued and waited for", async () => {
+  corpus.write("live-mcp/notes.txt", "kept walking\n")
+  const helper = corpus.write("mcp-speech-helper", `#!${process.execPath}\nif (process.argv[2] === "--prepare") { console.log('{"ready":true}'); process.exit(0) }\nconsole.log(JSON.stringify({ start: 1, text: "spoken words" }))\nconsole.log(JSON.stringify({ complete: true, truncated: false }))\n`)
+  chmodSync(helper, 0o700)
+  // Low Power Mode holds a refresh that started on its own at the recording it would transcribe.
+  const c = client({ ...defaultConfig(), roots: ["~/live-mcp"], autoRefreshMinutes: 0, liveUpdates: true }, ".zsearch-mcp-live", { ZSEARCH_POWER: "low-power", ZSEARCH_TRANSCRIBE: helper })
+  try {
+    await c.start()
+    expect((await c.call("update_index", { wait_seconds: 60 })).data.status).toBe("done")
+    const before = Date.parse((await c.call("index_status")).data.lastFullWalkAt)
+    expect(before).toBeGreaterThan(0)
+
+    corpus.write("live-mcp/clip.wav", "stand-in audio")
+    let indexing: Msg | null = null
+    for (let i = 0; i < 100 && !indexing?.changedFilesOnly; i++) {
+      await Bun.sleep(100)
+      indexing = (await c.call("index_status")).data.indexing
+    }
+    expect(indexing?.changedFilesOnly).toBe(true)
+    const queued = await c.call("update_index")
+    expect(queued.data.status).toBe("queued")
+    expect(queued.data.indexing.fullUpdateQueued).toBe(true)
+    // Asked again: still the one full update, which the wait follows to its end.
+    const waited = await c.call("update_index", { wait_seconds: 60 })
+    expect(waited.data.status).toBe("done")
+    expect(waited.data.indexing).toBeNull()
+    expect(Date.parse(waited.data.lastFullWalkAt)).toBeGreaterThan(before)
+    expect(waited.data.lastRun.scanned).toBe(2)
+    c.proc.stdin.end()
+    expect(await c.proc.exited).toBe(0)
+  } finally { c.proc.kill() }
+}, 60_000)
