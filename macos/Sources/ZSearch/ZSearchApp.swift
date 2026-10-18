@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var hotKeyChoice: HotKeyChoice?
     private var defaultsObserver: NSObjectProtocol?
+    private var menuObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when started with `swift run` (no app bundle); harmless otherwise.
@@ -128,6 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHotKey()
         defaultsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHotKey() }
+        }
+        // Posted synchronously around the action, so the list's new set arrives in between.
+        menuObservers = [NSMenu.willSendActionNotification, NSMenu.didSendActionNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
+                MainActor.assumeIsolated {
+                    let item = note.userInfo?["MenuItem"] as? NSMenuItem
+                    self?.model?.menuSelectsAll = name == NSMenu.willSendActionNotification && item?.action == #selector(NSText.selectAll(_:))
+                }
+            }
         }
     }
 

@@ -105,6 +105,21 @@ final class QueryFiltersTests: XCTestCase {
         XCTAssertEqual(Q.togglingFold(in: "budget fold:TRUE"), "budget fold:off")
     }
 
+    func testSameResultsIgnoresOnlySortAndFold() {
+        XCTAssertTrue(Q.sameResults("budget", Q.togglingSort("name", in: "budget")))
+        XCTAssertTrue(Q.sameResults("budget sort:name", "budget sort:-name"))
+        XCTAssertTrue(Q.sameResults("re:budget ext:pdf", Q.togglingFold(in: "re:budget ext:pdf")))
+        XCTAssertTrue(Q.sameResults("budget ", "budget sort:date"))
+        XCTAssertTrue(Q.sameResults("budget -fold:on", "budget"))
+        XCTAssertTrue(Q.sameResults("budget sort:size in:~/Docs", "budget in:~/Docs fold:on"))
+        XCTAssertFalse(Q.sameResults("budget", "budgets"))
+        XCTAssertFalse(Q.sameResults("budget sort:name", "budget ext:pdf sort:name"))
+        XCTAssertFalse(Q.sameResults("re:budget", "budget"))
+        // Quoted text is searched for, not a filter.
+        XCTAssertFalse(Q.sameResults(#""sort:name" budget"#, "budget"))
+        XCTAssertFalse(Q.sameResults(#"in:"~/Reports sort:2026" budget"#, "in:~/Reports budget"))
+    }
+
     func testRegexFlagsMatchTheEngine() {
         for flags in ["", "d", "g", "i", "m", "s", "u", "v", "y", "gims"] {
             let query = "/budget/\(flags) ext:pdf tag:work"

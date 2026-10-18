@@ -45,6 +45,9 @@ final class SearchModel {
     }
     /// How many results are picked. The menus and the selection bar read this rather than `picks`.
     private(set) var pickedCount = 0
+    /// Set while the menu's Select All (⌘A) runs. The list takes it itself and reports only the
+    /// new set, the same one a ⇧-click from the first result to the last gives.
+    @ObservationIgnored var menuSelectsAll = false
     /// The file shown in Quick Look, or nil when it is closed.
     var quickLookURL: URL?
     /// The files Quick Look goes through: the picked ones.
@@ -335,8 +338,9 @@ final class SearchModel {
             let previous = response
             response = r
             var next = picks
-            // A new query keeps the result shown, if it is still listed, but not the others picked.
-            if previous?.query != r.query { next.collapse() }
+            // A new query keeps the result shown, if it is still listed, but not the others picked;
+            // sorting or folding the previews keeps them all.
+            if !(previous.map { QueryFilters.sameResults($0.query, r.query) } ?? false) { next.collapse() }
             next.carry(over: Dictionary(previous?.hits.map { ($0.id, $0.path) } ?? [], uniquingKeysWith: { first, _ in first }), to: r.hits.map { (id: $0.id, key: $0.path) })
             let shown = selection
             pick(next)
@@ -701,8 +705,10 @@ final class SearchModel {
         response?.hits.removeAll { $0.path == hit.path || $0.path.hasPrefix(hit.path + "/") }
         if let count = response?.hits.count { response?.total = count }
         clearPreviewCache()
-        // The excluded file's preview must not stay on screen.
-        if selectedHit == nil { selection = hits.first?.id }
+        // The excluded files are no longer picked, and the preview of one must not stay on screen.
+        var next = picks
+        next.prune(to: hits.map(\.id))
+        pick(next)
     }
 
     func copyPath(_ hit: SearchHit) {

@@ -12,11 +12,6 @@ public struct ResultSelection<ID: Hashable>: Equatable {
 
     public var count: Int { ids.count }
 
-    /// The picked results in list order.
-    public func ordered(in order: [ID]) -> [ID] {
-        order.filter { ids.contains($0) }
-    }
-
     /// Just this result, or nothing (a click, ↑/↓).
     public mutating func select(_ id: ID?) {
         ids = id.map { [$0] } ?? []
@@ -24,21 +19,8 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         anchor = id
     }
 
-    /// Add or remove one result (⌘-click). Removing the primary moves it to the nearest one left.
-    public mutating func toggle(_ id: ID, in order: [ID]) {
-        if ids.contains(id) {
-            ids.remove(id)
-            if primary == id { primary = nearest(to: id, in: order) }
-            anchor = primary
-        } else {
-            ids.insert(id)
-            primary = id
-            anchor = id
-        }
-    }
-
-    /// Everything from the anchor to `id` (⇧-click).
-    public mutating func extend(to id: ID, in order: [ID]) {
+    /// Everything from the anchor to `id`, which becomes the primary.
+    mutating func extend(to id: ID, in order: [ID]) {
         guard let end = order.firstIndex(of: id) else { return }
         guard let start = anchor.flatMap({ order.firstIndex(of: $0) }) else { return select(id) }
         ids = Set(order[min(start, end)...max(start, end)])
@@ -52,6 +34,7 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         extend(to: order[min(max(current + delta, 0), order.count - 1)], in: order)
     }
 
+    /// Every result, keeping the primary and anchor (⌘A, ⇧⌘A).
     public mutating func selectAll(in order: [ID]) {
         guard !order.isEmpty else { return }
         ids = Set(order)
@@ -64,8 +47,9 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         select(primary)
     }
 
-    /// Take a selection the list made itself (its own ⌘-click, ⇧-click, ⇧-arrows and ⌘A report
-    /// only the new set) and work out the primary and anchor from what changed.
+    /// Take a selection the list made itself (its own clicks, ⌘-clicks, ⇧-clicks and ⇧-arrows
+    /// report only the new set) and work out the primary and anchor from what changed. Select All
+    /// gives the same set as a ⇧-click from one end to the other, so it goes to `selectAll` instead.
     public mutating func adopt(_ new: Set<ID>, in order: [ID]) {
         guard new != ids else { return }
         guard new.count > 1 else { return select(new.first) }
@@ -73,10 +57,8 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         ids = new
         let index = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         let next: ID?
-        // One result added is a ⇧-arrow or ⌘-click even when it completes the list; Select All
-        // would look the same only with a single result left out.
-        if let primary, new.contains(primary), added.isEmpty || (new.count == order.count && added.count > 1) {
-            // Select All, or a result other than the primary taken out.
+        if let primary, new.contains(primary), added.isEmpty {
+            // A result other than the primary taken out.
             next = primary
         } else if !added.isEmpty {
             // A ⇧-click adds a range, which ends at the result clicked: the one farthest from its start.
@@ -110,6 +92,11 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         ids = kept
         primary = primary.flatMap(moved) ?? order.first { kept.contains($0) }
         anchor = anchor.flatMap(moved).flatMap { kept.contains($0) ? $0 : nil } ?? primary
+    }
+
+    /// Results were taken out of the list (an exclusion): drop them, as `carry` does.
+    public mutating func prune(to order: [ID]) {
+        carry(over: [ID: ID](), to: order.map { (id: $0, key: $0) })
     }
 
     /// The picked result closest to `id` in the list, looking down first.

@@ -19,7 +19,8 @@ extension SearchModel {
     /// The list picked these itself: a click, ⌘-click, ⇧-click, or ⌘A and ⇧↑/⇧↓ while it has the keyboard.
     func listPicked(_ ids: Set<SearchHit.ID>) {
         var next = picks
-        next.adopt(ids, in: hits.map(\.id))
+        let order = hits.map(\.id)
+        if menuSelectsAll, ids == Set(order) { next.selectAll(in: order) } else { next.adopt(ids, in: order) }
         pick(next)
     }
 
