@@ -27,7 +27,7 @@ struct ZSearchApp: App {
             CommandGroup(after: .newItem) {
                 Button("Update Index") { model.startIndex() }
                     .keyboardShortcut("r")
-                    .disabled(model.indexing)
+                    .disabled(model.indexing && !model.refreshingChangedFiles)
                 Button("Stop Indexing") { model.cancelIndex() }
                     .keyboardShortcut(".")
                     .disabled(!model.indexing)
@@ -95,6 +95,7 @@ struct MenuBarMenu: View {
         Divider()
         if model.indexing {
             Text("Updating the index…")
+            if model.refreshingChangedFiles { Button("Update Index") { model.startIndex() } }
             Button("Stop Indexing") { model.cancelIndex() }
         } else {
             if let s = model.stats {
