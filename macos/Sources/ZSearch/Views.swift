@@ -46,6 +46,7 @@ struct ContentView: View {
             guard !isPanel else { return }
             let open = openWindow
             model.openMainWindow = { open(id: "main") }
+            model.openProblemsWindow = { open(id: "problems") }
         }
         .onChange(of: model.focusRequest) { searchFocused = true }
         // Quick Look is driven from the window it was opened in.
@@ -132,6 +133,9 @@ struct ResultsList: View {
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
                     Button("Exclude from Index") { model.exclude(hit) }
+                    if !hit.isDir {
+                        Button("Why Isn't This Searchable?") { model.explain(hit) }
+                    }
                     Button("Copy All Paths") { model.copyAllPaths() }
                     Button("Fold Preview Around Matches") { model.toggleFoldedPreview() }
                 }

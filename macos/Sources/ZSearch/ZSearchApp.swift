@@ -33,6 +33,7 @@ struct ZSearchApp: App {
                     .disabled(!model.indexing)
                 Button("Choose Folders…") { model.showSetup = true }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                IndexProblemsButton()
             }
             CommandGroup(after: .pasteboard) {
                 Button("Copy Path") { model.copySelectedPath() }
@@ -71,6 +72,13 @@ struct ZSearchApp: App {
                     .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
+
+        Window("Indexing Problems", id: "problems") {
+            IndexProblemsView()
+                .environment(model)
+                .frame(minWidth: 720, minHeight: 400)
+        }
+        .defaultSize(width: 980, height: 600)
 
         Settings {
             SettingsView()

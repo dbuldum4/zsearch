@@ -102,6 +102,10 @@ test("mcp: diagnostics follow current exclusions, and every advertised page can 
     const before = (await c.call("index_status", { errors: true })).data.unreadableFiles.map((f: Msg) => f.path)
     expect(before).toContain(join(home, "secret/confidential-merger.docx"))
     expect(before).toContain(join(home, "public/broken-report.docx"))
+    const status = await c.call("index_status", { errors: true })
+    expect(status.data.unreadableFiles.find((f: Msg) => f.path === join(home, "public/broken-report.docx"))).toMatchObject({ category: "unreadable", retry: true })
+    expect(status.data.problems.find((p: Msg) => p.category === "unreadable").count).toBeGreaterThanOrEqual(2)
+    expect(status.text).toContain("could not be read")
 
     // Excluded locally, without updating the index: the stored row stays, but is not shown.
     saveLocal({ ...defaultConfig(), roots: ["~"], exclude: ["~/secret"] })

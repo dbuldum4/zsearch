@@ -140,6 +140,30 @@ describe("zsearch command line", () => {
     expect(d.out).toContain("FTS5")
   })
 
+  test("indexing problems: status --errors, why and retry", async () => {
+    corpus.write("Documents/broken.docx", "not really a docx")
+    expect((await zs("index", "--quiet")).code).toBe(0)
+    const s = await zs("status", "--errors")
+    expect(s.code).toBe(0)
+    expect(s.out).toContain("Could not be read (1) · zsearch retry unreadable")
+    expect(s.out).toContain("It is not in the format its name suggests, or it is damaged.")
+    expect(s.out).toContain("~/Documents/broken.docx (not a valid Office file")
+    const only = await zs("status", "--errors=secret", "--json")
+    expect(JSON.parse(only.out).problems.every((p: { category: string }) => p.category === "secret")).toBe(true)
+    expect((await zs("status", "--errors=bogus")).code).toBe(2)
+
+    const why = await zs("why", "~/Documents/broken.docx")
+    expect(why.out).toContain("only its name is searchable")
+    expect(why.out).toContain('zsearch retry "~/Documents/broken.docx"')
+    expect(JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt")).out).searchable).toBe("content")
+
+    expect((await zs("retry", "secret")).err).toContain("never read")
+    const retry = await zs("retry", "unreadable", "--quiet")
+    expect(retry.code).toBe(0)
+    expect(retry.err).toContain("1 file is read again with the next index update.")
+    expect((await zs("retry", "~/notes/recipes/pancakes.txt")).code).toBe(1)
+  })
+
   test("config get/set/path with validation", async () => {
     expect((await zs("config", "set", "includeHidden", "true")).code).toBe(0)
     expect((await zs("config", "get", "includeHidden")).out.trim()).toBe("true")

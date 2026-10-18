@@ -199,7 +199,9 @@ Indexing runs in two phases:
 
 An update that starts on its own (the schedule, file changes, an index left out of date) waits while the computer is in Low Power Mode or running hot, if it has a thousand files or more to read, and picks up where it left off. Set `pauseOnBattery` to wait on battery as well, or `pauseOnLowPower` to `false` to never wait (both are in the Mac app's settings too). An update you ask for (Update Index Now, <kbd>Ctrl-R</kbd>, `zsearch index`, MCP's `update_index`) never waits.
 
-Later runs re-read files whose size or modification time changed, or whose content settings changed, and remove deleted files. A rename on the same file system keeps extracted text when device, inode, size and modification time agree. Unavailable roots and folders that cannot be listed keep their existing entries; status reports them so you can restore permissions. Native file-system events trigger a debounced incremental refresh while the TUI, Mac engine or MCP server runs, with the timed scan as a fallback. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change.
+Later runs re-read files whose size or modification time changed, or whose content settings changed, and remove deleted files. A rename on the same file system keeps extracted text when device, inode, size and modification time agree. Unavailable roots and folders that cannot be listed keep their existing entries; status reports them so you can restore permissions. Native file-system events trigger a debounced incremental refresh while the TUI, Mac engine or MCP server runs, with the timed scan as a fallback. Files that can't be read (encrypted, corrupt, permission denied) are recorded with the reason (`zsearch status --errors`) and aren't retried until they change, or until you ask (`zsearch retry`, or Read Again in the Mac app).
+
+**Why can't it find this file?** `zsearch status --errors` lists the files whose contents search cannot find, or finds only in part, grouped by why: could not be read, took too long, transcription failed, too large, no text found (a scan without OCR, say), only partly searchable, dataset images, keys and passwords, names-only folders and cloud files. Each comes with the reason in plain words and, for failures, the reader's own error. `zsearch why <file>` explains one file, including files that are not indexed at all (outside the indexed folders, excluded by a pattern or ignore file). `zsearch retry <file>...` or `zsearch retry unreadable|timeout|transcription|no-text` reads failed files again and updates the index; problems that a setting decides (too large, keys, names-only and cloud files) are refused with the setting to change instead. The Mac app shows the same list in File › Indexing Problems…, and MCP's `index_status` counts them.
 
 **Keys and passwords stay out.** Private keys, certificates, key stores, password databases and login files (`id_rsa`, `*.pem`, `*.p12`, `*.p8`, `*.kdbx`, `*.gpg`, `.env` and `*.env`, `.netrc`, `.npmrc`, `credentials.json`, `secrets.yaml` and similar, and anything in `~/.ssh`, `~/.aws` or `~/.gnupg`) are indexed by name only, so you can still find them but their text is never read, previewed or given to MCP clients. A text file holding a private key block is left out the same way. `zsearch status --errors` lists them.
 
@@ -214,6 +216,9 @@ zsearch index --disk                # whole disk
 zsearch index --hidden              # include dotfiles
 zsearch index --rebuild             # start from scratch
 zsearch status                      # what is indexed
+zsearch status --errors             # files whose contents can't be searched, and why
+zsearch why ~/Downloads/scan.pdf    # why one file's contents are (not) searchable
+zsearch retry unreadable            # read the files that failed again
 zsearch estimate --home             # how long a first index of ~ takes, roughly
 ```
 
@@ -244,7 +249,7 @@ Recordings are streamed, one at a time after documents and images, at background
 
 The Mac app previews EPUB and MOBI as wrapped reading excerpts with highlighted search matches. Choose **Text** for numbered lines instead; the choice is also available in Settings. These previews use extracted text, without the book's original layout or illustrations. Encrypted MOBI, HUFF/CDIC compression and standalone KF8 books are unsupported and remain searchable by name.
 
-**Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists such folders; `zsearch config set skipDatasetOcr false` reads them too.
+**Dataset folders.** A folder (other than an indexed folder itself) with 300 or more images, most of them named by a program (`frame_000123.png`, hashes, UUIDs, rather than `IMG_1234.jpg` or `Screenshot …`), is taken for a dataset: its images are indexed by name but not read with OCR. `zsearch status --errors` lists their images; `zsearch config set skipDatasetOcr false` reads them too.
 
 **OCR.** The Mac app bundles a small helper, `zsearch-ocr`, that reads text with Apple's Vision framework. It runs on the Mac, at low priority, and sends nothing anywhere. Images are read after all other files, and a PDF only goes through OCR for its pages without text (at most the first 100). Completed OCR pages are streamed and retained if the document deadline is reached. `zsearch doctor` says whether OCR is available. To use the helper with the terminal app, point `ZSEARCH_OCR` at it (`ZSEARCH_OCR=/Applications/zsearch.app/Contents/Helpers/zsearch-ocr`); turn it off with `zsearch config set content.ocr false`.
 
@@ -346,7 +351,7 @@ Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mc
 | --- | --- |
 | `search` | Find files by name and contents, with everything the query syntax offers: exact text, `regex`, `fuzzy` mode, and filters as arguments (`type`, `exclude_type`, `ext`, `folder`, `path`, `modified`, `after`, `before`, `size`) or in the query (`type:pdf mtime:<30d`). Returns paths, kinds, sizes, dates and the matching lines with line and page numbers; `offset` pages through long result lists |
 | `read_file` | Read an indexed file's text with line numbers: the extracted text of PDFs and Office files (with page, slide and sheet markers), or the file itself for code and text. `query` marks the matches and starts at the first one; `matches_only` returns just the matching lines with context |
-| `index_status` | What is indexed, when it was last updated, indexing progress, and (with `errors`) the files that could not be read |
+| `index_status` | What is indexed, when it was last updated, indexing progress, counts of indexing problems by category, and (with `errors`) the files that could not be read, with the reason in plain words and the reader's error (`errors_category` lists another category, such as `too-large` or `secret`) |
 | `update_index` | Update the locally configured roots in the background, or rebuild the index; `wait_seconds` waits for it with progress notifications |
 | `exclude_path` | Exclude an already indexed file or folder and request a refresh; this only narrows access |
 | `cancel_index` | Stop indexing |
@@ -360,7 +365,9 @@ Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and
 zsearch [query]                 open the interactive search
 zsearch search <query>          print matches and exit (-m find|fuzzy|semantic, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
-zsearch status [--errors]       what is indexed (--json)
+zsearch status [--errors]       what is indexed (--json); --errors[=<category>] lists indexing problems and why
+zsearch why <path>              why a file's contents are, or are not, searchable (--json)
+zsearch retry <path...|category>  read files that failed again, then update the index
 zsearch estimate [folders...]   how long a first index takes, roughly (--docs, --home, --disk, --json)
 zsearch config [show|get|set|path|reset]
 zsearch duplicates [--json]      find identical files by size and streaming SHA-256

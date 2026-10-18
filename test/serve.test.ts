@@ -311,3 +311,54 @@ test("serve: semantic search installed while an update runs gets a run of its ow
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
+
+test("serve: indexing problems are listed, explained and read again", async () => {
+  corpus.write("problems/broken.docx", "not really a docx")
+  corpus.write("problems/keys/server.pem", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n")
+  corpus.write("problems/fine.txt", "wallaby ledger\n")
+  const s = server({}, ".zsearch-problems")
+  await s.until((m) => m.type === "ready")
+  s.send({ id: 1, type: "setConfig", config: { roots: ["~/problems"], autoRefreshMinutes: 0, liveUpdates: false } })
+  await s.reply(1)
+  s.send({ id: 2, type: "index" })
+  await s.reply(2)
+  expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+
+  s.send({ id: 3, type: "problems", categories: ["unreadable", "secret", "bogus"], limit: 10 })
+  const list = await s.reply(3)
+  expect(list.type).toBe("problems")
+  const problems = list.problems as { path: string; category: string; reason: string; detail: string | null; retry: boolean }[]
+  expect(problems.map((p) => [p.path.split("/").pop(), p.category, p.retry])).toEqual([
+    ["broken.docx", "unreadable", true],
+    ["server.pem", "secret", false],
+  ])
+  expect(problems[0]!.detail).toContain("not a valid Office file")
+  expect(list.total).toBe(2)
+  expect((list.categories as { category: string; count: number }[]).map((c) => [c.category, c.count])).toEqual([
+    ["unreadable", 1],
+    ["secret", 1],
+  ])
+  s.send({ id: 4, type: "problems", query: "server" })
+  expect(((await s.reply(4)).problems as unknown[]).length).toBe(1)
+
+  s.send({ id: 5, type: "explain", path: "~/problems/fine.txt" })
+  expect(((await s.reply(5)).explanation as { searchable: string }).searchable).toBe("content")
+  s.send({ id: 6, type: "explain", path: "~/problems/broken.docx" })
+  expect((await s.reply(6)).explanation).toMatchObject({ searchable: "name", category: "unreadable", retry: true })
+
+  // Keys are never read: a retry is refused, with why.
+  s.send({ id: 7, type: "retryProblems", category: "secret" })
+  expect(String((await s.reply(7)).error)).toContain("never read")
+  s.send({ id: 8, type: "retryProblems", category: "nonsense" })
+  expect((await s.reply(8)).type).toBe("error")
+  s.send({ id: 9, type: "retryProblems", paths: [join(corpus.home, "problems/broken.docx"), "~/problems/keys/server.pem"] })
+  const retried = await s.reply(9)
+  expect(retried).toMatchObject({ type: "retried", retried: 1 })
+  expect((retried.refused as { path: string }[]).map((r) => r.path.split("/").pop())).toEqual(["server.pem"])
+  // An update starts on its own and reads it again, even with updates only when asked.
+  const done = await s.until((m) => m.type === "indexDone")
+  expect((done.progress as { contentErrors: number }).contentErrors).toBe(1)
+
+  s.proc.stdin.end()
+  expect(await s.proc.exited).toBe(0)
+}, 60_000)

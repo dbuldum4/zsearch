@@ -6,13 +6,15 @@
  * requests supersede older ones of the same type, which then reply `cancelled`.
  * The server exits when stdin closes.
  */
+import type { Database } from "bun:sqlite"
 import { createInterface } from "node:readline"
 import { type Config, configExists, configStamp, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
-import type { IndexStats } from "./index/db.ts"
+import { type IndexStats, openDb } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import { combine, describeEstimate, ESTIMATE_CANCELLED, estimateInBackground, type FolderEstimate } from "./index/estimate.ts"
 import type { IndexProgress } from "./index/indexer.ts"
 import { lockHolder } from "./index/lock.ts"
+import { type Explanation, isProblemCategory, listProblems, type ProblemList, explainPath, retryProblems, type RetryResult } from "./index/problems.ts"
 import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { Preview, SearchResponse } from "./search/engine.ts"
@@ -36,6 +38,9 @@ type ServeIn =
   | { id?: number; type: "semanticInstall" }
   | { id?: number; type: "semanticCancelInstall" }
   | { id?: number; type: "semanticRemove" }
+  | { id?: number; type: "problems"; categories?: string[]; query?: string; offset?: number; limit?: number }
+  | { id?: number; type: "explain"; path: string }
+  | { id?: number; type: "retryProblems"; paths?: string[]; category?: string }
 
 type ServeOut =
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
@@ -53,6 +58,9 @@ type ServeOut =
   | { type: "refreshed"; files: number; changed: boolean }
   | { id?: number; type: "semantic"; status: SemanticStatus }
   | { type: "semanticDownload"; file: string; received: number; total: number }
+  | ({ id?: number; type: "problems" } & ProblemList)
+  | { id?: number; type: "explanation"; explanation: Explanation }
+  | ({ id?: number; type: "retried" } & RetryResult)
 
 /** Progress events are throttled to this interval; the last one before `indexDone` always goes out. */
 const PROGRESS_MS = 100
@@ -73,6 +81,9 @@ export async function serve(version: string): Promise<number> {
   const downloading: { run: AbortController | null } = { run: null }
   /** A run to start when the one going ends: it started before semantic search was installed. */
   let followUp: { meaningOnly: boolean } | null = null
+  /** A connection of this thread's own, for indexing problems: the search worker's protocol does not cover them. */
+  const own: { db: Database | null } = { db: null }
+  const database = () => (own.db ??= openDb(p.db))
   const watcher = new RootWatcher(() => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
@@ -252,6 +263,33 @@ export async function serve(version: string): Promise<number> {
         removeSemantic(p.db)
         return send({ id, type: "semantic", status: semanticStatus(config, p.db) })
       }
+      case "problems": {
+        const categories = Array.isArray(msg.categories) ? msg.categories.filter(isProblemCategory) : undefined
+        const list = listProblems(database(), config, {
+          categories,
+          query: typeof msg.query === "string" ? msg.query : undefined,
+          offset: typeof msg.offset === "number" ? msg.offset : 0,
+          limit: typeof msg.limit === "number" ? msg.limit : 200,
+        })
+        return send({ id, type: "problems", ...list })
+      }
+      case "explain":
+        if (typeof msg.path !== "string" || !msg.path.trim()) return send({ id, type: "error", error: "explain needs a path" })
+        return send({ id, type: "explanation", explanation: explainPath(database(), config, msg.path) })
+      case "retryProblems": {
+        const paths = Array.isArray(msg.paths) ? msg.paths.filter((path): path is string => typeof path === "string") : undefined
+        if (msg.category !== undefined && !isProblemCategory(msg.category)) return send({ id, type: "error", error: `unknown problem category "${msg.category}"` })
+        if (!msg.category && !paths?.length) return send({ id, type: "error", error: "retryProblems needs paths or a category" })
+        const result = retryProblems(database(), config, msg.category ? { category: msg.category } : { paths })
+        send({ id, type: "retried", ...result })
+        // Read them now, even with Only when I ask: someone asked. A run going may have listed
+        // the files to read before these were marked: another follows it.
+        if (result.retried) {
+          if (index) followUp = { meaningOnly: false }
+          else if (lockHolder(p.lock) === null) startIndex()
+        }
+        return
+      }
       default:
         return send({ id, type: "error", error: `unknown request type "${(msg as { type?: unknown }).type}"` })
     }
@@ -290,5 +328,6 @@ export async function serve(version: string): Promise<number> {
     run.kill()
   }
   client.close()
+  own.db?.close()
   return 0
 }

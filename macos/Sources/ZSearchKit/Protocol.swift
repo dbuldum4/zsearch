@@ -250,6 +250,76 @@ public struct IndexDone: Decodable, Hashable, Sendable {
     public var error: String?
 }
 
+/// A file whose contents search cannot find, or finds only in part (`problems` replies).
+public struct IndexProblem: Decodable, Hashable, Identifiable, Sendable {
+    public var path: String
+    public var size: Int
+    /// Milliseconds since 1970.
+    public var mtime: Double
+    /// "unreadable", "timeout", "transcription", "too-large", "no-text", "truncated", "dataset",
+    /// "secret", "names-only" or "cloud".
+    public var category: String
+    /// Why, in plain words, and what would change it.
+    public var reason: String
+    /// The reader's own error, for files that could not be read.
+    public var detail: String?
+    /// When its contents were last read (milliseconds since 1970), if known.
+    public var at: Double?
+    /// Reading the file again may help (`retryProblems`).
+    public var retry: Bool
+    /// The engine setting that decides it, if one does (`zsearch config` key).
+    public var setting: String?
+
+    public var id: String { path }
+    public var name: String { (path as NSString).lastPathComponent }
+    public var modified: Date { Date(timeIntervalSince1970: mtime / 1000) }
+}
+
+/// How many files have a kind of problem.
+public struct ProblemCount: Decodable, Hashable, Identifiable, Sendable {
+    public var category: String
+    /// The category in plain words ("Could not be read").
+    public var label: String
+    public var count: Int
+    public var retry: Bool
+
+    public var id: String { category }
+}
+
+/// A page of indexing problems (`problems` replies).
+public struct ProblemList: Decodable, Hashable, Sendable {
+    public var problems: [IndexProblem]
+    /// Problems the filter matches, in all pages.
+    public var total: Int
+    /// Problems by category, with the search text applied but not the category filter.
+    public var categories: [ProblemCount]
+}
+
+/// Why one file's contents are, or are not, searchable (`explain` replies).
+public struct Explanation: Decodable, Hashable, Sendable {
+    public var path: String
+    /// "content" (its text is searchable), "name" (only its name) or "none" (not in the index).
+    public var searchable: String
+    public var category: String?
+    public var reason: String
+    public var detail: String?
+    public var retry: Bool
+    public var setting: String?
+    public var at: Double?
+}
+
+/// What a `retryProblems` request marked to be read again.
+public struct RetryResult: Decodable, Hashable, Sendable {
+    public struct Refusal: Decodable, Hashable, Sendable {
+        public var path: String
+        public var reason: String
+    }
+
+    public var retried: Int
+    /// Files a retry would not help, and why.
+    public var refused: [Refusal]
+}
+
 public enum Mode: String, Codable, CaseIterable, Sendable {
     case find, fuzzy, semantic
 }
@@ -284,6 +354,15 @@ public enum Request: Sendable {
     case semanticCancelInstall
     /// Turn semantic search off and delete its model and index.
     case semanticRemove
+    /// A page of the files whose contents search cannot find, by category and then path. No
+    /// categories means all; `query` keeps paths containing it.
+    case problems(categories: [String] = [], query: String = "", offset: Int = 0, limit: Int = 200)
+    /// Why one file's contents are, or are not, searchable.
+    case explain(path: String)
+    /// Read these files again; the engine then starts an index update.
+    case retryProblems(paths: [String])
+    /// Read every file of a category again ("unreadable", "timeout", "transcription", "no-text").
+    case retryCategory(String)
 }
 
 public struct ConfigPatch: Encodable, Hashable, Sendable {
@@ -367,6 +446,10 @@ extension Request {
         var rebuild: Bool?
         var roots: [String]?
         var background: Bool?
+        var categories: [String]?
+        var offset: Int?
+        var paths: [String]?
+        var category: String?
     }
 
     /// The request as one line of JSON, without the trailing newline.
@@ -408,6 +491,16 @@ extension Request {
             w.type = "semanticCancelInstall"
         case .semanticRemove:
             w.type = "semanticRemove"
+        case let .problems(categories, query, offset, limit):
+            w.type = "problems"; w.offset = offset; w.limit = limit
+            if !categories.isEmpty { w.categories = categories }
+            if !query.isEmpty { w.query = query }
+        case let .explain(path):
+            w.type = "explain"; w.path = path
+        case let .retryProblems(paths):
+            w.type = "retryProblems"; w.paths = paths
+        case let .retryCategory(category):
+            w.type = "retryProblems"; w.category = category
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -432,6 +525,9 @@ public enum Message: Hashable, Sendable {
     case estimate(EstimateReply)
     case semantic(SemanticStatus)
     case semanticDownload(DownloadProgress)
+    case problems(ProblemList)
+    case explanation(Explanation)
+    case retried(RetryResult)
     /// A message type this version of the app does not know.
     case unknown(type: String)
 }
@@ -454,6 +550,7 @@ public struct Envelope: Hashable, Sendable {
     private struct ProgressBody: Decodable { var progress: IndexProgress }
     private struct ErrorBody: Decodable { var error: String }
     private struct SemanticBody: Decodable { var status: SemanticStatus }
+    private struct ExplanationBody: Decodable { var explanation: Explanation }
     private struct RefreshedBody: Decodable {
         var files: Int
         var changed: Bool
@@ -479,6 +576,9 @@ public struct Envelope: Hashable, Sendable {
         case "estimate": message = .estimate(try d.decode(EstimateReply.self, from: line))
         case "semantic": message = .semantic(try d.decode(SemanticBody.self, from: line).status)
         case "semanticDownload": message = .semanticDownload(try d.decode(DownloadProgress.self, from: line))
+        case "problems": message = .problems(try d.decode(ProblemList.self, from: line))
+        case "explanation": message = .explanation(try d.decode(ExplanationBody.self, from: line).explanation)
+        case "retried": message = .retried(try d.decode(RetryResult.self, from: line))
         case "refreshed":
             let r = try d.decode(RefreshedBody.self, from: line)
             message = .refreshed(files: r.files, changed: r.changed)
