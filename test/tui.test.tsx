@@ -140,7 +140,8 @@ describe("search screen", () => {
 
   test("typing shows results with snippets and a preview", async () => {
     await type(s, "calvin")
-    const f = await until(s, (f) => f.includes("paper.pdf") && f.includes("page 2"))
+    // The recent-files list shown before results arrive already holds "paper.pdf" and "page 2".
+    const f = await until(s, (f) => f.includes("Calvin cycle") && f.includes("p.2"))
     expect(f).toContain("Calvin cycle")
     expect(f).toContain("p.2") // location label in the result list
     expect(f).toContain("PDF")
@@ -355,6 +356,31 @@ describe("print mode", () => {
   })
 })
 
+describe("another process indexing", () => {
+  test("Ctrl-R waits for its refresh of changed files, but not for a full update", async () => {
+    const t = testServices(homeConfig())
+    await t.services.startIndex(homeConfig(), {}).done
+    t.resetEngine()
+    let partial = true
+    t.services.indexLockedBy = () => 999_999
+    t.services.partialRunHolds = () => partial
+    const s = await testRender(() => <App services={t.services} onExit={() => {}} />, { width: 120, height: 32 })
+    try {
+      await until(s, (f) => f.includes("Start typing") || f.includes("results"))
+      const before = t.calls.indexRuns
+      s.mockInput.pressKey("r", { ctrl: true })
+      await until(s, (f) => f.includes("Index ready"))
+      expect(t.calls.indexRuns).toBe(before + 1)
+      partial = false
+      s.mockInput.pressKey("r", { ctrl: true })
+      await until(s, (f) => f.includes("Another zsearch process (pid 999999)"))
+      expect(t.calls.indexRuns).toBe(before + 1)
+    } finally {
+      s.renderer.destroy()
+      t.close()
+    }
+  })
+})
 describe("terminal editor", () => {
   test.skipIf(!Bun.which("script"))("gets the terminal when stdout is piped (print mode)", async () => {
     const bin = join(corpus.home, "fake-bin")

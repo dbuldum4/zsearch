@@ -9,7 +9,7 @@
  */
 import { createInterface } from "node:readline"
 import { type Config, configExists, configStamp, ensureDirs, loadConfig, manualIndexing, validateConfigPatch, saveConfig } from "./config.ts"
-import type { IndexStats } from "./index/db.ts"
+import { type IndexStats, partialRunHolds } from "./index/db.ts"
 import { IndexRun } from "./index/client.ts"
 import { combine, describeEstimate, ESTIMATE_CANCELLED, estimateInBackground, type FolderEstimate } from "./index/estimate.ts"
 import type { IndexProgress } from "./index/indexer.ts"
@@ -75,12 +75,22 @@ export async function serve(version: string): Promise<number> {
   let closed = false
   /** The model download, while one runs. */
   const downloading: { run: AbortController | null } = { run: null }
-  /** A run to start when the one going ends: it started before semantic search was installed. */
-  let followUp: { meaningOnly: boolean } | null = null
-  const watcher = new RootWatcher(() => {
+  /**
+   * A run to start when the one going ends: one asked for while a refresh of changed paths runs
+   * (which does not walk every root), or one semantic search's install asks for.
+   */
+  let followUp: { rebuild: boolean; background: boolean; meaningOnly: boolean } | null = null
+  const queue = (next: { rebuild: boolean; background: boolean; meaningOnly: boolean }) => {
+    followUp = followUp
+      ? { rebuild: followUp.rebuild || next.rebuild, background: followUp.background && next.background, meaningOnly: followUp.meaningOnly && next.meaningOnly }
+      : next
+  }
+  /** The run going updates changed paths only (as far as known yet). */
+  let partial = false
+  const watcher = new RootWatcher((changed) => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
-    startIndex(undefined, false, true)
+    startIndex(undefined, false, true, false, changed)
   })
   watcher.update(config)
 
@@ -90,19 +100,27 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  /** `background`: the run started on its own (file changes, the app's schedule), not on request. */
-  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false) => {
+  /**
+   * `background`: the run started on its own (file changes, the app's schedule), not on request.
+   * `paths`: the files that changed, or null for file events that need every root walked.
+   */
+  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false, paths?: string[] | null) => {
     if (closed) return
     config = loadConfig()
     client.setConfig(config)
     watcher.update(config)
     if (index) {
       // Asked for while one runs, perhaps waiting on power: that one goes on now.
-      if (!background) { index.goNow(); return send({ id, type: "ok" }) }
+      if (!background) {
+        index.goNow()
+        if (partial) queue({ rebuild, background: false, meaningOnly })
+        return send({ id, type: "ok" })
+      }
       return send({ id, type: "error", error: "indexing is already running" })
     }
     const other = lockHolder(p.lock)
-    if (other !== null) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
+    // A run asked for waits for another process's refresh of changed paths (see the index worker).
+    if (other !== null && (background || paths !== undefined || !partialRunHolds(p.db))) return send({ id, type: "error", error: `another zsearch process (pid ${other}) is updating the index` })
     let last = 0
     let pending: IndexProgress | null = null
     // A held-back event goes out once the interval is up: the last one before a quiet spell
@@ -117,26 +135,32 @@ export async function serve(version: string): Promise<number> {
     }
     const run = new IndexRun(config, p.db, p.lock, {
       onProgress: (progress) => {
+        if (progress.phase !== "starting") partial = progress.partial === true
         pending = progress
         const now = Date.now()
         if (now - last < PROGRESS_MS) { trailing ??= setTimeout(flush, PROGRESS_MS - (now - last)); return }
         flush()
       },
       onCommit: () => client.refresh(),
-    }, rebuild, background, meaningOnly)
+    }, rebuild, background, meaningOnly, paths ?? undefined)
     index = run
+    // Until its walk starts, a run with paths is taken to update just those.
+    partial = Array.isArray(paths)
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
       if (trailing) clearTimeout(trailing)
       index = null
       if (pending) send({ type: "indexProgress", progress: pending })
       client.refresh(true)
+      if (paths !== undefined && outcome.status !== "done") watcher.carryOver(paths)
       if (outcome.status === "fatal") send({ type: "indexDone", status: "error", error: outcome.error })
       else if (outcome.status === "locked") send({ type: "indexDone", status: "locked" })
       else send({ type: "indexDone", status: outcome.status, progress: outcome.progress, error: outcome.progress.error })
       const next = followUp
       followUp = null
-      if (next && outcome.status !== "cancelled") startIndex(undefined, false, true, next.meaningOnly)
+      // A run that turned out to walk every root already did what a plain update asked for.
+      const covered = outcome.status === "done" && !outcome.progress.partial && !next?.rebuild && !next?.meaningOnly && !next?.background
+      if (next && outcome.status !== "cancelled" && !covered) startIndex(undefined, next.rebuild, next.background, next.meaningOnly)
     })
   }
 
@@ -203,6 +227,7 @@ export async function serve(version: string): Promise<number> {
       case "meaningIndex":
         return startIndex(id, false, false, true)
       case "cancelIndex":
+        followUp = null
         index?.cancel()
         return send({ id, type: "ok" })
       case "estimate": {
@@ -248,7 +273,7 @@ export async function serve(version: string): Promise<number> {
         // Read the files for semantic search now: with a whole update when updates run on their
         // own, and with Only when I ask, a semantic-only run over the text already read. A run
         // going now has its settings from before: this one follows it.
-        if (index) followUp = { meaningOnly: manualIndexing(config) }
+        if (index) queue({ rebuild: false, background: true, meaningOnly: manualIndexing(config) })
         else startIndex(undefined, false, true, manualIndexing(config))
         return
       }

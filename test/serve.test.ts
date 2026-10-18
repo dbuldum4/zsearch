@@ -332,3 +332,46 @@ test("serve: semantic search installed while an update runs gets a run of its ow
   s.proc.stdin.end()
   expect(await s.proc.exited).toBe(0)
 }, 60_000)
+
+test("serve: an update asked for during a refresh of changed files walks every folder after it", async () => {
+  corpus.write("live/notes.txt", "kept walking\n")
+  const helper = corpus.write("live-speech-helper", `#!${process.execPath}\nif (process.argv[2] === "--prepare") { console.log('{"ready":true}'); process.exit(0) }\nconsole.log(JSON.stringify({ start: 1, text: "spoken words" }))\nconsole.log(JSON.stringify({ complete: true, truncated: false }))\n`)
+  chmodSync(helper, 0o700)
+  // Low Power Mode holds a refresh that started on its own at the recording it would transcribe.
+  const s = server({ ZSEARCH_POWER: "low-power", ZSEARCH_TRANSCRIBE: helper }, ".zsearch-live")
+  try {
+    await s.until((m) => m.type === "ready")
+    s.send({ id: 1, type: "setConfig", config: { roots: ["~/live"], autoRefreshMinutes: 0, liveUpdates: true, semantic: { enabled: false } } })
+    await s.reply(1)
+    s.send({ id: 2, type: "index" })
+    await s.reply(2)
+    expect((await s.until((m) => m.type === "indexDone")).status).toBe("done")
+    s.send({ id: 3, type: "stats" })
+    const before = ((await s.reply(3)).stats as { lastFullWalkAt: number }).lastFullWalkAt
+    expect(before).toBeGreaterThan(0)
+
+    corpus.write("live/clip.wav", "stand-in audio")
+    const held = await s.until((m) => m.type === "indexProgress" && Boolean((m.progress as { waiting?: string }).waiting))
+    expect((held.progress as { partial?: boolean }).partial).toBe(true)
+    // Asked twice: one full update follows the refresh.
+    s.send({ id: 4, type: "index" })
+    expect((await s.reply(4)).type).toBe("ok")
+    s.send({ id: 5, type: "index" })
+    expect((await s.reply(5)).type).toBe("ok")
+    const refresh = await s.until((m) => m.type === "indexDone")
+    expect(refresh.status).toBe("done")
+    expect((refresh.progress as { partial?: boolean }).partial).toBe(true)
+    const full = await s.until((m) => m.type === "indexDone")
+    expect(full.status).toBe("done")
+    const p = full.progress as { partial?: boolean; scanned: number }
+    expect(p.partial).toBeUndefined()
+    expect(p.scanned).toBeGreaterThan((refresh.progress as { scanned: number }).scanned)
+    s.send({ id: 6, type: "stats" })
+    const seen: unknown[] = []
+    const stats = await s.until((m) => (seen.push(m.type), m.id === 6))
+    expect((stats.stats as { lastFullWalkAt: number }).lastFullWalkAt).toBeGreaterThan(before)
+    expect(seen).not.toContain("indexProgress")
+    s.proc.stdin.end()
+    expect(await s.proc.exited).toBe(0)
+  } finally { s.proc.kill() }
+}, 60_000)
