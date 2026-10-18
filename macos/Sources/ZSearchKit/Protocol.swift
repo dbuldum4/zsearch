@@ -308,6 +308,9 @@ public struct Searches: Decodable, Hashable, Sendable {
 /// A request to the engine. `id` is added by `EngineConnection`.
 public enum Request: Sendable {
     case search(query: String, mode: Mode, limit: Int = 200)
+    /// Why a search finds nothing (`diagnosis`): asked once its query has stayed the same for a
+    /// moment (see `NoResultsHelp.shouldExplain`), so typing never waits for it.
+    case explain(query: String, mode: Mode, limit: Int = 200)
     case preview(file: Int, query: String, mode: Mode, focusLine: Int? = nil)
     case stats
     case config
@@ -441,6 +444,8 @@ extension Request {
         switch self {
         case let .search(query, mode, limit):
             w.type = "search"; w.query = query; w.mode = mode; w.limit = limit
+        case let .explain(query, mode, limit):
+            w.type = "explain"; w.query = query; w.mode = mode; w.limit = limit
         case let .preview(file, query, mode, focusLine):
             w.type = "preview"; w.file = file; w.query = query; w.mode = mode; w.focusLine = focusLine
         case .stats:
@@ -497,6 +502,7 @@ extension Request {
 public enum Message: Hashable, Sendable {
     case ready(Ready)
     case results(SearchResponse)
+    case diagnosis(DiagnosisReply)
     case preview(FilePreview)
     case previews([FilePreview])
     case stats(IndexStats)
@@ -546,6 +552,7 @@ public struct Envelope: Hashable, Sendable {
         switch head.type {
         case "ready": message = .ready(try d.decode(Ready.self, from: line))
         case "results": message = .results(try d.decode(ResultsBody.self, from: line).response)
+        case "diagnosis": message = .diagnosis(try d.decode(DiagnosisReply.self, from: line))
         case "preview": message = .preview(try d.decode(PreviewBody.self, from: line).preview)
         case "previews": message = .previews(try d.decode(PreviewsBody.self, from: line).previews)
         case "stats": message = .stats(try d.decode(StatsBody.self, from: line).stats)

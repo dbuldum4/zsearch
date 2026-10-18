@@ -191,9 +191,44 @@ private struct NoResultsNote: View {
                 .textSelection(.enabled)
                 .padding()
         } else if model.hits.isEmpty, model.response != nil {
-            Text(model.query.isEmpty ? "No recent files" : "No results")
-                .foregroundStyle(.secondary)
+            if model.query.isEmpty {
+                Text("No recent files")
+                    .foregroundStyle(.secondary)
+            } else {
+                NoResultsHelpView(help: NoResultsHelp(model.currentDiagnosis, sentPrefix: Edition.semanticOnly ? "semantic:" : "", indexing: model.indexing))
+            }
         }
+    }
+}
+
+/// "No results", and why, with a button for what would find something.
+private struct NoResultsHelpView: View {
+    @Environment(SearchModel.self) private var model
+    let help: NoResultsHelp
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("No results")
+                .foregroundStyle(.secondary)
+            ForEach(help.items) { item in
+                HStack(spacing: 8) {
+                    Text(item.text)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if let action = item.action, let title = item.button {
+                        switch action {
+                        case let .query(query): Button(title) { model.query = query }
+                        case let .mode(mode): Button(title) { model.mode = mode }
+                        case .settings: SettingsLink { Text(title) }
+                        }
+                    }
+                }
+            }
+        }
+        .controlSize(.small)
+        .frame(maxWidth: 520)
+        .padding()
     }
 }
 

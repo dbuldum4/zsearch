@@ -60,6 +60,8 @@ final class SearchModel {
     private(set) var response: SearchResponse? {
         didSet { updateHasSelection() }
     }
+    /// Why a query found nothing, once asked (see `scheduleExplain`): perhaps for an earlier query.
+    private(set) var diagnosis: DiagnosisReply?
     /// Whether a result is selected. The menus read this rather than `selectedHit`, which
     /// changes with every move through the list.
     private(set) var hasSelection = false
@@ -93,6 +95,7 @@ final class SearchModel {
     /// Bumped on every start, so an old engine's exit is not mistaken for the current one's.
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var explainTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var prefetchTask: Task<Void, Never>?
     /// Readies the preview about to show (see `PreviewPreparation`).
@@ -118,6 +121,8 @@ final class SearchModel {
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
     var hits: [SearchHit] { response?.hits ?? [] }
+    /// Why the query as it is now found nothing, when the engine has said.
+    var currentDiagnosis: SearchDiagnosis? { NoResultsHelp.current(diagnosis, sentQuery: Self.sent(query), mode: mode) }
     var selectedHit: SearchHit? { hits.first { $0.id == selection } }
 
     /// A preview is for a file as the result list shows it: one changed on disk since (or whose
@@ -311,6 +316,7 @@ final class SearchModel {
 
     func scheduleSearch(delay: Double = 0.016) {
         searchTask?.cancel()
+        explainTask?.cancel()
         // Previews of the results around the selection can wait until the typing stops.
         prefetchTask?.cancel()
         prefetchTask = nil
@@ -340,6 +346,9 @@ final class SearchModel {
         do {
             guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
+            // The explanation was for the index as it was: a refresh asks again after the delay.
+            diagnosis = nil
+            defer { scheduleExplain() }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
             if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice, current.error == r.error { return }
             let previous = response
@@ -354,6 +363,22 @@ final class SearchModel {
             if selection == shown { loadPreview() }
         } catch {
             show(error.localizedDescription)
+        }
+    }
+
+    /// Ask why the result list is empty once the query has stayed the same for a moment. Typing
+    /// again cancels the request; a reply for another query is not shown (`currentDiagnosis`).
+    private func scheduleExplain() {
+        explainTask?.cancel()
+        explainTask = nil
+        let (sent, mode) = (Self.sent(query), self.mode)
+        guard NoResultsHelp.shouldExplain(response, sentQuery: sent, mode: mode), let engine else { return }
+        explainTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(NoResultsHelp.explainDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard case let .diagnosis(reply)? = try? await engine.request(.explain(query: sent, mode: mode)) else { return }
+            guard !Task.isCancelled, let self else { return }
+            self.diagnosis = reply
         }
     }
 

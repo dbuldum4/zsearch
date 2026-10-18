@@ -19,6 +19,7 @@ import {
 } from "./config.ts"
 import { clearIndex, getMeta, indexStats, openDb, PARTIAL_RUN, partialRunHolds, setMeta } from "./index/db.ts"
 import { excludingPath } from "./index/exclude.ts"
+import { explainDiagnosis } from "./search/diagnose.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
 import { acquireLock, lockHolder } from "./index/lock.ts"
@@ -299,6 +300,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
   const summary = `${formatCount(res.hits.length)} of ${formatCount(res.total)} results · ${res.strategy} · ${formatDuration(res.elapsedMs)}${res.partial ? " · partial (search budget)" : ""}`
   if (process.stderr.isTTY) console.error(c.dim(summary))
   if (res.notice) console.error(c.yellow(res.notice))
+  for (const line of explainDiagnosis(res.diagnosis)) console.error(c.dim(line))
   return res.hits.length ? 0 : 1
 }
 

@@ -20,6 +20,7 @@ import { lockHolder } from "../index/lock.ts"
 import { KIND_ALIASES, type Kind } from "../kinds.ts"
 import { pdftotextPath } from "../platform.ts"
 import { SearchClient } from "../search/client.ts"
+import { explainDiagnosis } from "../search/diagnose.ts"
 import type { SearchHit, SearchResponse } from "../search/engine.ts"
 import type { Mode } from "../search/query.ts"
 import type { ReadOptions, ReadResult } from "../search/read.ts"
@@ -148,9 +149,10 @@ class Host {
     })
   }
 
-  search(query: string, mode: Mode, limit: number): Promise<SearchResponse> {
+  /** `explain`: explain an empty result (see `SearchEngine.explain`). */
+  search(query: string, mode: Mode, limit: number, explain = true): Promise<SearchResponse> {
     this.reloadConfig()
-    return this.exclusive(() => this.client.search(query, mode, limit))
+    return this.exclusive(() => this.client.search(query, mode, limit, explain))
   }
 
   private pools = new Map<string, { res: SearchResponse; at: number }>()
@@ -591,6 +593,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         offset: { type: "integer" },
         partial: bool("The search budget stopped a full scan early: there may be more matches"),
         notice: str("A warning about the query, such as a filter that was not understood"),
+        diagnosis: { type: "object", description: "Why nothing matched, when nothing did: filters without which the query matches (with the query to run instead), folders outside the index, unreadable files, indexing still running, and other modes that find something" },
         hits: {
           type: "array",
           items: loose(
@@ -629,6 +632,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
         offset,
         partial: res.partial,
         ...(res.notice ? { notice: res.notice } : {}),
+        ...(res.diagnosis ? { diagnosis: res.diagnosis } : {}),
         hits: hits.map((h) => {
           const paged = PAGED_KINDS.has(h.kind) || h.lines.some((l) => l.page > 1)
           return {
@@ -647,7 +651,9 @@ Each result gives the file's absolute path, kind, size, modification time and it
       if (!hits.length) {
         out.push(res.hits.length ? `No results past the first ${formatCount(res.hits.length)} for ${JSON.stringify(query)}.` : `No files match ${JSON.stringify(query)}.`)
         const { stats } = await host.stats()
+        const explained = explainDiagnosis(res.diagnosis)
         if (stats.lastIndexedAt === null && stats.files === 0) out.push("The index is empty: call update_index to build it (it indexes ~/Documents and ~/Downloads unless you give other folders).")
+        else if (explained.length) out.push(...explained.map((line) => `- ${line}`))
         else if (!res.hits.length) out.push(`Only these folders are indexed: ${host.config.roots.join(", ")}. Try fewer words, mode "fuzzy" for names, or fewer filters.`)
       } else {
         const range = offset || res.total > hits.length ? `, showing ${offset + 1}–${offset + hits.length}` : ""
@@ -1005,7 +1011,7 @@ async function fileContents(host: Host, path: string, maxChars: number): Promise
 
 /** Indexed file paths for completing `value`, best first. */
 async function completePath(host: Host, value: string): Promise<string[]> {
-  const res = await host.search(value.trim() ? `${value.trim()} -type:folder` : "", value.trim() ? "fuzzy" : "find", 20)
+  const res = await host.search(value.trim() ? `${value.trim()} -type:folder` : "", value.trim() ? "fuzzy" : "find", 20, false)
   return res.hits.filter((h) => !h.isDir).map((h) => h.path)
 }
 
