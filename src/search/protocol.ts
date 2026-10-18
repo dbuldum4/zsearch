@@ -7,7 +7,7 @@ import type { ReadOptions, ReadResult } from "./read.ts"
 
 export type SearchIn =
   | { type: "init"; dbPath: string; config: Config }
-  | { type: "search"; qid: number; query: string; mode: Mode; limit: number; explain: boolean }
+  | { type: "search"; qid: number; query: string; mode: Mode; limit: number; explain: boolean; groupDuplicates?: boolean }
   | { type: "explain"; qid: number; query: string; mode: Mode; limit: number }
   | { type: "preview"; qid: number; id: number; query: string; mode: Mode; focusLine?: number }
   | { type: "previews"; qid: number; ids: number[]; query: string; mode: Mode; focusLines?: (number | null)[] }

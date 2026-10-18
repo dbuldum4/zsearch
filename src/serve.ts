@@ -27,7 +27,7 @@ import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/
 import { downloadModels } from "./semantic/model.ts"
 
 type ServeIn =
-  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number; explain?: boolean }
+  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number; explain?: boolean; groupDuplicates?: boolean }
   | { id?: number; type: "explain"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
   | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
@@ -253,7 +253,7 @@ export async function serve(version: string): Promise<number> {
       case "search": {
         // Searches come per keystroke: an empty result is explained on request (`explain`), once
         // the query has stayed the same for a moment, so the reply never waits for it.
-        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200, msg.explain === true)
+        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200, msg.explain === true, msg.groupDuplicates === true)
         return send(response ? { id, type: "results", response } : { id, type: "cancelled" })
       }
       case "explain": {

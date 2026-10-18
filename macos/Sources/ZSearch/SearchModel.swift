@@ -347,7 +347,7 @@ final class SearchModel {
         guard let engine else { return }
         let (query, mode) = (self.query, self.mode)
         do {
-            guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
+            guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode, groupDuplicates: UserDefaults.standard.object(forKey: AppSettings.groupDuplicates) as? Bool ?? true)) else { return }
             guard query == self.query, mode == self.mode else { return }
             // The explanation was for the index as it was: a refresh asks again after the delay.
             diagnosis = nil
@@ -808,9 +808,13 @@ final class SearchModel {
     // MARK: - Actions
 
     func open(_ hit: SearchHit) {
+        open(path: hit.path)
+    }
+
+    func open(path: String) {
         QuickPanel.shared.fileOpened()
-        NSWorkspace.shared.open(URL(fileURLWithPath: hit.path))
-        if let engine { Task { _ = try? await engine.request(.opened(path: hit.path)) } }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        if let engine { Task { _ = try? await engine.request(.opened(path: path)) } }
         rememberSearch()
     }
 
@@ -819,8 +823,12 @@ final class SearchModel {
     }
 
     func reveal(_ hit: SearchHit) {
+        reveal(paths: [hit.path])
+    }
+
+    func reveal(paths: [String]) {
         QuickPanel.shared.fileOpened()
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.path)])
+        NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(fileURLWithPath: $0) })
         rememberSearch()
     }
 
@@ -855,9 +863,13 @@ final class SearchModel {
     }
 
     func copyPath(_ hit: SearchHit) {
+        copyPath(hit.path)
+    }
+
+    func copyPath(_ path: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(hit.path, forType: .string)
-        show("Copied \(hit.path)")
+        NSPasteboard.general.setString(path, forType: .string)
+        show("Copied \(path)")
     }
 
     /// Several paths, one per line, and the files themselves: Finder and Mail paste the files.

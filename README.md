@@ -382,7 +382,7 @@ Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and
 
 ```text
 zsearch [query]                 open the interactive search
-zsearch search <query>          print matches and exit (-m find|fuzzy|semantic, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json)
+zsearch search <query>          print matches and exit (-m find|fuzzy|semantic, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json, --group-duplicates)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json); --errors[=<category>] lists indexing problems and why
 zsearch why <path...>           why files' contents are, or are not, searchable (--json)
@@ -406,6 +406,8 @@ zsearch mcp                     MCP server on stdin/stdout, for Claude and other
 zsearch search -0 'type:pdf invoice mtime:<30d' | xargs -0 -I{} cp {} ~/invoices/
 zsearch search --json -e 'TODO\(\w+\)' | jq '.hits[].path'
 ```
+
+With `--group-duplicates`, byte-identical files (same size and SHA-256, or hard links) are one result: the best ranked, listing where the others are (`copies` in `--json`, flagged `copiesMore` when the page may not hold them all). Only results of the same size are read and compared, up to 64 MB each. Hashing runs off the search's way, smallest files first, resuming half-read files where they stopped; a keystroke waits at most 40 ms for it, the CLI its whole time budget. Without the flag every file is a result of its own, as before. The Mac app groups copies unless turned off in Settings.
 
 ## How it works
 

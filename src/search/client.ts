@@ -176,8 +176,8 @@ export class SearchClient {
   }
 
   /** `explain`: explain an empty result before replying (see `explain` for searches while typing). */
-  search(query: string, mode: Mode, limit = 200, explain = true): Promise<SearchResponse | null> {
-    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit, explain }))
+  search(query: string, mode: Mode, limit = 200, explain = true, groupDuplicates = false): Promise<SearchResponse | null> {
+    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit, explain, groupDuplicates }))
   }
 
   /**

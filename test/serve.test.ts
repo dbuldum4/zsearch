@@ -99,6 +99,7 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   expect(patched.roots).toEqual(["~", "~/another-frontend-root"])
   expect(patched.exclude).toEqual(["*.nothing"])
 
+  corpus.write("Downloads/pancakes copy.txt", readFileSync(join(corpus.home, "notes/recipes/pancakes.txt")))
   s.send({ id: 2, type: "index" })
   expect((await s.reply(2)).type).toBe("ok")
   const done = await s.until((m) => m.type === "indexDone")
@@ -108,8 +109,14 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   const res = await s.reply(3)
   expect(res.type).toBe("results")
   const hits = (res.response as { hits: { id: number; path: string }[] }).hits
-  const hit = hits.find((h) => h.path.endsWith("pancakes.txt"))
+  const hit = hits.find((h) => h.path.endsWith("/pancakes.txt"))
   expect(hit).toBeDefined()
+  expect(hits.some((h) => h.path.endsWith("/pancakes copy.txt"))).toBe(true)
+  s.send({ id: 30, type: "search", query: "pancakes", mode: "find", groupDuplicates: true })
+  const grouped = ((await s.reply(30)).response as { hits: { path: string; copies?: { path: string }[] }[] }).hits
+  expect(grouped).toHaveLength(hits.length - 1)
+  const group = grouped.find((h) => h.copies)!
+  expect([group.path, ...group.copies!.map((c) => c.path)].map((p) => p.slice(p.lastIndexOf("/") + 1)).sort()).toEqual(["pancakes copy.txt", "pancakes.txt"])
 
   s.send({ id: 4, type: "preview", file: hit!.id, query: "pancakes" })
   const pv = await s.reply(4)
@@ -143,7 +150,8 @@ test("serve: index, search, preview and stats over JSON lines", async () => {
   // A query that finds something has nothing to explain; a search inline when asked to.
   s.send({ id: 45, type: "explain", query: "pancakes", mode: "find" })
   expect(await s.reply(45)).toEqual({ id: 45, type: "diagnosis", query: "pancakes", mode: "find" })
-  s.send({ id: 46, type: "search", query: "pancakes type:pdf", mode: "find", explain: true })
+  // Grouping and inline diagnosis are independent options, including for an empty page.
+  s.send({ id: 46, type: "search", query: "pancakes type:pdf", mode: "find", explain: true, groupDuplicates: true })
   expect(((await s.reply(46)).response as { diagnosis?: { filters?: unknown[] } }).diagnosis?.filters).toHaveLength(1)
   // A newer search supersedes an explanation.
   s.send({ id: 47, type: "explain", query: "pancakes type:pdf", mode: "find" })

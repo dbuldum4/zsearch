@@ -26,6 +26,24 @@ public struct SearchHit: Decodable, Hashable, Identifiable, Sendable {
     public var namePositions: [Int]
     public var lines: [LineMatch]
     public var matchCount: Int
+    /// Byte-identical files folded into this one, when the search asked for `groupDuplicates`.
+    public var copies: [FileCopy]?
+    /// More indexed files share this hit's size than the copies listed: there may be more of them.
+    public var copiesMore: Bool?
+
+    public var name: String { (path as NSString).lastPathComponent }
+    public var folder: String { (display as NSString).deletingLastPathComponent }
+    public var modified: Date { Date(timeIntervalSince1970: mtime / 1000) }
+    /// This file and its identical copies.
+    public var copyCount: Int { 1 + (copies?.count ?? 0) }
+}
+
+public struct FileCopy: Decodable, Hashable, Identifiable, Sendable {
+    public var id: Int
+    public var path: String
+    public var display: String
+    /// Milliseconds since 1970.
+    public var mtime: Double
 
     public var name: String { (path as NSString).lastPathComponent }
     public var folder: String { (display as NSString).deletingLastPathComponent }
@@ -381,7 +399,8 @@ public struct Searches: Decodable, Hashable, Sendable {
 
 /// A request to the engine. `id` is added by `EngineConnection`.
 public enum Request: Sendable {
-    case search(query: String, mode: Mode, limit: Int = 200)
+    /// `groupDuplicates`: one hit per set of byte-identical files, listing the others as `copies`.
+    case search(query: String, mode: Mode, limit: Int = 200, groupDuplicates: Bool = false)
     /// Why a search finds nothing (`diagnosis`): asked once its query has stayed the same for a
     /// moment (see `NoResultsHelp.shouldExplain`), so typing never waits for it.
     case explain(query: String, mode: Mode, limit: Int = 200)
@@ -517,6 +536,7 @@ extension Request {
         var rebuild: Bool?
         var roots: [String]?
         var background: Bool?
+        var groupDuplicates: Bool?
         var categories: [String]?
         var offset: Int?
         var paths: [String]?
@@ -529,8 +549,9 @@ extension Request {
     public func encoded(id: Int) throws -> Data {
         var w = Wire(id: id, type: "")
         switch self {
-        case let .search(query, mode, limit):
+        case let .search(query, mode, limit, groupDuplicates):
             w.type = "search"; w.query = query; w.mode = mode; w.limit = limit
+            if groupDuplicates { w.groupDuplicates = true }
         case let .explain(query, mode, limit):
             w.type = "explain"; w.query = query; w.mode = mode; w.limit = limit
         case let .preview(file, query, mode, focusLine):

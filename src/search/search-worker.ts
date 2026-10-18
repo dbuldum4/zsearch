@@ -53,7 +53,7 @@ self.onmessage = async (ev: MessageEvent<SearchIn>) => {
         if (!engine) throw new Error("search worker not initialised")
         latestSearch = msg.qid
         const qid = msg.qid
-        const response = await engine.search(msg.query, msg.mode, { limit: msg.limit, explain: msg.explain, cancelled: () => latestSearch !== qid })
+        const response = await engine.search(msg.query, msg.mode, { limit: msg.limit, explain: msg.explain, groupDuplicates: msg.groupDuplicates, cancelled: () => latestSearch !== qid })
         if (latestSearch === qid) send({ type: "results", qid, response })
         break
       }
