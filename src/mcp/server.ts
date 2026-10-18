@@ -477,7 +477,7 @@ const nullable = (s: JsonSchema): JsonSchema => ({ ...s, type: [s.type as string
 
 const KINDS = "folder, code, text, markdown, data, web, pdf, doc, sheet, slides, ebook, email, image, audio, video, archive, app, other"
 
-const LINE_SCHEMA = loose({ line: { type: "integer" }, page: { type: "integer" }, text: { type: "string" } }, ["line", "text"])
+const LINE_SCHEMA = loose({ line: { type: "integer" }, page: { type: "integer" }, startSeconds: { type: "number" }, text: { type: "string" } }, ["line", "text"])
 const STATE_SCHEMA = loose(
   {
     roots: strList("Folders the settings say to index"),

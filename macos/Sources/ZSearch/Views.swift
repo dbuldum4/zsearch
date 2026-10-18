@@ -378,6 +378,9 @@ struct PreviewPane: View {
                 }
             }
             .onChange(of: p.path) { _, path in Playback.shared.stop(unless: path) }
+            // With no results or a closed window there is no player to stop it from, and a pane
+            // shown again for another file sees no change of path.
+            .onDisappear { Playback.shared.stop() }
             .task(id: Showing(preview: p, pdfShowsText: pdfShowsText, documentShowsText: documentShowsText)) {
                 guard PreviewPreparation.needsDocument(p) else { return }
                 await PreviewPreparation.prepare(p)
