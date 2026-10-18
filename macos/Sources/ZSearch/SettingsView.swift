@@ -83,6 +83,10 @@ private struct GeneralSettings: View {
                     }
                 }
             }
+            Toggle("Keep recent searches", isOn: searchHistory)
+            Text("Searches a result was opened from, in the bookmark menu. Off, nothing new is kept or shown; earlier ones stay until cleared (zsearch history clear).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Picker("Preview PDFs as", selection: $pdfShowsText) {
                 Text("Pages").tag(false)
                 Text("Text").tag(true)
@@ -139,6 +143,13 @@ private struct GeneralSettings: View {
         Binding(
             get: { Mode(rawValue: model.config?.defaultMode ?? "find") ?? .find },
             set: { model.updateConfig(ConfigPatch(defaultMode: $0.rawValue), reindex: false) }
+        )
+    }
+
+    private var searchHistory: Binding<Bool> {
+        Binding(
+            get: { model.config?.searchHistory ?? true },
+            set: { model.updateConfig(ConfigPatch(searchHistory: $0), reindex: false) }
         )
     }
 
