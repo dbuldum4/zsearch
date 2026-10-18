@@ -41,6 +41,7 @@ struct ContentView: View {
                 .environment(model)
                 .interactiveDismissDisabled(model.firstRun)
         }
+        .modifier(SavedSearchDialogs(enabled: !isPanel))
         .onAppear {
             searchFocused = true
             guard !isPanel else { return }
@@ -86,6 +87,7 @@ struct SearchBar: View {
                     model.query = ""
                     return .handled
                 }
+            SearchesMenu()
             if !Edition.semanticOnly {
                 Picker("Mode", selection: $model.mode) {
                     Text("Find").tag(Mode.find)
