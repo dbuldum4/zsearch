@@ -234,6 +234,9 @@ export function rank(opts: { best: Map<number, { z: number; row: number }>; name
 
 /* ------------------------------------------------------- the vectors -- */
 
+type PassageRow = [file: number, n: number, hash: Uint8Array, start: number, end: number]
+type FileRow = [file: number, sig: string, upto: number, total: number, note: string | null]
+
 /**
  * The semantic index in memory: each distinct vector once (16-bit floats), and each passage
  * with the vector it uses. Cosine similarity is scored per distinct vector, then read per passage.
@@ -256,6 +259,16 @@ export class VectorIndex {
   /** Stored as 16-bit floats, held as 32-bit ones: twice the memory, scored in about half the time. */
   private values = new Float32Array(0)
   private distinct = 0
+  /** Passages read from the store to make this index: all of them, or those of the files changed since the previous one (see `load`). */
+  read = 0
+  /** The model, main index build and layout the vectors were loaded for, and what `load` needs to take in changes since. */
+  private source: string | null = null
+  /** Each held vector's place in `values`, by its hash. */
+  private slots: Map<string, number> | null = null
+  /** Each file's row in `files` as loaded. */
+  private states = new Map<number, string>()
+  /** Files with a passage whose vector is missing. */
+  private missing = new Set<number>()
 
   get size(): number {
     return this.file.length
@@ -310,9 +323,100 @@ export class VectorIndex {
     return v
   }
 
-  static load(db: Database): VectorIndex {
+  /**
+   * The vectors in `db`. With `previous`, the newest index loaded from the same store, only what
+   * changed since is read: the passages of files whose row in `files` changed (the indexer writes
+   * a file's passages and its row together) and vectors not held yet (a hash's vector never
+   * changes). Vectors of another model, main index build or store layout are read in full.
+   */
+  static load(db: Database, previous: VectorIndex | null = null): VectorIndex {
+    const source = ["fingerprint", "generation", "schema_version"].map((k) => getMeta(db, k)).join("\n")
+    const slots = previous?.source === source && previous.dim > 0 ? previous.slots : null
+    if (!previous || !slots) return VectorIndex.loadAll(db, source)
+    // Its slots go on in the new index (and are changed below): it can't take in changes again.
+    previous.slots = null
     const v = new VectorIndex()
-    const index = new Map<string, number>()
+    v.source = source
+    v.dim = previous.dim
+    const files = db.query("SELECT file, sig, upto, total, note FROM files").values() as FileRow[]
+    // Files with a missing vector are read again: it may be stored by now.
+    const changed = new Set(previous.missing)
+    for (const [file, sig, upto, total, note] of files) {
+      const state = `${upto}:${total}:${note ?? ""}:${sig}`
+      v.states.set(file, state)
+      if (previous.states.get(file) !== state) changed.add(file)
+    }
+    for (const file of previous.states.keys()) if (!v.states.has(file)) changed.add(file)
+
+    const dim = v.dim
+    let values = previous.values
+    let distinct = previous.distinct
+    const vectorOf = db.query("SELECT vec FROM vectors WHERE hash = ?")
+    const slotOf = (hash: Uint8Array): number | undefined => {
+      const key = Buffer.from(hash).toString("hex")
+      let slot = slots.get(key)
+      if (slot !== undefined) return slot
+      const row = vectorOf.get(hash) as { vec: Uint8Array } | null
+      const vec = row && vectorValues(row.vec, dim)
+      if (!vec) return undefined
+      // Grown into a new array: older indexes go on reading the one they have, up to their own count.
+      if ((distinct + 1) * dim > values.length) {
+        const grown = new Float32Array(Math.max(distinct + 1024, Math.ceil(distinct * 1.25)) * dim)
+        grown.set(values.subarray(0, distinct * dim))
+        values = grown
+      }
+      values.set(vec, distinct * dim)
+      slots.set(key, (slot = distinct++))
+      return slot
+    }
+    const passagesOf = db.query("SELECT file, n, hash, start, end FROM passages WHERE file = ? ORDER BY n")
+    const fresh = new Map<number, [file: number, n: number, start: number, end: number, slot: number][]>()
+    for (const file of changed) {
+      const rows = passagesOf.values(file) as PassageRow[]
+      v.read += rows.length
+      const kept: [number, number, number, number, number][] = []
+      for (const [, num, hash, start, end] of rows) {
+        const slot = slotOf(hash)
+        if (slot === undefined) v.missing.add(file)
+        else kept.push([file, num, start, end, slot])
+      }
+      if (kept.length) fresh.set(file, kept)
+    }
+
+    let n = 0
+    for (let i = 0; i < previous.size; i++) if (!changed.has(Math.abs(previous.file[i]!))) n++
+    for (const rows of fresh.values()) n += rows.length
+    v.allocate(n)
+    // In file order, as a full load reads them, so meaning scores add up in the same order.
+    const added = [...fresh.keys()].sort((a, b) => a - b)
+    let out = 0
+    let a = 0
+    for (let i = 0; i < previous.size || a < added.length;) {
+      const file = i < previous.size ? Math.abs(previous.file[i]!) : Infinity
+      if (a < added.length && added[a]! < file) {
+        for (const [f, num, start, end, slot] of fresh.get(added[a++]!)!) v.put(out++, f, num, start, end, slot)
+        continue
+      }
+      let j = i + 1
+      while (j < previous.size && Math.abs(previous.file[j]!) === file) j++
+      if (!changed.has(file)) {
+        for (const key of ["file", "start", "end", "vector", "modality", "setsScale"] as const) v[key].set(previous[key].subarray(i, j), out)
+        out += j - i
+      }
+      i = j
+    }
+    v.values = values
+    v.distinct = distinct
+    v.slots = slots
+    v.compact()
+    v.finish(db, files)
+    return v
+  }
+
+  private static loadAll(db: Database, source: string): VectorIndex {
+    const v = new VectorIndex()
+    v.source = source
+    const slots = new Map<string, number>()
     const vecs = db.query("SELECT hash, vec FROM vectors").values() as [Uint8Array, Uint8Array][]
     v.dim = vecs.length ? vecs[0]![1].length / 2 : 0
     v.values = new Float32Array(vecs.length * v.dim)
@@ -321,42 +425,79 @@ export class VectorIndex {
       const values = vectorValues(vec, v.dim)
       if (!values) continue
       v.values.set(values, k * v.dim)
-      index.set(Buffer.from(hash).toString("hex"), k++)
+      slots.set(Buffer.from(hash).toString("hex"), k++)
     }
     v.distinct = k
-    const rows = db.query("SELECT file, n, hash, start, end FROM passages").values() as [number, number, Uint8Array, number, number][]
+    const rows = db.query("SELECT file, n, hash, start, end FROM passages").values() as PassageRow[]
+    v.read = rows.length
     // Files with a passage whose vector is missing: their best passage can't be known.
-    const missing = new Set<number>()
-    const keep = rows.filter((r) => {
-      if (index.has(Buffer.from(r[2]).toString("hex"))) return true
-      missing.add(r[0])
-      return false
-    })
-    const n = keep.length
-    v.file = new Int32Array(n)
-    v.start = new Int32Array(n)
-    v.end = new Int32Array(n)
-    v.vector = new Int32Array(n)
-    v.modality = new Uint8Array(n)
-    v.setsScale = new Uint8Array(n)
-    keep.forEach(([file, num, hash, start, end], i) => {
-      const image = start < 0
-      // An image's own vector belongs to the image's file (stored as its negative id).
-      v.file[i] = image ? -file : file
-      v.start[i] = start
-      v.end[i] = end
-      v.vector[i] = index.get(Buffer.from(hash).toString("hex"))!
-      v.modality[i] = image ? 1 : 0
-      v.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
-    })
-    v.completeSeq = getMeta(db, "complete_seq")
-    v.fingerprint = getMeta(db, "fingerprint")
-    v.complete = !!v.completeSeq && keep.length === rows.length
-    for (const [file, sig, upto, total] of db.query("SELECT file, sig, upto, total FROM files").values() as [number, string, number, number][]) {
-      if (upto !== total) v.complete = false
-      else if (!missing.has(file)) v.sigs.set(file, sig)
+    const keep: [file: number, n: number, start: number, end: number, slot: number][] = []
+    for (const [file, num, hash, start, end] of rows) {
+      const slot = slots.get(Buffer.from(hash).toString("hex"))
+      if (slot === undefined) v.missing.add(file)
+      else keep.push([file, num, start, end, slot])
     }
+    v.allocate(keep.length)
+    keep.forEach(([file, num, start, end, slot], i) => v.put(i, file, num, start, end, slot))
+    v.slots = slots
+    const files = db.query("SELECT file, sig, upto, total, note FROM files").values() as FileRow[]
+    for (const [file, sig, upto, total, note] of files) v.states.set(file, `${upto}:${total}:${note ?? ""}:${sig}`)
+    v.finish(db, files)
     return v
+  }
+
+  private allocate(n: number) {
+    this.file = new Int32Array(n)
+    this.start = new Int32Array(n)
+    this.end = new Int32Array(n)
+    this.vector = new Int32Array(n)
+    this.modality = new Uint8Array(n)
+    this.setsScale = new Uint8Array(n)
+  }
+
+  private put(i: number, file: number, num: number, start: number, end: number, slot: number) {
+    const image = start < 0
+    // An image's own vector belongs to the image's file (stored as its negative id).
+    this.file[i] = image ? -file : file
+    this.start[i] = start
+    this.end[i] = end
+    this.vector[i] = slot
+    this.modality[i] = image ? 1 : 0
+    this.setsScale[i] = image || num < SCALE_PASSAGES ? 1 : 0
+  }
+
+  /** Drop vectors no passage uses any more (of edited and deleted files) once they are a good share of them. */
+  private compact() {
+    const used = new Uint8Array(this.distinct)
+    let count = 0
+    for (const k of this.vector) if (!used[k]) { used[k] = 1; count++ }
+    if (this.distinct - count <= Math.max(4096, count / 4)) return
+    const dim = this.dim
+    const remap = new Int32Array(this.distinct).fill(-1)
+    const values = new Float32Array(count * dim)
+    let k = 0
+    for (let slot = 0; slot < this.distinct; slot++) {
+      if (!used[slot]) continue
+      values.set(this.values.subarray(slot * dim, (slot + 1) * dim), k * dim)
+      remap[slot] = k++
+    }
+    for (let i = 0; i < this.vector.length; i++) this.vector[i] = remap[this.vector[i]!]!
+    for (const [key, slot] of this.slots!) {
+      if (remap[slot]! >= 0) this.slots!.set(key, remap[slot]!)
+      else this.slots!.delete(key)
+    }
+    this.values = values
+    this.distinct = count
+  }
+
+  private finish(db: Database, files: FileRow[]) {
+    this.completeSeq = getMeta(db, "complete_seq")
+    this.fingerprint = getMeta(db, "fingerprint")
+    this.complete = !!this.completeSeq && this.missing.size === 0
+    for (const [file, sig, upto, total] of files) {
+      if (upto !== total) this.complete = false
+      else if (!this.missing.has(file)) this.sigs.set(file, sig)
+    }
   }
 
   /** Cosine similarity of `query` (L2-normalized) with every passage. */
@@ -382,8 +523,9 @@ export class VectorIndex {
 /**
  * The semantic index for searches, reloaded when the indexer has changed it: at once when a pass
  * completes, otherwise at most every few seconds, and every `partialReloadMs` while a pass is
- * still writing to it (a large index takes a while to load, and the files embedded since are
- * still found by their words).
+ * still writing to it (the files embedded since are still found by their words). A reload reads
+ * only the files changed since the last one (see `VectorIndex.load`): reading every vector again
+ * takes seconds for a large index, and searches wait for it.
  */
 export class SemanticVectors {
   private db: Database | null = null
@@ -433,7 +575,7 @@ export class SemanticVectors {
       }
       const hasTables = this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'passages'").get()
       this.db.transaction(() => {
-        this.index = hasTables ? VectorIndex.load(this.db!) : new VectorIndex()
+        this.index = hasTables ? VectorIndex.load(this.db!, this.index) : new VectorIndex()
         this.generation = hasTables ? getMeta(this.db!, "generation") : null
       })()
       this.version = dv

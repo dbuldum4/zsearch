@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
-import { clearIndex, openDb } from "../src/index/db.ts"
+import { clearIndex, getMeta as getMainMeta, openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { kindOf, semanticExcluded } from "../src/kinds.ts"
 import type { PowerGate } from "../src/index/power.ts"
@@ -12,7 +12,7 @@ import { SearchEngine } from "../src/search/engine.ts"
 import { parseQuery } from "../src/search/query.ts"
 import { CHUNK_CHARS, chunkText, hasWords, titleOf } from "../src/semantic/chunk.ts"
 import { Embedder } from "../src/semantic/helper.ts"
-import { helperVectorVersion, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
+import { helperVectorVersion, mainGeneration, runSemanticPass, semanticAvailable, SemanticIndexer, type SemanticOptions } from "../src/semantic/indexer.ts"
 import { GRANITE, installedModel, MODELS, modelBytes } from "../src/semantic/model.ts"
 import { bestByFile, DIGUP_RANKING, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, RANKING, SemanticVectors, strongCount, VectorIndex } from "../src/semantic/search.ts"
 import { openSemanticDb, packVector, semanticDbPath, semanticStats, setMeta, vectorValues } from "../src/semantic/store.ts"
@@ -194,6 +194,62 @@ describe("DigUp's ranking", () => {
     }
   })
 
+  test("a reload reads only the files changed since, and makes the index a full load would", () => {
+    const db = openSemanticDb(":memory:")!
+    try {
+      setMeta(db, "fingerprint", "granite")
+      const hash = (i: number) => { const h = new Uint8Array(16); new DataView(h.buffer).setUint32(0, i); return h }
+      const addVector = (i: number) => db.query("INSERT OR IGNORE INTO vectors(hash, vec) VALUES (?, ?)").run(hash(i), packVector(new Float32Array([Math.cos(i), Math.sin(i), (i % 7) / 10]), 0, 3))
+      const putFile = (file: number, sig: string, vectors: number[]) => {
+        db.query("DELETE FROM passages WHERE file = ?").run(file)
+        vectors.forEach((i, n) => db.query("INSERT INTO passages VALUES (?, ?, ?, ?, ?)").run(file, n, hash(i), n * 10, n * 10 + 9))
+        db.query("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, NULL)").run(file, sig, vectors.length, vectors.length)
+      }
+      const same = (a: VectorIndex, b: VectorIndex) => {
+        for (const k of ["file", "start", "end", "modality", "setsScale"] as const) expect([...a[k]]).toEqual([...b[k]])
+        const q = new Float32Array([0.6, 0.8, 0])
+        expect([...a.score(q)]).toEqual([...b.score(q)])
+        for (let f = 1; f <= 10; f++) expect(a.madeFrom(f)).toBe(b.madeFrom(f))
+        expect(a.complete).toBe(b.complete)
+      }
+      for (const i of [1, 2, 3, 4]) addVector(i)
+      putFile(1, "a", [1, 2])
+      putFile(2, "b", [3])
+      putFile(3, "c", [4, 1])
+      const first = VectorIndex.load(db)
+      expect(first.read).toBe(5)
+      // A pass edits file 2, removes file 3, and adds file 4 (sharing a vector) and file 5 (its vector not stored yet).
+      addVector(5)
+      putFile(2, "b2", [5, 3])
+      db.exec("DELETE FROM passages WHERE file = 3")
+      db.exec("DELETE FROM files WHERE file = 3")
+      putFile(4, "d", [1])
+      putFile(5, "e", [6])
+      const next = VectorIndex.load(db, first)
+      expect(next.read).toBe(4)
+      same(next, VectorIndex.load(db))
+      expect([next.madeFrom(2), next.madeFrom(3), next.madeFrom(5)]).toEqual(["b2", undefined, undefined])
+      // Once stored, the missing vector is read, and file 5 counts.
+      addVector(6)
+      const last = VectorIndex.load(db, next)
+      expect(last.read).toBe(1)
+      expect(last.madeFrom(5)).toBe("e")
+      same(last, VectorIndex.load(db))
+      // A long file's vectors replaced by one: those no passage uses are let go.
+      for (let i = 100; i < 5200; i++) addVector(i)
+      putFile(6, "f", Array.from({ length: 5100 }, (_, i) => 100 + i))
+      const long = VectorIndex.load(db, last)
+      expect(long.read).toBe(5100)
+      putFile(6, "f2", [2])
+      const short = VectorIndex.load(db, long)
+      expect(short.read).toBe(1)
+      same(short, VectorIndex.load(db))
+      // An index takes in changes only once, and another model's vectors are read in full.
+      expect(VectorIndex.load(db, last).read).toBe(7)
+      setMeta(db, "fingerprint", "another model")
+      expect(VectorIndex.load(db, short).read).toBe(7)
+    } finally { db.close() }
+  })
   test("Granite's strong concepts stay eligible without a second model", () => {
     const index = VectorIndex.of([{ file: 1, start: 0, end: 1, vector: new Float32Array([1, 0]) }])
     const best = bestByFile(index, new Float64Array([4]), () => true)
@@ -674,6 +730,36 @@ describe("semantic index and search", () => {
     expect((await semantic()).status).toBe("done")
   })
 
+  test("vectors stored during a pass are read without loading the others again", async () => {
+    expect((await semantic()).status).toBe("done")
+    const vectors = new SemanticVectors(semanticDbPath(dbPath), 0, 0)
+    const sequence = () => getMainMeta(db, "change_seq") ?? "0"
+    try {
+      const first = vectors.get(mainGeneration(db), sequence())!
+      expect(first.read).toBeGreaterThan(5)
+      const p = corpus.write("notes/kennel.txt", "The puppy sleeps in its kennel by the door.\n")
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+      // As while a pass is still running: nothing published for the index as it is.
+      const s = store()
+      setMeta(s, "complete_seq", "")
+      const id = (db.query("SELECT id FROM files WHERE path = ?").get(p) as { id: number }).id
+      const next = vectors.get(mainGeneration(db), sequence())!
+      expect(next).not.toBe(first)
+      expect(next.read).toBe(1)
+      expect(next.madeFrom(id)).toBeDefined()
+      const full = VectorIndex.load(s)
+      s.close()
+      expect([...next.file]).toEqual([...full.file])
+      const query = new Float32Array(1024).fill(1 / 32)
+      expect([...next.score(query)]).toEqual([...full.score(query)])
+    } finally {
+      vectors.close()
+      rmSync(join(corpus.home, "notes/kennel.txt"), { force: true })
+      await new Indexer(db, config, { inProcess: true }).run()
+      expect((await semantic()).status).toBe("done")
+    }
+  })
   test("an engine kept across index runs follows the files they add, change and remove", async () => {
     const e = engine()
     const idOf = (p: string) => (db.query("SELECT id FROM files WHERE path = ?").get(p) as { id: number } | null)?.id
