@@ -73,8 +73,9 @@ export async function diagnose(engine: SearchEngine, res: SearchResponse, cancel
   const check = policyFor(opts)
   const folders: NonNullable<SearchDiagnosis["folders"]> = []
   for (const dir of q.filters.inPaths) {
-    // A folder holding indexed folders is covered by them.
-    if (opts.roots.some((r) => under(r, dir))) continue
+    // An ancestor holding indexed folders is covered by them. An indexed root itself
+    // still needs its policy checked: it may be excluded or indexed by name only.
+    if (!opts.roots.includes(dir) && opts.roots.some((r) => under(r, dir))) continue
     const policy = check(dir)
     const reason = !opts.roots.some((r) => under(dir, r)) ? "outside"
       : policy.allowed ? (config.content.enabled && text && !policy.content ? "namesOnly" : null)

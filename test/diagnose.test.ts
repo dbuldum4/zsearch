@@ -97,6 +97,17 @@ describe("diagnosis of empty results", () => {
     expect((await search("flour in:~/nowhere")).diagnosis?.folders).toEqual([{ path: "~/nowhere", reason: "missing" }])
   })
 
+  test("an in: folder equal to an indexed root still explains its restrictions", async () => {
+    const roots = ["~/notes"]
+    const namesOnly = await withConfig({ roots, namesOnly: roots }, () => search("flour in:~/notes"))
+    expect(namesOnly.diagnosis?.folders).toEqual([{ path: "~/notes", reason: "namesOnly" }])
+    const excluded = await withConfig({ roots, exclude: roots }, () => search("flour in:~/notes"))
+    expect(excluded.diagnosis?.folders).toEqual([{ path: "~/notes", reason: "excluded" }])
+    // Another indexed root beneath this one does not bypass the exact root's policy.
+    const nested = await withConfig({ roots: ["~/code", "~/code/app"], namesOnly: ["~/code"] }, () => search("qqzzyx in:~/code"))
+    expect(nested.diagnosis?.folders).toEqual([{ path: "~/code", reason: "namesOnly" }])
+  })
+
   test("which excluded or out-of-root files exist is not told", async () => {
     const reasons = async (...dirs: string[]) => (await Promise.all(dirs.map((d) => search(`qqzzyx in:${d}`)))).map((r) => r.diagnosis?.folders?.[0]?.reason)
     // Hidden, ignored and skipped: the same whether the path exists or not.
