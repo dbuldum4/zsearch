@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { closeSync, existsSync, openSync } from "node:fs"
 import { type Config, configExists, configStamp, type Paths, paths, loadConfig, saveConfig, configKeys, withConfigSetting } from "../config.ts"
 import { IndexRun, type IndexOutcome, type IndexRunHandlers } from "../index/client.ts"
+import { partialRunHolds } from "../index/db.ts"
 import { estimateInBackground, type FolderEstimate } from "../index/estimate.ts"
 import { RootWatcher } from "../index/watch.ts"
 import { lockHolder } from "../index/lock.ts"
@@ -41,6 +42,8 @@ export interface Services {
   startIndex(config: Config, handlers: IndexRunHandlers, background?: boolean): IndexHandle
   /** PID of another process currently indexing, or null. */
   indexLockedBy(): number | null
+  /** The run holding the index lock only updates changed paths: a run asked for waits for it. */
+  partialRunHolds?(): boolean
   /** Count what a first index of these folders takes, in the background (setup). */
   estimate?(roots: string[], config: Config): { done: Promise<FolderEstimate[]>; cancel: () => void }
   open(path: string): Promise<string | null>
@@ -64,16 +67,19 @@ export function realServices(config: Config): Services {
   let live: IndexRun | null = null
   // Every run this UI started, so quitting can stop them and let them kill their helpers.
   const runs = new Set<IndexRun>()
+  /** Runs asked for that have not ended: file events wait for them, which may wait for the lock. */
+  let asked = 0
   const track = (run: IndexRun) => {
     runs.add(run)
     void run.done.finally(() => runs.delete(run))
     return run
   }
-  const watcher = new RootWatcher(() => {
-    if (live || lockHolder(p.lock) !== null) return false
+  const watcher = new RootWatcher((changed) => {
+    if (live || asked || lockHolder(p.lock) !== null) return false
     if (!configExists()) return
     const current = loadConfig(); client.setConfig(current)
-    live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true))
+    live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true, false, changed ?? undefined))
+    void live.done.then((outcome) => { if (outcome.status !== "done") watcher.carryOver(changed) })
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)
@@ -101,8 +107,16 @@ export function realServices(config: Config): Services {
       for (const key of configKeys()) if (JSON.stringify(value(next, key)) !== JSON.stringify(value(baseline, key))) merged = withConfigSetting(merged, key, value(next, key))
       saveConfig(merged); seen = configStamp(); baseline = structuredClone(merged); Object.assign(next, merged); watcher.update(merged)
     },
-    startIndex: (cfg, handlers, background) => track(new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background)),
+    startIndex: (cfg, handlers, background) => {
+      const run = track(new IndexRun(configExists() ? loadConfig() : cfg, p.db, p.lock, handlers, false, background))
+      if (!background) {
+        asked++
+        void run.done.finally(() => asked--)
+      }
+      return run
+    },
     indexLockedBy: () => lockHolder(p.lock),
+    partialRunHolds: () => partialRunHolds(p.db),
     estimate: estimateInBackground,
     open: openWithDefault,
     reveal: revealInFileManager,

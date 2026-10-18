@@ -349,7 +349,7 @@ private struct IndexSettings: View {
                     }
                 }
                 HStack {
-                    if model.indexing {
+                    if model.indexing && !model.refreshingChangedFiles {
                         if model.activity.progress?.waiting != nil {
                             Button("Index Now") { model.indexNow() }
                                 .help("Stop waiting for power and read the files now.")
@@ -358,9 +358,10 @@ private struct IndexSettings: View {
                     } else {
                         Button(model.needsReindex ? "Update Index to Apply Changes" : "Update Index Now") { model.startIndex() }
                             .keyboardShortcut(model.needsReindex ? .defaultAction : nil)
+                        if model.indexing { Button("Stop Indexing") { model.cancelIndex() } }
                     }
                     Button("Rebuild…") { confirmRebuild = true }
-                        .disabled(model.indexing)
+                        .disabled(model.indexing && !model.refreshingChangedFiles)
                     Spacer()
                     IndexProblemsButton(title: "Problems…")
                         .help("Files whose contents search cannot find, and why")

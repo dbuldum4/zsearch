@@ -147,15 +147,15 @@ final class ProtocolTests: XCTestCase {
         let hour = 3_600_000.0
         let now = 100 * hour
         // Never indexed, or older than the period.
-        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: nil, now: now))
-        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, now: now))
-        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - hour / 2, now: now))
-        XCTAssertTrue(AutoUpdate.isDue(minutes: 15, lastIndexedAt: now - hour / 2, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: nil, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - 2 * hour, now: now))
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - hour / 2, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 15, lastFullWalkAt: now - hour / 2, now: now))
         // "Only when I ask".
-        XCTAssertFalse(AutoUpdate.isDue(minutes: 0, lastIndexedAt: nil, now: now))
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 0, lastFullWalkAt: nil, now: now))
         // A failed attempt is not retried at every check.
-        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, lastAttempt: now - 60_000, now: now))
-        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastIndexedAt: now - 2 * hour, lastAttempt: now - hour, now: now))
+        XCTAssertFalse(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - 2 * hour, lastAttempt: now - 60_000, now: now))
+        XCTAssertTrue(AutoUpdate.isDue(minutes: 60, lastFullWalkAt: now - 2 * hour, lastAttempt: now - hour, now: now))
     }
 
     func testIndexingProblemsRequestsAndReplies() throws {
