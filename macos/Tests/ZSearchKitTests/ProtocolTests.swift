@@ -83,6 +83,24 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(patch.exclude, [])
     }
 
+    func testDuplicateGroups() throws {
+        func json(_ r: Request) throws -> String { String(decoding: try r.encoded(id: 7), as: UTF8.self) }
+        XCTAssertEqual(
+            try json(.search(query: "q", mode: .find, groupDuplicates: true)),
+            #"{"groupDuplicates":true,"id":7,"limit":200,"mode":"find","query":"q","type":"search"}"#
+        )
+        let fields = #""path":"/Users/me/Documents/a.pdf","display":"Documents/a.pdf","kind":"pdf","isDir":false,"size":10,"mtime":1700000000000,"score":1,"sources":["name"],"namePositions":[],"lines":[],"matchCount":0"#
+        let copies = #""copies":[{"id":2,"path":"/Users/me/Downloads/a (1).pdf","display":"Downloads/a (1).pdf","mtime":1600000000000}]"#
+        let hits = #"[{"id":1,\#(fields),\#(copies)},{"id":4,\#(fields)}]"#
+        let line = #"{"id":3,"type":"results","response":{"query":"a","mode":"find","resolved":"find","strategy":"recent","hits":\#(hits),"total":2,"elapsedMs":1,"partial":false}}"#
+        guard case let .results(r) = try Envelope.decode(Data(line.utf8)).message else { return XCTFail("expected results") }
+        XCTAssertEqual(r.hits[0].copyCount, 2)
+        XCTAssertEqual(r.hits[0].copies?.first?.name, "a (1).pdf")
+        XCTAssertEqual(r.hits[0].copies?.first?.folder, "Downloads")
+        XCTAssertNil(r.hits[1].copies)
+        XCTAssertEqual(r.hits[1].copyCount, 1)
+    }
+
     func testDecodesEstimatesAndWaitingProgress() throws {
         let folder = #"{"root":"~","files":1200,"folders":30,"textFiles":900,"textBytes":4096,"documents":40,"ocrImages":0,"complete":false,"seconds":75.5}"#
         let e = try Envelope.decode(Data(#"{"id":3,"type":"estimate","estimates":[\#(folder)],"total":\#(folder),"text":"over 1,200 files · a minute or more"}"#.utf8))

@@ -41,6 +41,8 @@ enum AppSettings {
     static let mediaShowsTranscript = "mediaShowsTranscript"
     static let wrapTextPreviews = "wrapTextPreviews"
     static let wrapPanelTextPreviews = "wrapPanelTextPreviews"
+    /// One result per set of byte-identical files, which lists where the others are.
+    static let groupDuplicates = "groupDuplicates"
     /// The bundle identifier of the editor ⌘E opens files in; empty for the first one installed.
     static let editor = "editor"
     /// What the global shortcut shows (see `ShortcutTarget`).
@@ -64,6 +66,7 @@ private struct GeneralSettings: View {
     @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
     @AppStorage(AppSettings.wrapTextPreviews) private var wrapTextPreviews = true
     @AppStorage(AppSettings.wrapPanelTextPreviews) private var wrapPanelTextPreviews = true
+    @AppStorage(AppSettings.groupDuplicates) private var groupDuplicates = true
     @AppStorage(AppSettings.editor) private var editor = ""
     @AppStorage(AppSettings.shortcutOpens) private var shortcutOpens = ShortcutTarget.panel.rawValue
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
@@ -94,6 +97,8 @@ private struct GeneralSettings: View {
             }
             Toggle("Wrap text in the floating search panel", isOn: $wrapPanelTextPreviews)
             Toggle("Wrap text in the main window", isOn: $wrapTextPreviews)
+            Toggle("Show identical copies as one result", isOn: $groupDuplicates)
+                .onChange(of: groupDuplicates) { model.scheduleSearch(delay: 0) }
             Picker("Open code in (⌘E)", selection: $editor) {
                 Text("First editor installed").tag("")
                 ForEach(installedEditors) { Text($0.name).tag($0.bundleID) }

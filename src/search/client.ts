@@ -172,8 +172,8 @@ export class SearchClient {
     await this.settled
   }
 
-  search(query: string, mode: Mode, limit = 200): Promise<SearchResponse | null> {
-    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit }))
+  search(query: string, mode: Mode, limit = 200, groupDuplicates = false): Promise<SearchResponse | null> {
+    return this.request<SearchResponse>("search", (qid) => ({ type: "search", qid, query, mode, limit, groupDuplicates }))
   }
 
   preview(id: number, query: string, mode: Mode, focusLine?: number): Promise<Preview | null> {

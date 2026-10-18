@@ -21,7 +21,7 @@ import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/
 import { downloadModels } from "./semantic/model.ts"
 
 type ServeIn =
-  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number }
+  | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number; groupDuplicates?: boolean }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
   | { id?: number; type: "previews"; files: number[]; query: string; mode?: Mode; focusLines?: (number | null)[] }
   | { id?: number; type: "stats" }
@@ -148,7 +148,7 @@ export async function serve(version: string): Promise<number> {
     }
     switch (msg.type) {
       case "search": {
-        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200)
+        const response = await client.search(String(msg.query ?? ""), mode(msg.mode), msg.limit ?? 200, msg.groupDuplicates === true)
         return send(response ? { id, type: "results", response } : { id, type: "cancelled" })
       }
       case "preview": {

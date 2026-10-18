@@ -208,6 +208,9 @@ struct ResultRow: View, Equatable {
                 }
                 .padding(.leading, 2)
             }
+            if let copies = hit.copies, !copies.isEmpty {
+                DuplicateCopies(hit: hit, copies: copies)
+            }
         }
         .padding(.vertical, 2)
         // Drag a result into Mail, Slack, Finder or any app that takes files.

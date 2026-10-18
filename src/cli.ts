@@ -66,6 +66,8 @@ Search options
   -0                  NUL-separated paths
       --csv           CSV output
       --sort <key>    name, size, date, path (prefix - for descending)
+      --group-duplicates
+                      one result per set of identical files, listing the copies
       --json          JSON output
       --no-color      disable colors
 
@@ -253,7 +255,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
   const limit = typeof limitFlag === "string" ? Math.max(1, Number(limitFlag) || 20) : 20
   const db = openDb(p.db)
   const engine = new SearchEngine(db, loadConfig())
-  const res = await engine.search(query, mode, { limit, budgetMs: 10_000 })
+  const res = await engine.search(query, mode, { limit, budgetMs: 10_000, groupDuplicates: flag(args, "group-duplicates") === true })
   engine.closeSemantic()
   db.close()
   if (flag(args, "json")) {
@@ -283,7 +285,9 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
     const badge = c.magenta(KIND_BADGE[h.kind].padEnd(4))
     const nameStart = h.display.lastIndexOf("/") + 1
     const shown = highlightPositions(h.display, h.namePositions, c.match, nameStart, c.bold)
-    console.log(`${badge} ${shown}${h.isDir ? "/" : ""}  ${c.dim(`${h.isDir ? "" : formatBytes(h.size) + " · "}${formatAge(h.mtime)}`)}`)
+    console.log(`${badge} ${shown}${h.isDir ? "/" : ""}  ${c.dim(`${h.isDir ? "" : formatBytes(h.size) + " · "}${formatAge(h.mtime)}${h.copies ? ` · ${h.copies.length + 1} identical copies` : ""}`)}`)
+    for (const copy of h.copies?.slice(0, 5) ?? []) console.log(c.dim(`     = ${copy.display}`))
+    if (h.copies && h.copies.length > 5) console.log(c.dim(`     = … ${h.copies.length - 5} more (--json lists them all)`))
     for (const l of h.lines.slice(0, 3)) {
       const loc = ["pdf", "slides", "ebook"].includes(h.kind) ? `p${l.page}` : `${l.line}`
       console.log(`     ${c.green(loc.padStart(5))}: ${highlightRanges(l.text, l.ranges, c.match)}`)
@@ -296,7 +300,7 @@ async function cmdSearch(query: string, args: Args): Promise<number> {
 }
 
 function jsonHit(h: SearchHit) {
-  return { path: h.path, kind: h.kind, isDir: h.isDir, size: h.size, mtime: new Date(h.mtime).toISOString(), score: h.score, sources: h.sources, lines: h.lines, matchCount: h.matchCount }
+  return { path: h.path, kind: h.kind, isDir: h.isDir, size: h.size, mtime: new Date(h.mtime).toISOString(), score: h.score, sources: h.sources, lines: h.lines, matchCount: h.matchCount, ...(h.copies ? { copies: h.copies.map((c) => ({ path: c.path, mtime: new Date(c.mtime).toISOString() })) } : {}) }
 }
 
 function highlightPositions(s: string, pos: number[], hi: (s: string) => string, boldFrom: number, bold: (s: string) => string): string {
@@ -677,6 +681,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
+  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path] [--group-duplicates]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors] [--json]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

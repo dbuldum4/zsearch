@@ -24,6 +24,22 @@ public struct SearchHit: Decodable, Hashable, Identifiable, Sendable {
     public var namePositions: [Int]
     public var lines: [LineMatch]
     public var matchCount: Int
+    /// Byte-identical files folded into this one, when the search asked for `groupDuplicates`.
+    public var copies: [FileCopy]?
+
+    public var name: String { (path as NSString).lastPathComponent }
+    public var folder: String { (display as NSString).deletingLastPathComponent }
+    public var modified: Date { Date(timeIntervalSince1970: mtime / 1000) }
+    /// This file and its identical copies.
+    public var copyCount: Int { 1 + (copies?.count ?? 0) }
+}
+
+public struct FileCopy: Decodable, Hashable, Identifiable, Sendable {
+    public var id: Int
+    public var path: String
+    public var display: String
+    /// Milliseconds since 1970.
+    public var mtime: Double
 
     public var name: String { (path as NSString).lastPathComponent }
     public var folder: String { (display as NSString).deletingLastPathComponent }
@@ -256,7 +272,8 @@ public enum Mode: String, Codable, CaseIterable, Sendable {
 
 /// A request to the engine. `id` is added by `EngineConnection`.
 public enum Request: Sendable {
-    case search(query: String, mode: Mode, limit: Int = 200)
+    /// `groupDuplicates`: one hit per set of byte-identical files, listing the others as `copies`.
+    case search(query: String, mode: Mode, limit: Int = 200, groupDuplicates: Bool = false)
     case preview(file: Int, query: String, mode: Mode, focusLine: Int? = nil)
     case stats
     case config
@@ -367,14 +384,16 @@ extension Request {
         var rebuild: Bool?
         var roots: [String]?
         var background: Bool?
+        var groupDuplicates: Bool?
     }
 
     /// The request as one line of JSON, without the trailing newline.
     public func encoded(id: Int) throws -> Data {
         var w = Wire(id: id, type: "")
         switch self {
-        case let .search(query, mode, limit):
+        case let .search(query, mode, limit, groupDuplicates):
             w.type = "search"; w.query = query; w.mode = mode; w.limit = limit
+            if groupDuplicates { w.groupDuplicates = true }
         case let .preview(file, query, mode, focusLine):
             w.type = "preview"; w.file = file; w.query = query; w.mode = mode; w.focusLine = focusLine
         case .stats:

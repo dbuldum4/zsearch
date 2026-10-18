@@ -1,6 +1,6 @@
 import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
-import { statSync } from "node:fs"
+import { type Stats, statSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
@@ -14,6 +14,7 @@ import { type Filters, hasFilters, type Mode, parseQuery, type ParsedQuery } fro
 import { literalRequirement, regexRequirements, type Req } from "./regex-plan.ts"
 import { clipLine, diacriticPattern, findLines, type Folded, foldText, keywordLines, type LineMatch, splitLines, termsPattern } from "./snippet.ts"
 import { reqToFts, Vocab } from "./vocab.ts"
+import { fileDigest } from "./duplicates.ts"
 import { booleanQuery, type QueryExpression } from "./boolean.ts"
 import { listFolder, noTextReason, pageStartsOf } from "./read.ts"
 import { TopK } from "../util/top-k.ts"
@@ -45,6 +46,15 @@ export interface SearchHit {
   /** Best matching lines (content or regex). */
   lines: LineMatch[]
   matchCount: number
+  /** Byte-identical files folded into this one (with `groupDuplicates`), in rank order. */
+  copies?: FileCopy[]
+}
+
+export interface FileCopy {
+  id: number
+  path: string
+  display: string
+  mtime: number
 }
 
 export interface SearchResponse {
@@ -98,6 +108,10 @@ interface SearchOptions {
   onlyIds?: Set<number>
   /** A part of a grouped query: `limit` alone bounds it, as the query's `limit:` is for the combined results. */
   branch?: boolean
+  /** Fold byte-identical files into one hit that lists the others as `copies`. */
+  groupDuplicates?: boolean
+  /** Hits beyond the limit, for copies to fold into without shortening the page. */
+  extra?: number
 }
 
 /** One part of a grouped query: its hits, and whether they are all of its matches. */
@@ -116,6 +130,14 @@ const RANK_POOL = 128
 const BRANCH_LIMIT = 5000
 /** Hits beyond this many get no snippet lines (fuzzy and semantic): lines cost a text read each. */
 const SNIPPET_HITS = 60
+/**
+ * Grouping copies: hits fetched beyond the limit, the largest file read to compare, the
+ * time reading may take per search, and how many file hashes are kept for the next keystrokes.
+ */
+const COPY_EXTRA = 20
+const COPY_MAX_BYTES = 64 * 1024 * 1024
+const COPY_BUDGET_MS = 40
+const COPY_DIGESTS = 20_000
 
 /**
  * Decoded texts by file id, least recently used first. Searching while typing reads the same
@@ -270,13 +292,14 @@ export class SearchEngine {
   /* ------------------------------------------------------------ public -- */
 
   async search(rawQuery: string, mode: Mode = "find", opts: SearchOptions = {}): Promise<SearchResponse> {
+    if (opts.groupDuplicates && !opts.branch) return this.searchGrouped(rawQuery, mode, opts)
     const t0 = performance.now()
     this.refresh()
     const q = parseQuery(rawQuery, Date.now(), mode)
     if (opts.onlyIds) q.filters.ids = opts.onlyIds
     this.now = Date.now()
     this.lastExpansions = []
-    const limit = (opts.branch ? undefined : q.filters.limit) ?? opts.limit ?? 100
+    const limit = ((opts.branch ? undefined : q.filters.limit) ?? opts.limit ?? 100) + (opts.extra ?? 0)
     const effective: Mode = q.forcedMode ?? mode
     const res: SearchResponse = { query: rawQuery, mode, resolved: effective, strategy: "", hits: [], total: 0, elapsedMs: 0, partial: false }
     if (q.warnings.length) res.notice = q.warnings.join("; ")
@@ -331,6 +354,67 @@ export class SearchEngine {
     return res
   }
 
+  /** SHA-256 of file contents by `dev:ino:size:mtime:ctime`, oldest first: hard links share one. */
+  private digests = new Map<string, string>()
+
+  private async searchGrouped(rawQuery: string, mode: Mode, opts: SearchOptions): Promise<SearchResponse> {
+    const t0 = performance.now()
+    const limit = parseQuery(rawQuery, Date.now(), mode).filters.limit ?? opts.limit ?? 100
+    const res = await this.search(rawQuery, mode, { ...opts, groupDuplicates: false, extra: COPY_EXTRA })
+    const fetched = res.hits.length
+    const rows = this.groupCopies(res.hits, performance.now() + COPY_BUDGET_MS)
+    res.total = res.total > fetched ? Math.max(rows.length, res.total - (fetched - rows.length)) : rows.length
+    res.hits = rows.slice(0, limit)
+    res.elapsedMs = performance.now() - t0
+    return res
+  }
+
+  /**
+   * Fold byte-identical files into the first (best ranked) of them. Only files of a size another
+   * hit has are looked at: hard links are known by their inode, other files by a SHA-256 of their
+   * bytes, cached by file identity and read only where contents may be, up to COPY_MAX_BYTES.
+   * Files not reached by `deadline` stay hits of their own.
+   */
+  private groupCopies(hits: SearchHit[], deadline: number): SearchHit[] {
+    const candidate = (h: SearchHit) => !h.isDir && h.size > 0
+    const sizes = new Map<number, number>()
+    for (const h of hits) if (candidate(h)) sizes.set(h.size, (sizes.get(h.size) ?? 0) + 1)
+    if (![...sizes.values()].some((n) => n > 1)) return hits
+    const check = policyFor(crawlOptionsFor(this.config))
+    const keys = new Map<number, string>()
+    for (const h of hits) {
+      if (performance.now() > deadline) break
+      if (!candidate(h) || sizes.get(h.size)! < 2) continue
+      const policy = check(h.path), i = this.catalog.indexOf(h.id)
+      if (!policy.allowed || i === undefined) continue
+      const path = policy.real ?? h.path
+      let st: Stats
+      try { st = statSync(path) } catch { continue }
+      if (!st.isFile() || st.size !== h.size) continue
+      const inode = `${st.dev}:${st.ino}`, identity = `${inode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+      let digest: string | null | undefined
+      if (this.contentAuthorized(i, check)) {
+        digest = this.digests.get(identity)
+        if (digest === undefined && h.size <= COPY_MAX_BYTES) {
+          digest = fileDigest(path, st, deadline)
+          if (digest) {
+            this.digests.set(identity, digest)
+            if (this.digests.size > COPY_DIGESTS) this.digests.delete(this.digests.keys().next().value!)
+          }
+        }
+      }
+      keys.set(h.id, digest ? `sha:${h.size}:${digest}` : `inode:${inode}`)
+    }
+    const groups = new Map<string, SearchHit[]>(), rows: SearchHit[][] = []
+    for (const h of hits) {
+      const key = keys.get(h.id), group = key === undefined ? undefined : groups.get(key)
+      if (group) { group.push(h); continue }
+      rows.push([h])
+      if (key !== undefined) groups.set(key, rows[rows.length - 1]!)
+    }
+    return rows.map(([first, ...rest]) => (rest.length ? { ...first!, copies: rest.map((h) => ({ id: h.id, path: h.path, display: h.display, mtime: h.mtime })) } : first!))
+  }
+
   private contentAuthorized(i: number, check = policyFor(crawlOptionsFor(this.config))): boolean {
     if (!this.config.content.enabled) return false
     const policy = check(this.catalog.paths[i]!)
@@ -369,7 +453,7 @@ export class SearchEngine {
     return this.done({
       query, mode, resolved: mode, strategy: "grouped search",
       total: result.total,
-      hits: hits.slice(0, filters.limit ?? opts.limit ?? 100),
+      hits: hits.slice(0, (filters.limit ?? opts.limit ?? 100) + (opts.extra ?? 0)),
       elapsedMs: 0,
       partial: !result.complete,
       error: result.error,

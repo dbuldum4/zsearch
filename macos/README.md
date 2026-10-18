@@ -22,6 +22,7 @@ zsearch.app/Contents/
 - **Settings** (⌘,): folders to index, what to read (contents, hidden files, .gitignore rules, symbolic links, cloud folders, patterns to skip), how often to update, index size, update and rebuild.
 - **Menu bar item** with index status and quick actions. While it's on, closing the window keeps zsearch running.
 - **Global shortcut** (⌥ Space by default, or ⌃⌥ Space or ⇧⌘ Space, or none) to show or hide zsearch from any app. It opens a floating search panel on the screen with the pointer, which goes away when you open a file, press Esc or click elsewhere; "The shortcut opens" in Settings switches it to the main window. It uses `RegisterEventHotKey`, which needs no accessibility permission.
+- **Identical copies** show as one result, the best ranked, with "3 identical copies" under it. It opens to where each copy is, with buttons to open, show in Finder or copy the path of each; Compare lists them side by side, and Show All in Finder selects them all. Copies are files with the same size and SHA-256; files above 64 MB, or not read within the search's 40 ms for this, stay separate results. "Show identical copies as one result" in Settings turns it off.
 - **Sorting and exclusions.** Click name, size, date or path to sort; click again for descending order. The result context menu excludes a file/folder, copies all paths, or folds the preview around matches.
 - **Live refresh.** Native file events trigger a debounced refresh while the engine runs. ⌘R updates, ⌘. cancels and ⇧⌘I rebuilds. The engine retries one unexpected exit after a short delay.
 - **Dock menu** to update or stop indexing, and **open at login**.
@@ -99,6 +100,7 @@ Each line is one JSON object. Requests may carry a numeric `id`, and the reply c
 | Request | Reply |
 | --- | --- |
 | `{"id":1,"type":"search","query":"budget","mode":"find","limit":200}` | `results` with `response` (hits, strategy, timing) |
+| `{"id":9,"type":"search","query":"budget","mode":"find","groupDuplicates":true}` | `results` where byte-identical files are one hit, whose `copies` lists the others (`id`, `path`, `display`, `mtime`) |
 | `{"id":2,"type":"preview","file":17,"query":"budget","mode":"find","focusLine":3}` | `preview` with numbered lines and match ranges |
 | `{"id":6,"type":"previews","files":[17,18,19],"query":"budget","mode":"find"}` | `previews`: several at once, for prefetching |
 | `{"id":3,"type":"stats"}` | `stats` |
