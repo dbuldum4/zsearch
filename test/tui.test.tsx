@@ -268,6 +268,34 @@ describe("search screen", () => {
     await until(s, (f) => f.includes("No matches for “pancakes type:pdf qqzzyx”") && !f.includes("without the type filter"))
   })
 
+  test("a live refresh drops the explanation and asks again", async () => {
+    await esc(s)
+    await type(s, "pancakes type:pdf")
+    await until(s, (f) => f.includes("without the type filter: pancakes"))
+    const svc = t.services.search
+    const explain = svc.explain
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let asked = 0
+    svc.explain = async (...args: Parameters<typeof explain>) => {
+      asked++
+      await gate
+      return explain(...args)
+    }
+    try {
+      svc.onRefreshed?.(1, true)
+      // The explanation of the index as it was goes with the refreshed results...
+      await until(s, (f) => f.includes("No matches for “pancakes type:pdf”") && !f.includes("without the type filter"))
+      // ...and the query, still the same, is explained again.
+      await until(s, () => asked === 1)
+      release()
+      await until(s, (f) => f.includes("1 result without the type filter: pancakes"))
+    } finally {
+      svc.explain = explain
+      release()
+    }
+  })
+
   test("Ctrl-T toggles the preview; narrow terminals hide it", async () => {
     await esc(s)
     await type(s, "pancakes")

@@ -18,8 +18,13 @@ export interface SearchDiagnosis {
   folders?: { path: string; reason: "outside" | "excluded" | "namesOnly" | "missing" }[]
   /** File contents are off in the settings: only names were searched. */
   contentsOff?: boolean
-  /** Files the query's filters allow (all files, without filters) whose contents could not be read when indexed. */
+  /**
+   * Files the query's filters allow (all files, without filters) whose contents could not be read
+   * when indexed, and that the settings still let search by content.
+   */
   unreadable?: number
+  /** There may be more unreadable files than counted: only the first `limits.unreadableChecks` were checked. */
+  unreadableMore?: boolean
   /** An index update is running: results may be incomplete. */
   indexing?: boolean
   /** Semantic search matched words only: its index is not complete for the current files yet. */
@@ -47,6 +52,8 @@ const FILTER_GROUPS = [
 /** All the explaining searches together stop starting after this long. */
 const DIAGNOSIS_MS = 1000
 const PROBE_LIMIT = 100
+/** Unreadable files checked against the current settings (a file system check each), at most. */
+export const limits = { unreadableChecks: 500 }
 
 /**
  * Explain a response without hits: filters, folders and settings that leave files out, an index
@@ -79,12 +86,18 @@ export async function diagnose(engine: SearchEngine, res: SearchResponse, cancel
   if (text && !config.content.enabled) d.contentsOff = true
   if (text && config.content.enabled) {
     const cat = engine.catalog
-    let unreadable = 0
-    for (const [id] of engine.db.query("SELECT id FROM files WHERE content_state = 2 LIMIT 100000").values() as number[][]) {
+    let unreadable = 0, checked = 0, more = false
+    for (const [id] of engine.db.query("SELECT id FROM files WHERE content_state = 2").values() as number[][]) {
       const i = cat.indexOf(id!)
-      if (i !== undefined && !cat.isDir[i] && cat.passes(i, q.filters)) unreadable++
+      if (i === undefined || cat.isDir[i] || !cat.passes(i, q.filters)) continue
+      if (checked++ >= limits.unreadableChecks || performance.now() > deadline) { more = true; break }
+      // Settings changed since the file was indexed may exclude it, or hold it by name only: it
+      // is not missing from what the user can search then.
+      const policy = check(cat.paths[i]!)
+      if (policy.allowed && policy.content) unreadable++
     }
     if (unreadable) d.unreadable = unreadable
+    if (unreadable && more) d.unreadableMore = true
   }
   if (indexRunning(engine)) d.indexing = true
   if (res.resolved === "semantic" && engine.semanticWaiting()) d.semanticPending = true
@@ -183,7 +196,10 @@ export function explainDiagnosis(d: SearchDiagnosis | undefined): string[] {
   }
   for (const f of d.filters ?? []) out.push(`${results(f.count, f.more)} without ${FILTER_LABEL[f.filter]}: ${f.query}`)
   if (d.contentsOff) out.push("File contents are off in the settings: only names were searched")
-  if (d.unreadable) out.push(`${d.unreadable.toLocaleString("en-US")} indexed ${d.unreadable === 1 ? "file" : "files"} could not be read, so ${d.unreadable === 1 ? "its" : "their"} text was not searched`)
+  if (d.unreadable) {
+    const one = d.unreadable === 1 && !d.unreadableMore
+    out.push(`${d.unreadableMore ? "At least " : ""}${d.unreadable.toLocaleString("en-US")} indexed ${one ? "file" : "files"} could not be read, so ${one ? "its" : "their"} text was not searched`)
+  }
   if (d.indexing) out.push("Indexing is still running: results may be incomplete")
   if (d.semanticPending) out.push("Semantic indexing has not finished: only words were matched")
   for (const m of d.modes ?? []) out.push(`${MODE_LABEL[m.mode]} finds ${results(m.count, m.more)}`)

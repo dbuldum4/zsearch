@@ -39,6 +39,8 @@ public struct SearchDiagnosis: Decodable, Hashable, Sendable {
     public var contentsOff: Bool?
     /// Files the query's filters allow whose contents could not be read.
     public var unreadable: Int?
+    /// There may be more unreadable files than `unreadable`: the engine stopped counting.
+    public var unreadableMore: Bool?
     public var indexing: Bool?
     public var semanticPending: Bool?
     public var modes: [ModeProbe]?
@@ -104,7 +106,8 @@ public struct NoResultsHelp: Hashable, Sendable {
             items.append(Item(text: "File contents are off: only names were searched.", button: "Settings…", action: .settings))
         }
         if let n = d?.unreadable, n > 0 {
-            items.append(Item(text: n == 1 ? "1 indexed file could not be read, so its text was not searched." : "\(n) indexed files could not be read, so their text was not searched."))
+            let more = d?.unreadableMore == true
+            items.append(Item(text: n == 1 && !more ? "1 indexed file could not be read, so its text was not searched." : "\(more ? "At least " : "")\(n) indexed files could not be read, so their text was not searched."))
         }
         if indexing || d?.indexing == true {
             items.append(Item(text: "Indexing is still running: results may be incomplete."))

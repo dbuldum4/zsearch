@@ -54,6 +54,12 @@ final class NoResultsHelpTests: XCTestCase {
         XCTAssertEqual(help.items[5].action, .mode(.fuzzy))
     }
 
+    func testUnreadableCountMayBeALowerBound() throws {
+        XCTAssertEqual(NoResultsHelp(try diagnosis(#"{"unreadable":1}"#)).items.map(\.text), ["1 indexed file could not be read, so its text was not searched."])
+        XCTAssertEqual(NoResultsHelp(try diagnosis(#"{"unreadable":1,"unreadableMore":true}"#)).items.map(\.text), ["At least 1 indexed files could not be read, so their text was not searched."])
+        XCTAssertEqual(NoResultsHelp(try diagnosis(#"{"unreadable":500,"unreadableMore":true}"#)).items.map(\.text), ["At least 500 indexed files could not be read, so their text was not searched."])
+    }
+
     func testRepliesWithoutDiagnosis() throws {
         let r = try reply(#"{"type":"diagnosis","id":2,"query":"budget","mode":"find"}"#)
         XCTAssertEqual(r.query, "budget")

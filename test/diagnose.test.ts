@@ -7,7 +7,7 @@ import { type Config, paths } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { acquireLock } from "../src/index/lock.ts"
-import { explainDiagnosis } from "../src/search/diagnose.ts"
+import { explainDiagnosis, limits } from "../src/search/diagnose.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { parseQuery, withoutFilters, type Mode } from "../src/search/query.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
@@ -127,6 +127,39 @@ describe("diagnosis of empty results", () => {
       expect((await search("qqzzyx ext:pdf")).diagnosis?.unreadable).toBeUndefined()
     } finally {
       db.query("UPDATE files SET content_state = 1, note = NULL WHERE path LIKE '%/notes/todo.md'").run()
+    }
+  })
+
+  test("counts only unreadable files the settings still let search by content", async () => {
+    db.query("UPDATE files SET content_state = 2, note = 'broken' WHERE path LIKE '%/notes/todo.md'").run()
+    const unreadable = async () => (await search("qqzzyx")).diagnosis?.unreadable
+    try {
+      expect(await unreadable()).toBe(1)
+      // Excluded, or held by name only, since the last index run.
+      expect(await withConfig({ exclude: [...config.exclude, "notes"] }, unreadable)).toBeUndefined()
+      expect(await withConfig({ namesOnly: [join(corpus.home, "notes")] }, unreadable)).toBeUndefined()
+    } finally {
+      db.query("UPDATE files SET content_state = 1, note = NULL WHERE path LIKE '%/notes/todo.md'").run()
+    }
+  })
+
+  test("past the files it checks, says there are at least as many unreadable files", async () => {
+    const md = "path LIKE '%/notes/todo.md' OR path LIKE '%/notes/journal-2024.md'"
+    db.query(`UPDATE files SET content_state = 2, note = 'broken' WHERE ${md}`).run()
+    const checks = limits.unreadableChecks
+    limits.unreadableChecks = 1
+    try {
+      const d = (await search("qqzzyx ext:md")).diagnosis
+      expect(d).toMatchObject({ unreadable: 1, unreadableMore: true })
+      expect(explainDiagnosis(d)).toContain("At least 1 indexed files could not be read, so their text was not searched")
+      limits.unreadableChecks = checks
+      const all = (await search("qqzzyx ext:md")).diagnosis
+      expect(all?.unreadable).toBe(2)
+      expect(all?.unreadableMore).toBeUndefined()
+      expect(explainDiagnosis(all)).toContain("2 indexed files could not be read, so their text was not searched")
+    } finally {
+      limits.unreadableChecks = checks
+      db.query(`UPDATE files SET content_state = 1, note = NULL WHERE ${md}`).run()
     }
   })
 

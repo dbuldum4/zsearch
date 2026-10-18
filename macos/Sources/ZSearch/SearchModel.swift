@@ -322,6 +322,8 @@ final class SearchModel {
         do {
             guard case let .results(r) = try await engine.request(.search(query: Self.sent(query), mode: mode)) else { return }
             guard query == self.query, mode == self.mode else { return }
+            // The explanation was for the index as it was: a refresh asks again after the delay.
+            diagnosis = nil
             defer { scheduleExplain() }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
             if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice, current.error == r.error { return }

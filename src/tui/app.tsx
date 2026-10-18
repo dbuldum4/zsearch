@@ -106,6 +106,8 @@ export function App(props: AppProps) {
     // Update results and selection together so nothing observes a selection past the end.
     batch(() => {
       setResponse(res)
+      // The explanation was for the index as it was: a live refresh asks again after the delay.
+      setExplained(null)
       if (keepSelection && prevId !== undefined) {
         const idx = res.hits.findIndex((h) => h.id === prevId)
         setSelected(idx >= 0 ? idx : Math.min(selected(), Math.max(0, res.hits.length - 1)))
