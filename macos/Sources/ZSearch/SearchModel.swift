@@ -466,7 +466,8 @@ final class SearchModel {
         guard !hits.isEmpty else { return }
         let current = hits.firstIndex { $0.id == selection } ?? -1
         let next = min(max(current + delta, 0), hits.count - 1)
-        selection = hits[next].id
+        // A plain arrow keeps only its destination, even at a boundary where it cannot move.
+        pick(ResultSelection(hits[next].id))
     }
 
     func requestSearchFocus() {
