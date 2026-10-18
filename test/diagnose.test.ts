@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type Config, paths } from "../src/config.ts"
 import { openDb } from "../src/index/db.ts"
@@ -95,6 +97,24 @@ describe("diagnosis of empty results", () => {
     expect((await search("flour in:~/nowhere")).diagnosis?.folders).toEqual([{ path: "~/nowhere", reason: "missing" }])
   })
 
+  test("which excluded or out-of-root files exist is not told", async () => {
+    const reasons = async (...dirs: string[]) => (await Promise.all(dirs.map((d) => search(`qqzzyx in:${d}`)))).map((r) => r.diagnosis?.folders?.[0]?.reason)
+    // Hidden, ignored and skipped: the same whether the path exists or not.
+    expect(await reasons("~/.config/secret.conf", "~/.config/none", "~/.nothing/none")).toEqual(["excluded", "excluded", "excluded"])
+    expect(await reasons("~/code/app/dist/bundle.js", "~/code/app/dist/none", "~/code/app/debug.log", "~/code/app/other.log")).toEqual(["excluded", "excluded", "excluded", "excluded"])
+    expect(await reasons("~/code/app/node_modules/leftpad", "~/code/app/node_modules/none")).toEqual(["excluded", "excluded"])
+    const elsewhere = mkdtempSync(join(tmpdir(), "zsearch-elsewhere-"))
+    writeFileSync(join(elsewhere, "here.txt"), "x")
+    symlinkSync(elsewhere, join(corpus.home, "elsewhere"))
+    try {
+      expect(await reasons("~/elsewhere/here.txt", "~/elsewhere/none")).toEqual(["outside", "outside"])
+      expect(await withConfig({ followSymlinks: true }, () => reasons("~/elsewhere/here.txt", "~/elsewhere/none"))).toEqual(["outside", "outside"])
+    } finally {
+      rmSync(join(corpus.home, "elsewhere"))
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   test("contents off in the settings", async () => {
     const r = await withConfig({ content: { ...config.content, enabled: false } }, () => search("flour"))
     expect(r.diagnosis?.contentsOff).toBe(true)
@@ -120,6 +140,32 @@ describe("diagnosis of empty results", () => {
     expect((await search("re:pancaks")).diagnosis?.modes).toBeUndefined()
   })
 
+  test("similar words replace the words only, not filter values, phrases or groups", async () => {
+    expect((await search("path:pancaks pancaks")).diagnosis?.suggestion).toBe("path:pancaks pancakes")
+    expect((await search('"pancaks pie" pancaks')).diagnosis?.suggestion).toBe('"pancaks pie" pancakes')
+    expect((await search("all:pancaks flour")).diagnosis?.suggestion).toBe("all:pancakes flour")
+    expect((await search("(pancaks OR glacir) type:pdf")).diagnosis?.suggestion).toBeUndefined()
+  })
+
+  test("a filter is not offered for removal when only an order would be left", async () => {
+    expect((await search("size:>10gb sort:date")).diagnosis?.filters).toBeUndefined()
+    expect((await search("pancakes size:>10gb sort:date")).diagnosis?.filters?.map((f) => f.query)).toEqual(["pancakes sort:date"])
+  })
+
+  test("explaining is not held up by a search that overruns its budget", async () => {
+    const original = engine.search.bind(engine)
+    engine.search = (query, mode, opts = {}) => opts.explain === false ? new Promise((r) => setTimeout(() => r(original(query, mode, opts)), 4000)) : original(query, mode, opts)
+    try {
+      const started = performance.now()
+      const r = await engine.search("pancaks", "find", { limit: 50 })
+      expect(performance.now() - started).toBeLessThan(2500)
+      expect(r.diagnosis?.modes).toBeUndefined()
+      expect(r.diagnosis?.suggestion).toBe("pancakes")
+    } finally {
+      delete (engine as Partial<SearchEngine>).search
+    }
+  })
+
   test("an index update holding the lock", async () => {
     expect((await search("qqzzyx")).diagnosis?.indexing).toBeUndefined()
     const release = acquireLock(paths().lock)!
@@ -141,6 +187,16 @@ describe("diagnosis of empty results", () => {
   })
 
   test("a superseded search is not explained, and explaining can be turned off", async () => {
+    const similarWords = engine.similarWords.bind(engine)
+    let looked = 0
+    engine.similarWords = (q) => { looked++; return similarWords(q) }
+    try {
+      expect((await engine.search("pancaks type:pdf", "find", { cancelled: () => true })).diagnosis).toBeUndefined()
+      // Once, for the response's own notice: none of the explaining work is done.
+      expect(looked).toBe(1)
+    } finally {
+      delete (engine as Partial<SearchEngine>).similarWords
+    }
     expect((await engine.search("pancakes type:pdf", "find", { cancelled: () => true })).diagnosis).toBeUndefined()
     expect((await engine.search("pancakes type:pdf", "find", { explain: false })).diagnosis).toBeUndefined()
   })

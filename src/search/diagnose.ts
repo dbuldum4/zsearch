@@ -3,6 +3,7 @@ import { paths, tildify } from "../config.ts"
 import { lockHolder } from "../index/lock.ts"
 import { crawlOptionsFor, policyFor, under } from "../index/policy.ts"
 import { escapeRegExp } from "../util/text.ts"
+import { booleanQuery } from "./boolean.ts"
 import type { SearchEngine, SearchResponse } from "./engine.ts"
 import { hasFilters, type Mode, parseQuery, withoutFilters } from "./query.ts"
 
@@ -53,6 +54,7 @@ const PROBE_LIMIT = 100
  * or when `cancelled` (a newer search superseded this one).
  */
 export async function diagnose(engine: SearchEngine, res: SearchResponse, cancelled?: () => boolean): Promise<SearchDiagnosis | undefined> {
+  if (cancelled?.()) return undefined
   const deadline = performance.now() + DIAGNOSIS_MS
   const q = parseQuery(res.query, Date.now(), res.mode)
   const text = !!(q.text || q.phrases.length)
@@ -86,25 +88,42 @@ export async function diagnose(engine: SearchEngine, res: SearchResponse, cancel
   }
   if (indexRunning(engine)) d.indexing = true
   if (res.resolved === "semantic" && engine.semanticWaiting()) d.semanticPending = true
-  const similar = res.resolved === "semantic" ? null : engine.similarWords(q)
+  // The words of a grouped query keep its parentheses ("(budgt"): no single query to suggest.
+  const similar = res.resolved === "semantic" || booleanQuery(res.query) ? null : engine.similarWords(q)
   if (similar) {
-    let suggestion = res.query
+    // Words are replaced where they are words: not inside filter values or quoted phrases.
+    const skip = [...q.filterSpans, ...[...res.query.matchAll(/"[^"]*"?/g)].map((m) => ({ start: m.index, end: m.index + m[0].length }))]
+    const edits: { start: number; end: number; word: string }[] = []
     q.words.forEach((w, i) => {
-      if (similar[i] !== w) suggestion = suggestion.replace(new RegExp(`(^|\\s|:)${escapeRegExp(w)}(?=\\s|$)`), (_, before: string) => before + similar[i])
+      if (similar[i] === w) return
+      for (const m of res.query.matchAll(new RegExp(`(^|\\s|:)${escapeRegExp(w)}(?=\\s|$)`, "g"))) {
+        const start = m.index + m[1]!.length
+        if (skip.some((s) => start >= s.start && start < s.end) || edits.some((e) => e.start === start)) continue
+        edits.push({ start, end: start + w.length, word: similar[i]! })
+        break
+      }
     })
+    let suggestion = res.query
+    for (const e of edits.sort((a, b) => b.start - a.start)) suggestion = suggestion.slice(0, e.start) + e.word + suggestion.slice(e.end)
     if (suggestion !== res.query) d.suggestion = suggestion
   }
 
   const probe = async (query: string, mode: Mode): Promise<SearchResponse | null | undefined> => {
     if (cancelled?.()) return null
-    // Without anything left to look for, a search lists recent files: no answer to this query.
+    // Without anything left to look for (an order alone included), a search lists recent files: no answer to this query.
     const rest = parseQuery(query, Date.now(), mode)
-    if (!rest.text && !rest.phrases.length && !hasFilters(rest.filters)) return undefined
+    if (!rest.text && !rest.phrases.length && !hasFilters({ ...rest.filters, sort: undefined })) return undefined
     const left = deadline - performance.now()
     if (left <= 0) return undefined
-    const r = await engine.search(query, mode, { limit: PROBE_LIMIT, budgetMs: left, cancelled, explain: false })
+    // Not every search keeps to its budget (semantic search waits for the query model, which may
+    // be starting): stop waiting at the deadline and leave it to finish unseen.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const r = await Promise.race([
+      engine.search(query, mode, { limit: PROBE_LIMIT, budgetMs: left, cancelled, explain: false }).catch(() => undefined),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), left) }),
+    ]).finally(() => clearTimeout(timer))
     if (cancelled?.()) return null
-    return !r.error && r.hits.length ? r : undefined
+    return r && !r.error && r.hits.length ? r : undefined
   }
   const found = (r: SearchResponse) => ({ count: r.total, more: r.partial || r.hits.length >= PROBE_LIMIT })
   const groups = FILTER_GROUPS.filter((g) => q.filterSpans.some((s) => (g.keys as readonly string[]).includes(s.key)))
