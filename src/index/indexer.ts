@@ -400,8 +400,9 @@ export class Indexer {
     const policyChanged = previousPolicy !== null && previousPolicy !== contentPolicy
     const speechChanged = getMeta(this.db, "transcription_policy") !== speechPolicy
     // Offline asset downloads and temporary speech-service failures can recover later.
-    // Back off across live refreshes instead of retrying every file event.
-    const retrySpeech = Date.now() - Number(getMeta(this.db, "transcription_attempt_at") ?? "0") >= 60 * 60_000
+    // Back off across live refreshes instead of retrying every file event. Only a full walk
+    // retries: it reaches every failed recording, and restarts the wait for all of them.
+    const retrySpeech = !targets && Date.now() - Number(getMeta(this.db, "transcription_attempt_at") ?? "0") >= 60 * 60_000
     let attemptedSpeech = false
     const contentOn = this.config.content.enabled
     const stats: CrawlStats = { dirs: 0, files: 0, errors: 0, skipped: 0 }

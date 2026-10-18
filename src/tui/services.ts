@@ -74,6 +74,7 @@ export function realServices(config: Config): Services {
     if (!configExists()) return
     const current = loadConfig(); client.setConfig(current)
     live = track(new IndexRun(current, p.db, p.lock, { onCommit: () => client.refresh() }, false, true, false, changed ?? undefined))
+    void live.done.then((outcome) => { if (outcome.status !== "done") watcher.carryOver(changed) })
     void live.done.finally(() => { live = null; client.refresh(true) })
   })
   watcher.update(config)

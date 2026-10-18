@@ -56,12 +56,19 @@ export class RootWatcher {
     }
   }
   private add(path: string | null) {
-    if (path === null) this.pending = null
+    this.carryOver(path === null ? null : [path])
+    this.schedule()
+  }
+  /**
+   * Paths a refresh did not finish updating (null: a walk of every root), cancelled, failed or
+   * refused the index lock: the next refresh takes them in.
+   */
+  carryOver(paths: string[] | null) {
+    if (paths === null) this.pending = null
     else if (this.pending) {
-      this.pending.add(path)
+      for (const path of paths) this.pending.add(path)
       if (this.pending.size > MAX_EVENTS) this.pending = this.coalesce(this.pending)
     }
-    this.schedule()
   }
   /**
    * The paths to update: those inside another left out, and a folder with many changes in place

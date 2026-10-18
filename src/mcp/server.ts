@@ -75,7 +75,7 @@ class Host {
   private db: Database | null = null
   private watcher = new RootWatcher((changed) => {
     if (this.run || lockHolder(this.paths.lock) !== null) return false
-    if (configExists()) this.startIndex(false, "auto", changed ?? undefined)
+    if (configExists()) this.startIndex(false, "auto", changed)
   })
   run: RunState | null = null
   lastRun: LastRun | null = null
@@ -216,8 +216,11 @@ class Host {
     return out
   }
 
-  /** Start an index run with the current settings, unless one is running here or elsewhere. `paths`: the files that changed. */
-  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested", paths?: string[]): { status: "started" | "running" } | { status: "busy"; pid: number } {
+  /**
+   * Start an index run with the current settings, unless one is running here or elsewhere.
+   * `paths`: the files that changed, or null for file events that need every root walked.
+   */
+  startIndex(rebuild: boolean, reason: RunState["reason"] = "requested", paths?: string[] | null): { status: "started" | "running" } | { status: "busy"; pid: number } {
     this.reloadConfig()
     if (this.run) {
       // Asked for while one runs, perhaps waiting on power: that one goes on now.
@@ -240,13 +243,14 @@ class Host {
       rebuild,
       reason === "auto",
       false,
-      paths,
+      paths ?? undefined,
     )
     const run: RunState = { handle, progress: null, startedAt: Date.now(), reason, done: handle.done }
     this.run = run
     void handle.done.then((outcome) => {
       this.run = null
       this.client.refresh(true)
+      if (paths !== undefined && outcome.status !== "done") this.watcher.carryOver(paths)
       const finishedAt = Date.now()
       if (outcome.status === "fatal") this.lastRun = { status: "error", finishedAt, error: outcome.error }
       else if (outcome.status === "locked") this.lastRun = { status: "locked", finishedAt }

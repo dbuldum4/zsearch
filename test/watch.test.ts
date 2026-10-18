@@ -102,6 +102,25 @@ test("too many changes, an event without a path, or a busy index merging those, 
   } finally { watcher.close() }
 })
 
+test("what a refresh did not finish waits for the next one", async () => {
+  const got: (string[] | null)[] = []
+  const watcher = watching(new RootWatcher((paths) => { got.push(paths) }, 20, 200), ["/r"])
+  try {
+    watcher.carryOver(["/r/cancelled.txt"])
+    await Bun.sleep(60)
+    // Not on its own: a run stopped on purpose does not start again at once.
+    expect(got).toEqual([])
+    notify(watcher, "/r/next.txt")
+    await Bun.sleep(80)
+    expect(got[0]!.sort()).toEqual(["/r/cancelled.txt", "/r/next.txt"])
+    // An unfinished walk of every root makes the next refresh one too.
+    watcher.carryOver(null)
+    notify(watcher, "/r/later.txt")
+    await Bun.sleep(80)
+    expect(got[1]).toBeNull()
+  } finally { watcher.close() }
+})
+
 test("native events name the files that changed", async () => {
   const root = realpathSync(mkdtempSync(join(process.env.ZSEARCH_TEST_TMP || tmpdir(), "zsearch-watch-")))
   const got: string[] = []

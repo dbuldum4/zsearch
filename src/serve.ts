@@ -76,7 +76,7 @@ export async function serve(version: string): Promise<number> {
   const watcher = new RootWatcher((changed) => {
     if (firstRun && !configExists()) return
     if (index || lockHolder(p.lock) !== null) return false
-    startIndex(undefined, false, true, false, changed ?? undefined)
+    startIndex(undefined, false, true, false, changed)
   })
   watcher.update(config)
 
@@ -86,8 +86,11 @@ export async function serve(version: string): Promise<number> {
   client.onRefreshed = (files, changed) => send({ type: "refreshed", files, changed })
   client.onRestart = (reason) => send({ type: "error", error: reason })
 
-  /** `background`: the run started on its own (file changes, the app's schedule), not on request. `paths`: the files that changed. */
-  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false, paths?: string[]) => {
+  /**
+   * `background`: the run started on its own (file changes, the app's schedule), not on request.
+   * `paths`: the files that changed, or null for file events that need every root walked.
+   */
+  const startIndex = (id?: number, rebuild = false, background = false, meaningOnly = false, paths?: string[] | null) => {
     if (closed) return
     config = loadConfig()
     client.setConfig(config)
@@ -119,7 +122,7 @@ export async function serve(version: string): Promise<number> {
         flush()
       },
       onCommit: () => client.refresh(),
-    }, rebuild, background, meaningOnly, paths)
+    }, rebuild, background, meaningOnly, paths ?? undefined)
     index = run
     send({ id, type: "ok" })
     void run.done.then((outcome) => {
@@ -127,6 +130,7 @@ export async function serve(version: string): Promise<number> {
       index = null
       if (pending) send({ type: "indexProgress", progress: pending })
       client.refresh(true)
+      if (paths !== undefined && outcome.status !== "done") watcher.carryOver(paths)
       if (outcome.status === "fatal") send({ type: "indexDone", status: "error", error: outcome.error })
       else if (outcome.status === "locked") send({ type: "indexDone", status: "locked" })
       else send({ type: "indexDone", status: outcome.status, progress: outcome.progress, error: outcome.progress.error })
