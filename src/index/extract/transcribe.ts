@@ -32,6 +32,19 @@ function prepare(tool: string, locale: string, runId: string, timeoutMs: number)
   return preparation.ready
 }
 
+/** "hh:mm:ss", as each transcript line starts: `[00:01:23] words…`. */
+export function segmentStamp(seconds: number): string {
+  const s = Math.floor(seconds)
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((n) => String(n).padStart(2, "0")).join(":")
+}
+
+/** Where a transcript line's segment starts in the recording, in seconds, read from its stamp. */
+export function segmentStart(line: string): number | undefined {
+  // A character limit can cut the last line inside its stamp. Hours take 2–4 digits, as Transcript.stamp in ZSearchKit reads them.
+  const m = /^\[(\d{2,4}):([0-5]\d):([0-5]\d)\](?=\s|$)/.exec(line)
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : undefined
+}
+
 /** Final segments are JSON lines; a killed helper may leave an incomplete last line. */
 export async function transcribe(tool: string, path: string, locale: string, maxChars: number, timeoutMs = TRANSCRIPTION_TIMEOUT_MS, runId?: string): Promise<{ text: string; truncated: boolean }> {
   const deadline = performance.now() + timeoutMs
@@ -49,9 +62,7 @@ export async function transcribe(tool: string, path: string, locale: string, max
       complete = true
       truncated = "truncated" in r && r.truncated === true
     } else if ("text" in r && typeof r.text === "string" && "start" in r && typeof r.start === "number" && Number.isFinite(r.start) && r.start >= 0) {
-      const seconds = Math.floor(r.start)
-      const stamp = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map((n) => String(n).padStart(2, "0")).join(":")
-      const text = `[${stamp}] ${r.text.replace(/\s+/g, " ").trim()}`
+      const text = `[${segmentStamp(r.start)}] ${r.text.replace(/\s+/g, " ").trim()}`
       if (chars < maxChars) lines.push(text.slice(0, maxChars - chars))
       chars += text.length + 1
     } else throw new Error("invalid transcription response")

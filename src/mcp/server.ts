@@ -510,7 +510,7 @@ const nullable = (s: JsonSchema): JsonSchema => ({ ...s, type: [s.type as string
 
 const KINDS = "folder, code, text, markdown, data, web, pdf, doc, sheet, slides, ebook, email, image, audio, video, archive, app, other"
 
-const LINE_SCHEMA = loose({ line: { type: "integer" }, page: { type: "integer" }, text: { type: "string" } }, ["line", "text"])
+const LINE_SCHEMA = loose({ line: { type: "integer" }, page: { type: "integer" }, startSeconds: { type: "number" }, text: { type: "string" } }, ["line", "text"])
 const STATE_SCHEMA = loose(
   {
     roots: strList("Folders the settings say to index"),
@@ -564,7 +564,7 @@ Mode "find" (default) finds the exact text of the query in file contents and pat
 
 Filters can be given as arguments, or written in the query in zsearch's syntax: type:pdf, ext:docx, in:~/Documents, path:2024, size:>5mb, mtime:<7d, after:2024-01-01, before:2024-06, limit:50, is:image. A query of filters alone lists matching files, newest first; an empty query lists recently opened and modified files.
 
-Each result gives the file's absolute path, kind, size, modification time and its best matching lines with line numbers (and the page, slide or sheet for paged documents). Use read_file to read more of a file.`,
+Each result gives the file's absolute path, kind, size, modification time and its best matching lines with line numbers (and the page, slide or sheet for paged documents, or startSeconds, where a recording's transcript segment starts). Use read_file to read more of a file.`,
     inputSchema: obj({
       query: str("Text to find, or a regular expression with regex: true. May include filters (type:pdf mtime:<30d). Empty: recent files.", { default: "" }),
       mode: str('"find" (exact text, default), "fuzzy" (typo-tolerant file names) or "semantic" (by meaning)', { enum: ["find", "fuzzy", "semantic"], default: "find" }),
@@ -639,7 +639,7 @@ Each result gives the file's absolute path, kind, size, modification time and it
             modified: iso(h.mtime)!,
             matchCount: h.matchCount,
             matchedBy: h.sources,
-            lines: h.lines.slice(0, perFile).map((l) => ({ line: l.line, ...(paged ? { page: l.page } : {}), text: l.text })),
+            lines: h.lines.slice(0, perFile).map((l) => ({ line: l.line, ...(paged ? { page: l.page } : {}), ...(l.startSeconds !== undefined ? { startSeconds: l.startSeconds } : {}), text: l.text })),
           }
         }),
       }

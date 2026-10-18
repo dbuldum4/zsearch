@@ -8,6 +8,8 @@ public struct LineMatch: Decodable, Hashable, Sendable {
     public var page: Int
     public var text: String
     public var ranges: [[Int]]
+    /// Audio and video: where the line's transcript segment starts, in seconds.
+    public var startSeconds: Double?
 }
 
 public struct SearchHit: Decodable, Hashable, Identifiable, Sendable {

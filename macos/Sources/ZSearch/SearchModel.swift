@@ -787,7 +787,7 @@ final class SearchModel {
 
     /// Bring the search window forward (hotkey, menu bar, Dock), opening it if it was closed.
     func showMainWindow() {
-        QuickPanel.shared.hide()
+        QuickPanel.shared.hide(keepingPlayback: true)
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first(where: { ($0.identifier?.rawValue.hasPrefix("main") ?? false) && $0.canBecomeMain }) {
             window.makeKeyAndOrderFront(nil)
