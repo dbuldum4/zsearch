@@ -27,6 +27,10 @@ async function corpus(files: Record<string, string>, run: (e: SearchEngine, docs
   finally { db.close(); rmSync(root, { recursive: true, force: true }) }
 }
 
+// Complete-group assertions use a one-shot budget. Typing searches may return before
+// filesystem hashing finishes; their short-budget behavior is tested separately below.
+const completeGroups = { groupDuplicates: true, budgetMs: 5000 }
+
 const names = (paths: { path: string }[] | undefined) => (paths ?? []).map((p) => p.path.slice(p.path.indexOf("/docs/") + 6)).sort()
 
 test("identical copies fold into one result that lists the others", async () => corpus({
@@ -36,7 +40,7 @@ test("identical copies fold into one result that lists the others", async () => 
   "d/other.txt": "quokka budget 2025",
   "e/note.txt": "quokka elsewhere",
 }, async (e) => {
-  const grouped = await e.search("quokka", "find", { groupDuplicates: true })
+  const grouped = await e.search("quokka", "find", completeGroups)
   expect(grouped.hits).toHaveLength(3)
   const group = grouped.hits.find((h) => h.copies)!
   expect(names([group, ...group.copies!])).toEqual(["a/report.txt", "b/report.txt", "c/report copy.txt"])
@@ -51,34 +55,34 @@ test("identical copies fold into one result that lists the others", async () => 
   expect((await e.search("quokka", "find", { groupDuplicates: false })).hits).toHaveLength(5)
   // A group counts once towards the limit. Fix its rank: filesystem timestamp precision
   // otherwise decides whether the copies or the other two files are newest.
-  const two = await e.search("quokka sort:path", "find", { groupDuplicates: true, limit: 2 })
+  const two = await e.search("quokka sort:path", "find", { ...completeGroups, limit: 2 })
   expect(two.hits).toHaveLength(2)
   expect(two.hits.some((h) => h.copies?.length === 2)).toBe(true)
-  expect((await e.search("quokka limit:2", "find", { groupDuplicates: true })).hits).toHaveLength(2)
+  expect((await e.search("quokka limit:2", "find", completeGroups)).hits).toHaveLength(2)
 }))
 
 test("hard links group by inode; a deleted copy leaves its group", async () => corpus({
   "one/data.csv": "wombat,1\nwombat,2\n",
   "two/data.csv": "wombat,1\nwombat,2\n",
 }, async (e, docs, reindex) => {
-  let hits = (await e.search("wombat", "find", { groupDuplicates: true })).hits
+  let hits = (await e.search("wombat", "find", completeGroups)).hits
   expect(hits).toHaveLength(1)
   expect(names([hits[0]!, ...hits[0]!.copies!])).toEqual(["linked/data.csv", "one/data.csv", "two/data.csv"])
   // Only one of the links is where contents may not be read: it still groups with the rest.
   e.config.namesOnly = [join(docs, "one")]
-  hits = (await e.search("data.csv", "find", { groupDuplicates: true })).hits
+  hits = (await e.search("data.csv", "find", completeGroups)).hits
   expect(hits).toHaveLength(1)
   expect(names([hits[0]!, ...hits[0]!.copies!])).toEqual(["linked/data.csv", "one/data.csv", "two/data.csv"])
   // Neither link readable: they group by inode without reading, the unread copy does not.
   e.config.namesOnly = [join(docs, "one"), join(docs, "linked")]
-  hits = (await e.search("data.csv", "find", { groupDuplicates: true })).hits
+  hits = (await e.search("data.csv", "find", completeGroups)).hits
   expect(hits.map((h) => [h, ...(h.copies ?? [])].length).sort()).toEqual([1, 2])
   e.config.namesOnly = []
   unlinkSync(join(docs, "two/data.csv"))
   // Before the index hears of it, and after.
   for (const update of [async () => {}, reindex]) {
     await update()
-    hits = (await e.search("wombat", "find", { groupDuplicates: true })).hits
+    hits = (await e.search("wombat", "find", completeGroups)).hits
     expect(hits).toHaveLength(1)
     expect(names([hits[0]!, ...hits[0]!.copies!])).toEqual(["linked/data.csv", "one/data.csv"])
   }
@@ -99,9 +103,9 @@ test("a copy changed on disk is compared again", async () => corpus({
   "x/plan.md": "numbat plan",
   "y/plan.md": "numbat plan",
 }, async (e, docs) => {
-  expect((await e.search("numbat", "find", { groupDuplicates: true })).hits).toHaveLength(1)
+  expect((await e.search("numbat", "find", completeGroups)).hits).toHaveLength(1)
   writeFileSync(join(docs, "y/plan.md"), "numbat plaN")
-  expect((await e.search("numbat", "find", { groupDuplicates: true })).hits).toHaveLength(2)
+  expect((await e.search("numbat", "find", completeGroups)).hits).toHaveLength(2)
 }))
 
 test("grouped boolean queries fold copies", async () => corpus({
@@ -109,7 +113,7 @@ test("grouped boolean queries fold copies", async () => corpus({
   "q/q.txt": "quokka shared",
   "r/w.txt": "wombat solo",
 }, async (e) => {
-  const hits = (await e.search("quokka OR wombat", "find", { groupDuplicates: true })).hits
+  const hits = (await e.search("quokka OR wombat", "find", completeGroups)).hits
   expect(hits).toHaveLength(2)
   const group = hits.find((h) => h.copies)!
   expect(names([group, ...group.copies!])).toEqual(["p/q.txt", "q/q.txt"])
@@ -118,11 +122,11 @@ test("grouped boolean queries fold copies", async () => corpus({
 test("copies past the fetched page are flagged", async () => corpus(
   Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`c${String(i).padStart(2, "0")}/clone.txt`, "quokka clone"])),
   async (e) => {
-    const one = await e.search("quokka", "find", { groupDuplicates: true, limit: 1 })
+    const one = await e.search("quokka", "find", { ...completeGroups, limit: 1 })
     expect(one.hits).toHaveLength(1)
     expect(one.hits[0]!.copies).toHaveLength(20)
     expect(one.hits[0]!.copiesMore).toBe(true)
-    const all = await e.search("quokka", "find", { groupDuplicates: true })
+    const all = await e.search("quokka", "find", completeGroups)
     expect(all.hits).toHaveLength(1)
     expect(all.hits[0]!.copies).toHaveLength(24)
     expect(all.hits[0]!.copiesMore).toBeUndefined()
@@ -152,7 +156,7 @@ test("a stalled read does not hold results past the budget; copies group once it
     expect(stalled.elapsedMs).toBeLessThan(2000)
     expect(stalled.hits).toHaveLength(2)
     hanging = false
-    const unblocked = await e.search("quokka", "find", { groupDuplicates: true })
+    const unblocked = await e.search("quokka", "find", completeGroups)
     expect(unblocked.hits).toHaveLength(1)
     expect(unblocked.hits[0]!.copies).toHaveLength(1)
   } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
