@@ -2,6 +2,7 @@ import type { BoxRenderable, InputRenderable, KeyEvent, MouseEvent } from "@open
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
 import { type Config, manualIndexing, tildify } from "../config.ts"
+import { fullWalkDue } from "../index/db.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import type { StatsReply } from "../search/client.ts"
 import type { Preview, SearchHit, SearchResponse } from "../search/engine.ts"
@@ -229,9 +230,8 @@ export function App(props: AppProps) {
     void refreshStats().then(() => {
       if (screen() !== "search") return
       const s = stats()?.stats
-      const maxAge = config().autoRefreshMinutes * 60_000
       if (!s || s.lastIndexedAt === null) startIndex("setup")
-      else if (maxAge > 0 && Date.now() - s.lastIndexedAt > maxAge) startIndex("auto")
+      else if (fullWalkDue(s, config().autoRefreshMinutes)) startIndex("auto")
     })
     if (screen() === "search") scheduleSearch(0)
   })

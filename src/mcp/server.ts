@@ -10,7 +10,7 @@ import type { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import { progressLine } from "../util/progress.ts"
 import { type Config, configKeys, withConfigSetting, configExists, configStamp, ensureDirs, loadConfig, resolvePath, saveConfig, tildify } from "../config.ts"
-import { type IndexStats, openDb } from "../index/db.ts"
+import { fullWalkDue, type IndexStats, openDb } from "../index/db.ts"
 import { type IndexOutcome, IndexRun } from "../index/client.ts"
 import type { IndexProgress } from "../index/indexer.ts"
 import { policyFor, crawlOptionsFor } from "../index/policy.ts"
@@ -107,7 +107,7 @@ class Host {
     if (period <= 0 || this.run || Date.now() - this.lastAutoAttempt < period) return
     const { stats } = await this.stats()
     // A first index is the user's call (which folders?), not an automatic one.
-    if (stats.lastIndexedAt === null || Date.now() - stats.lastIndexedAt < period) return
+    if (stats.lastIndexedAt === null || !fullWalkDue(stats, this.config.autoRefreshMinutes)) return
     if (lockHolder(this.paths.lock) !== null) return
     this.lastAutoAttempt = Date.now()
     this.log("info", `Updating the index: it is older than ${this.config.autoRefreshMinutes} minutes.`)
@@ -384,7 +384,6 @@ function describeHit(h: SearchHit): string {
 async function indexState(host: Host, opts: { errors?: number } = {}) {
   const config = host.reloadConfig()
   const { stats } = await host.stats()
-  const period = config.autoRefreshMinutes * 60_000
   const other = host.run ? null : lockHolder(host.paths.lock)
   const p = host.run?.progress
   const indexing = host.run
@@ -420,7 +419,8 @@ async function indexState(host: Host, opts: { errors?: number } = {}) {
     indexBytes: stats.dbBytes,
     lastIndexedAt: iso(stats.lastIndexedAt),
     lastDurationMs: stats.lastDurationMs,
-    stale: stats.lastIndexedAt === null || (period > 0 && Date.now() - stats.lastIndexedAt > period),
+    lastFullWalkAt: iso(stats.lastFullWalkAt),
+    stale: stats.lastIndexedAt === null || fullWalkDue(stats, config.autoRefreshMinutes),
     contentEnabled: config.content.enabled,
     pdftotext: pdftotextPath() !== null,
     indexing,
@@ -492,8 +492,9 @@ const STATE_SCHEMA = loose(
     unreadable: { type: "integer" },
     pending: { type: "integer" },
     indexBytes: { type: "integer" },
-    lastIndexedAt: nullable(str("When the last index run completed (ISO 8601)")),
-    stale: bool("The index is older than autoRefreshMinutes, or was never completed"),
+    lastIndexedAt: nullable(str("When an index run last updated the index, a full walk or a refresh of changed files (ISO 8601)")),
+    lastFullWalkAt: nullable(str("When an index run last walked every folder, which catches changes file events missed (ISO 8601)")),
+    stale: bool("No full walk for longer than autoRefreshMinutes, or the index was never completed"),
     indexing: { type: ["object", "null"], description: "The index run in progress, if any" },
     lastRun: { type: ["object", "null"], description: "How the last run started by this server ended" },
   },

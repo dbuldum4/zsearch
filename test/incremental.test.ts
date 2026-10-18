@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type Config, defaultConfig } from "../src/config.ts"
 import { crawl, crawlTargets, type CrawlStats } from "../src/index/crawler.ts"
-import { ContentState, getMeta, openDb, readContent } from "../src/index/db.ts"
+import { ContentState, fullWalkDue, getMeta, indexStats, openDb, readContent, setMeta } from "../src/index/db.ts"
 import { crawlOptionsFor, Indexer } from "../src/index/indexer.ts"
 
 let home: string
@@ -18,10 +18,10 @@ function write(rel: string, data: string) {
   writeFileSync(at(rel), data)
   return at(rel)
 }
-function config(): Config {
+function config(exclude = ["*.log"]): Config {
   const c = defaultConfig()
   c.roots = ["~/a", "~/b"]
-  c.exclude = ["*.log"]
+  c.exclude = exclude
   c.content = { ...c.content, ocr: false, transcribe: false }
   return c
 }
@@ -65,7 +65,10 @@ afterAll(() => {
 })
 
 test("a file event updates new, changed and deleted files without walking the other roots", async () => {
-  const lastFull = getMeta(db, "last_indexed_at")
+  const lastFull = getMeta(db, "last_full_walk_at")
+  const lastUpdate = getMeta(db, "last_indexed_at")
+  expect(lastFull).toBe(lastUpdate)
+  await Bun.sleep(5)
   const before = (db.query("SELECT max(n) AS n FROM removed").get() as { n: number | null }).n ?? 0
   const gone = row("a/two.txt")!.id
   write("a/new.txt", "a brand new note about hedgehog\n")
@@ -85,8 +88,9 @@ test("a file event updates new, changed and deleted files without walking the ot
   expect(row("a/two.txt")).toBeNull()
   // Readers follow removals from the log.
   expect(db.query("SELECT id FROM removed WHERE n > ?").all(before)).toEqual([{ id: gone }])
-  // The timed refresh still goes by the last full walk.
-  expect(getMeta(db, "last_indexed_at")).toBe(lastFull)
+  // Status says the index was updated; the timed refresh still goes by the last full walk.
+  expect(Number(getMeta(db, "last_indexed_at"))).toBeGreaterThan(Number(lastUpdate))
+  expect(getMeta(db, "last_full_walk_at")).toBe(lastFull)
 })
 
 test("only the target subtree is listed", () => {
@@ -166,17 +170,47 @@ test("editing an ignore file walks its folder again", async () => {
 test("changed settings or no finished full walk make an event walk every root", async () => {
   const c = config()
   c.exclude = ["*.log", "many/"]
-  const lastFull = getMeta(db, "last_indexed_at")
+  const lastFull = getMeta(db, "last_full_walk_at")
   await Bun.sleep(5)
   const r = await run([at("a/one.txt")], c)
   expect(r.phase).toBe("done")
   expect(r.removed).toBeGreaterThanOrEqual(50)
-  expect(getMeta(db, "last_indexed_at")).not.toBe(lastFull)
+  expect(getMeta(db, "last_full_walk_at")).not.toBe(lastFull)
+  expect(getMeta(db, "last_full_walk_at")).toBe(getMeta(db, "last_indexed_at"))
   // The walk with the new settings is the one events build on now.
   const after = await run([at("a/one.txt")], c)
   expect(after.scanned).toBe(1)
 })
 
+test("the timed refresh goes by the last full walk, not by event refreshes", async () => {
+  const hour = 60 * 60_000
+  const walked = Date.now() - 2 * hour
+  setMeta(db, "last_full_walk_at", String(walked))
+  write("a/stale-check.txt", "an event refresh after the full walk\n")
+  // The settings of the last full walk (the previous test's).
+  const r = await run([at("a/stale-check.txt")], config(["*.log", "many/"]))
+  expect(r.scanned).toBe(1)
+  const stats = indexStats(db)
+  // Status shows the event refresh, while a full walk is still due.
+  expect(Date.now() - stats.lastIndexedAt!).toBeLessThan(hour)
+  expect(stats.lastFullWalkAt).toBe(walked)
+  expect(fullWalkDue(stats, 60)).toBe(true)
+  expect(fullWalkDue(stats, 180)).toBe(false)
+  expect(fullWalkDue(stats, 0)).toBe(false)
+  expect(fullWalkDue({ lastFullWalkAt: Date.now() }, 60)).toBe(false)
+  expect(fullWalkDue({ lastFullWalkAt: null }, 60)).toBe(true)
+})
+
+test("an index from before event refreshes counts its last run as a full walk, and walks fully on the next event", async () => {
+  db.query("DELETE FROM meta WHERE key IN ('last_full_walk_at', 'walk_policy')").run()
+  const stats = indexStats(db)
+  expect(stats.lastFullWalkAt).toBe(stats.lastIndexedAt)
+  const c = config(["*.log", "many/"])
+  const r = await run([at("a/one.txt")], c)
+  expect(r.scanned).toBeGreaterThan(5)
+  expect(getMeta(db, "last_full_walk_at")).toBe(getMeta(db, "last_indexed_at"))
+  expect((await run([at("a/one.txt")], c)).scanned).toBe(1)
+})
 test("event updates leave the index as a full walk finds it", async () => {
   const c = config()
   c.exclude = ["*.log", "many/"]

@@ -293,11 +293,12 @@ export class Indexer {
       setMeta(this.db, "waiting_for", "")
     }
     if (phase === "done") {
-      // These stand for the last full walk: the timed refresh goes by it, to catch missed events.
+      const now = Date.now()
+      setMeta(this.db, "last_indexed_at", String(now))
+      setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
+      // The timed refresh goes by the last full walk, to catch what file events missed.
       if (!this.partial) {
-        const now = Date.now()
-        setMeta(this.db, "last_indexed_at", String(now))
-        setMeta(this.db, "last_duration_ms", String(now - this.progress.startedAt))
+        setMeta(this.db, "last_full_walk_at", String(now))
         setMeta(this.db, "roots", JSON.stringify(this.config.roots.map(resolvePath)))
         setMeta(this.db, "walk_policy", this.walkPolicy)
       }
@@ -545,7 +546,7 @@ export class Indexer {
    */
   private targets(crawlOpts: CrawlOptions): string[] | null {
     if (!this.opts.paths) return null
-    if (getMeta(this.db, "last_indexed_at") === null || getMeta(this.db, "walk_policy") !== this.walkPolicy) return null
+    if (getMeta(this.db, "last_full_walk_at") === null || getMeta(this.db, "walk_policy") !== this.walkPolicy) return null
     // A followed link's files are indexed at every path that leads to them, and an event names one.
     if (crawlOpts.followSymlinks) return null
     return crawlTargets(crawlOpts, this.opts.paths)

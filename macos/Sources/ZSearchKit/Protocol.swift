@@ -78,9 +78,12 @@ public struct IndexStats: Decodable, Hashable, Sendable {
     public var pending: Int
     public var contentBytes: Int
     public var dbBytes: Int
-    /// Milliseconds since 1970, or nil if no index run has finished.
+    /// Milliseconds since 1970, or nil if no index run has finished: when a run last updated
+    /// the index, a full walk or a refresh of the files that changed.
     public var lastIndexedAt: Double?
     public var lastDurationMs: Double?
+    /// When a run last walked every folder, which the timed update goes by (older engines: nil).
+    public var lastFullWalkAt: Double?
     public var roots: [String]
 }
 

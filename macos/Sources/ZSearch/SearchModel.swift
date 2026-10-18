@@ -458,8 +458,8 @@ final class SearchModel {
         // "Only when I ask" never starts a build on its own, even when no run has
         // completed yet: a first or interrupted index waits for Update Index.
         guard !manualIndexing else { return false }
-        guard let last = stats?.lastIndexedAt else { return true }
-        return AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: last, now: Date().timeIntervalSince1970 * 1000)
+        guard let stats, stats.lastIndexedAt != nil else { return true }
+        return AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastFullWalkAt: stats.lastFullWalkAt ?? stats.lastIndexedAt, now: Date().timeIntervalSince1970 * 1000)
     }
 
     /// Update the index whenever it gets older than the "Update the index" setting, for as long
@@ -478,7 +478,7 @@ final class SearchModel {
     private func updateIfDue() {
         guard engine != nil, !indexing, !firstRun, !showSetup, let stats else { return }
         let now = Date().timeIntervalSince1970 * 1000
-        guard AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastIndexedAt: stats.lastIndexedAt, lastAttempt: lastAutoUpdate, now: now) else { return }
+        guard AutoUpdate.isDue(minutes: config?.autoRefreshMinutes ?? 60, lastFullWalkAt: stats.lastFullWalkAt ?? stats.lastIndexedAt, lastAttempt: lastAutoUpdate, now: now) else { return }
         lastAutoUpdate = now
         startIndex(background: true)
     }
