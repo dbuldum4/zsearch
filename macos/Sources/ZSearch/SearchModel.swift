@@ -27,14 +27,31 @@ final class SearchModel {
     var selection: SearchHit.ID? {
         didSet {
             guard selection != oldValue else { return }
+            // Set on its own (a click, ↑/↓, a new result list): only this result stays picked.
+            if picks.primary != selection { picks = ResultSelection(selection) }
             updateHasSelection()
             loadPreview()
             // Quick Look follows the selection while it is open, as in Finder.
             if quickLookURL != nil { quickLookURL = selectedHit.map { URL(fileURLWithPath: $0.path) } }
         }
     }
+    /// The results picked together (⌘-click, ⇧-click, ⇧↑/⇧↓, Select All); `selection` is the one
+    /// among them the preview shows.
+    private(set) var picks = ResultSelection<SearchHit.ID>() {
+        didSet {
+            if picks.count != pickedCount { pickedCount = picks.count }
+            if quickLookURL != nil { quickLookItems = selectedHits.map { URL(fileURLWithPath: $0.path) } }
+        }
+    }
+    /// How many results are picked. The menus and the selection bar read this rather than `picks`.
+    private(set) var pickedCount = 0
+    /// Set while the menu's Select All (⌘A) runs. The list takes it itself and reports only the
+    /// new set, the same one a ⇧-click from the first result to the last gives.
+    @ObservationIgnored var menuSelectsAll = false
     /// The file shown in Quick Look, or nil when it is closed.
     var quickLookURL: URL?
+    /// The files Quick Look goes through: the picked ones.
+    private(set) var quickLookItems: [URL] = []
     /// Quick Look was opened from the floating panel, not the main window.
     private(set) var quickLookInPanel = false
     var showSetup = false
@@ -325,12 +342,16 @@ final class SearchModel {
             guard query == self.query, mode == self.mode else { return }
             // Same hits as before (typical for a refresh): keep the current list and preview untouched.
             if let current = response, current.query == r.query, current.resolved == r.resolved, current.hits == r.hits, current.notice == r.notice, current.error == r.error { return }
+            let previous = response
             response = r
-            if let id = selection, r.hits.contains(where: { $0.id == id }) {
-                loadPreview()
-            } else {
-                selection = r.hits.first?.id
-            }
+            var next = picks
+            // A new query keeps the result shown, if it is still listed, but not the others picked;
+            // sorting or folding the previews keeps them all.
+            if !(previous.map { QueryFilters.sameResults($0.query, r.query) } ?? false) { next.collapse() }
+            next.carry(over: Dictionary(previous?.hits.map { ($0.id, $0.path) } ?? [], uniquingKeysWith: { first, _ in first }), to: r.hits.map { (id: $0.id, key: $0.path) })
+            let shown = selection
+            pick(next)
+            if selection == shown { loadPreview() }
         } catch {
             show(error.localizedDescription)
         }
@@ -452,7 +473,8 @@ final class SearchModel {
         guard !hits.isEmpty else { return }
         let current = hits.firstIndex { $0.id == selection } ?? -1
         let next = min(max(current + delta, 0), hits.count - 1)
-        selection = hits[next].id
+        // A plain arrow keeps only its destination, even at a boundary where it cannot move.
+        pick(ResultSelection(hits[next].id))
     }
 
     func requestSearchFocus() {
@@ -746,7 +768,7 @@ final class SearchModel {
     }
 
     func openSelected() {
-        if let hit = selectedHit { open(hit) }
+        open(selectedHits)
     }
 
     func reveal(_ hit: SearchHit) {
@@ -756,7 +778,7 @@ final class SearchModel {
     }
 
     func revealSelected() {
-        if let hit = selectedHit { reveal(hit) }
+        reveal(selectedHits)
     }
 
     // One assignment to `query`: each one schedules a search of its own.
@@ -779,8 +801,10 @@ final class SearchModel {
         response?.hits.removeAll { $0.path == hit.path || $0.path.hasPrefix(hit.path + "/") }
         if let count = response?.hits.count { response?.total = count }
         clearPreviewCache()
-        // The excluded file's preview must not stay on screen.
-        if selectedHit == nil { selection = hits.first?.id }
+        // The excluded files are no longer picked, and the preview of one must not stay on screen.
+        var next = picks
+        next.prune(to: hits.map(\.id))
+        pick(next)
     }
 
     func copyPath(_ hit: SearchHit) {
@@ -789,14 +813,45 @@ final class SearchModel {
         show("Copied \(hit.path)")
     }
 
-    func copySelectedPath() {
-        if let hit = selectedHit { copyPath(hit) }
+    /// Several paths, one per line, and the files themselves: Finder and Mail paste the files.
+    func copyPaths(_ hits: [SearchHit]) {
+        guard hits.count > 1 else {
+            if let hit = hits.first { copyPath(hit) }
+            return
+        }
+        let items = hits.map { hit in
+            let item = NSPasteboardItem()
+            item.setString(URL(fileURLWithPath: hit.path).absoluteString, forType: .fileURL)
+            return item
+        }
+        // Text is read from the first item only.
+        items[0].setString(hits.map(\.path).joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(items)
+        show("Copied \(hits.count) paths")
     }
 
-    /// Open or close Quick Look on the selected file (Space in the list, ⌘Y).
+    func copySelectedPath() {
+        copyPaths(selectedHits)
+    }
+
+    /// Pick these results and show their primary.
+    func pick(_ next: ResultSelection<SearchHit.ID>) {
+        picks = next
+        selection = next.primary
+    }
+
+    /// Open or close Quick Look on the selected files (Space in the list, ⌘Y).
     func toggleQuickLook() {
-        if quickLookURL == nil { quickLookInPanel = QuickPanel.shared.isKey }
-        quickLookURL = quickLookURL == nil ? selectedHit.map { URL(fileURLWithPath: $0.path) } : nil
+        if quickLookURL == nil { quickLook(selectedHits) } else { quickLookURL = nil }
+    }
+
+    /// Open Quick Look on these files, at the selected one if it is among them.
+    func quickLook(_ hits: [SearchHit]) {
+        guard let first = hits.first else { return }
+        quickLookInPanel = QuickPanel.shared.isKey
+        quickLookItems = hits.map { URL(fileURLWithPath: $0.path) }
+        quickLookURL = URL(fileURLWithPath: (hits.first { $0.id == selection } ?? first).path)
     }
 
     /// The editor ⌘E uses: the one picked in Settings if it is installed, else the first installed one.
@@ -835,7 +890,7 @@ final class SearchModel {
     }
 
     func openSelectedInEditor() {
-        if let hit = selectedHit { openInEditor(hit) }
+        openInEditor(selectedHits)
     }
 
     /// Show the next (`delta` 1) or previous (-1) match in the preview, going round at the ends.
