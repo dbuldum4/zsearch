@@ -335,9 +335,9 @@ final class SearchModel {
             let previous = response
             response = r
             var next = picks
-            next.carry(over: Dictionary(previous?.hits.map { ($0.id, $0.path) } ?? [], uniquingKeysWith: { first, _ in first }), to: r.hits.map { (id: $0.id, key: $0.path) })
             // A new query keeps the result shown, if it is still listed, but not the others picked.
             if previous?.query != r.query { next.collapse() }
+            next.carry(over: Dictionary(previous?.hits.map { ($0.id, $0.path) } ?? [], uniquingKeysWith: { first, _ in first }), to: r.hits.map { (id: $0.id, key: $0.path) })
             let shown = selection
             pick(next)
             if selection == shown { loadPreview() }

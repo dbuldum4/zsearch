@@ -117,6 +117,28 @@ final class ResultSelectionTests: XCTestCase {
         XCTAssertEqual(s, ResultSelection<Int>())
     }
 
+    func testARangeOrClickReachingEveryResultIsNotSelectAll() {
+        // ⇧↓ in the list, down to the last result.
+        var s = ResultSelection(10)
+        s.adopt([10, 11, 12, 13, 14], in: order)
+        s.adopt(Set(order), in: order)
+        XCTAssertEqual(s.primary, 15)
+        XCTAssertEqual(s.anchor, 10)
+        // ⌘-click the other of two results.
+        var two = ResultSelection(1)
+        two.adopt([1, 2], in: [1, 2])
+        XCTAssertEqual(two.primary, 2)
+    }
+
+    func testANewQueryKeepsOnlyTheResultShown() {
+        // How `SearchModel` carries the picks to a new query's results: collapsed first, so a
+        // primary that is gone starts over at the top, not at another result that was picked.
+        var s = ResultSelection(11)
+        s.toggle(13, in: order)
+        s.collapse()
+        s.carry(over: [11: "/b", 13: "/d"], to: [(id: 10, key: "/a"), (id: 11, key: "/b")])
+        XCTAssertEqual(s, ResultSelection(10))
+    }
     func testCarriesOverByPath() {
         var s = ResultSelection(11)
         s.toggle(12, in: order)

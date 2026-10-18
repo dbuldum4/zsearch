@@ -73,7 +73,9 @@ public struct ResultSelection<ID: Hashable>: Equatable {
         ids = new
         let index = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         let next: ID?
-        if let primary, new.contains(primary), new.count == order.count || added.isEmpty {
+        // One result added is a ⇧-arrow or ⌘-click even when it completes the list; Select All
+        // would look the same only with a single result left out.
+        if let primary, new.contains(primary), added.isEmpty || (new.count == order.count && added.count > 1) {
             // Select All, or a result other than the primary taken out.
             next = primary
         } else if !added.isEmpty {
