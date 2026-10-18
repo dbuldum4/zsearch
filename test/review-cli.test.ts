@@ -53,9 +53,12 @@ describe("index --rebuild", () => {
     try {
       setMeta(db, "last_indexed_at", "123")
       setMeta(db, "last_duration_ms", "4")
+      setMeta(db, "last_full_walk_at", "123")
       clearIndex(db)
       expect(getMeta(db, "last_indexed_at")).toBeNull()
       expect(getMeta(db, "last_duration_ms")).toBeNull()
+      // Event refreshes need a finished full walk of the rebuilt index first.
+      expect(getMeta(db, "last_full_walk_at")).toBeNull()
     } finally {
       db.close()
     }

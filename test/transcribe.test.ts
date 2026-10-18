@@ -182,6 +182,36 @@ test("transcripts are searchable, serial, reused, and hidden immediately on opt-
   } finally { db.close() }
 })
 
+test("a refresh of changed files leaves retrying failed transcripts to full walks", async () => {
+  const root = join(dir, "live-retry-media"), recovered = join(dir, "live-speech-recovered")
+  mkdirSync(root)
+  writeFileSync(join(root, "failed.wav"), "fake audio")
+  const retryHelper = script("live-retry-helper", `
+import { existsSync } from "node:fs"
+if (process.argv[2] === "--prepare") process.exit(0)
+if (process.argv[3].endsWith("failed.wav") && !existsSync(${JSON.stringify(recovered)})) { console.error("temporary failure"); process.exit(1) }
+console.log(JSON.stringify({start: 0, text: "recovered speech"}))
+console.log(JSON.stringify({complete: true, truncated: false}))
+`)
+  process.env.ZSEARCH_TRANSCRIBE = retryHelper
+  const config = { ...defaultConfig(), roots: [root], indexLoad: 100, workers: 1 }
+  const db = openDb(join(dir, "live-retry-index.db"))
+  try {
+    expect((await new Indexer(db, config).run()).contentErrors).toBe(1)
+    writeFileSync(recovered, "ready")
+    const due = String(Date.now() - 61 * 60_000)
+    setMeta(db, "transcription_attempt_at", due)
+    writeFileSync(join(root, "new.wav"), "new recording")
+    // It looks at the new recording only: the failed one elsewhere keeps its retry due.
+    const live = await new Indexer(db, config, { paths: [join(root, "new.wav")] }).run()
+    expect(live.scanned).toBe(1)
+    expect(live.contentDone).toBe(1)
+    expect(getMeta(db, "transcription_attempt_at")).toBe(due)
+    expect((await new Indexer(db, config).run()).contentDone).toBe(1)
+    expect(db.query("SELECT content_state FROM files WHERE name = 'failed.wav'").get()).toEqual({ content_state: ContentState.Indexed })
+  } finally { db.close(); process.env.ZSEARCH_TRANSCRIBE = helper }
+})
+
 test("new recordings do not postpone retries of older failed transcripts", async () => {
   const root = join(dir, "retry-media"), recovered = join(dir, "speech-recovered")
   mkdirSync(root)

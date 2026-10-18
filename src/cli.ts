@@ -17,7 +17,7 @@ import {
   setConfigValue,
   tildify,
 } from "./config.ts"
-import { clearIndex, getMeta, indexStats, openDb } from "./index/db.ts"
+import { clearIndex, getMeta, indexStats, openDb, PARTIAL_RUN, partialRunHolds, setMeta } from "./index/db.ts"
 import { excludingPath } from "./index/exclude.ts"
 import { duplicateFiles } from "./search/duplicates.ts"
 import { Indexer, type IndexProgress } from "./index/indexer.ts"
@@ -330,6 +330,7 @@ function openIndexForRun(path: string, rebuild: boolean): Database {
   let db: Database | null = null
   try {
     db = openDb(path)
+    setMeta(db, PARTIAL_RUN, "")
     if (rebuild) clearIndex(db)
     return db
   } catch (err) {
@@ -370,7 +371,15 @@ async function cmdIndex(folders: string[], args: Args): Promise<number> {
     save = true
   }
   if (save) saveConfig(config)
-  const release = acquireLock(p.lock)
+  let release = acquireLock(p.lock)
+  // A refresh of changed paths (the app's, say) ends soon, and does not walk every root: wait for it.
+  if (!release && existsSync(p.db) && partialRunHolds(p.db)) {
+    if (flag(args, "quiet", "q") !== true) console.error("Waiting for the update of changed files to finish…")
+    while (!release && partialRunHolds(p.db)) {
+      await Bun.sleep(100)
+      release = acquireLock(p.lock)
+    }
+  }
   if (!release) {
     const waiting = existsSync(p.db) ? waitingFor(p.db) : ""
     console.error(`zsearch: another zsearch process (pid ${lockHolder(p.lock)}) is updating the index${waiting ? ` (waiting: ${waiting}; Update Index Now in the app, or Ctrl-R in zsearch, starts it at once)` : ""}`)
