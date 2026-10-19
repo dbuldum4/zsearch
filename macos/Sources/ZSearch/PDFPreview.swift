@@ -249,7 +249,7 @@ struct PDFPreviewView: NSViewRepresentable {
             view.go(to: page)
         }
     }
-}/// Any other file, as Quick Look shows it: images, video, audio, fonts, and files without text.
+}/// Any other file, as Quick Look shows it: spreadsheets, presentations, images, media, fonts, and files without text.
 struct QuickLookView: NSViewRepresentable {
     let url: URL
 
