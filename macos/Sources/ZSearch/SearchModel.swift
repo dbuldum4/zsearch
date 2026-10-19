@@ -8,6 +8,8 @@ import ZSearchKit
 @MainActor
 final class IndexActivity {
     var progress: IndexProgress?
+    /// What indexing has done this session, for the setup screen's log.
+    var log = IndexLog()
 }
 
 /// App state. Talks to the bundled `zsearch serve` engine.
@@ -278,10 +280,12 @@ final class SearchModel {
             if !indexing { indexing = true }
             if (p.partial == true) != refreshingChangedFiles { refreshingChangedFiles = p.partial == true }
             activity.progress = p
+            activity.log.record(p)
         case let .indexDone(done):
             indexing = false
             refreshingChangedFiles = false
             activity.progress = nil
+            activity.log.finished(done.status, error: done.error)
             let followUp = indexAfterCurrentRun
             indexAfterCurrentRun = false
             switch done.status {
@@ -657,6 +661,7 @@ final class SearchModel {
         downloadingModel = true
         semanticDownload = nil
         installError = nil
+        activity.log.note("Downloading the Granite embedding model")
         Task {
             defer {
                 downloadingModel = false
@@ -664,15 +669,20 @@ final class SearchModel {
             }
             do {
                 let reply = try await engine.request(.semanticInstall)
-                if case let .semantic(s) = reply { semantic = s }
+                if case let .semantic(s) = reply {
+                    semantic = s
+                    activity.log.note("Granite embedding model installed")
+                }
                 if case let .error(text) = reply {
                     installError = text
+                    activity.log.note("Model download failed: \(text)")
                     show(text)
                 }
                 if case let .config(c)? = try? await engine.request(.config) { config = c }
                 scheduleSearch(delay: 0)
             } catch {
                 installError = error.localizedDescription
+                activity.log.note("Model download failed: \(error.localizedDescription)")
                 show(error.localizedDescription)
             }
         }
