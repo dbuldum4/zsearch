@@ -1,4 +1,4 @@
-/** Fetch raw bytes only: Bun's bundled Brotli decoder is not yet patched in stable releases. */
+/** Fetch raw bytes only. Bun 1.4.4 patches the Brotli decoder (CVE-2026-111497); refusing compressed bodies keeps model downloads safe on older runtimes too. */
 export async function fetchIdentity(input: string | URL, init: RequestInit = {}, fetchImpl: typeof fetch = fetch): Promise<Response> {
   const headers = new Headers(init.headers)
   headers.set("Accept-Encoding", "identity")
