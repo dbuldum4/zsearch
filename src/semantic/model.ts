@@ -7,6 +7,7 @@ import { createHash, type Hash } from "node:crypto"
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { paths } from "../config.ts"
+import { fetchIdentity } from "../util/fetch.ts"
 
 export interface ModelFile {
   name: string
@@ -131,7 +132,7 @@ async function downloadFile(spec: ModelSpec, file: ModelFile, final: string, opt
     }
   }
   if (have < file.bytes) {
-    const res = await (opts.fetchImpl ?? fetch)(modelUrl(spec, file), { signal: opts.signal, headers: have ? { Range: `bytes=${have}-` } : {}, redirect: "follow" })
+    const res = await fetchIdentity(modelUrl(spec, file), { signal: opts.signal, headers: have ? { Range: `bytes=${have}-` } : {}, redirect: "follow" }, opts.fetchImpl)
     if (have && res.status === 200) {
       // The server sent the whole file rather than the rest: start over.
       await res.body?.cancel()
