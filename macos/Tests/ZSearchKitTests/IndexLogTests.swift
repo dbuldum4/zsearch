@@ -19,7 +19,7 @@ final class IndexLogTests: XCTestCase {
         log.record(try progress("content", current: "/Volumes/X/b.mp4", done: 2, total: 9, errors: 1, waiting: "on battery"))
         log.record(try progress("content", current: "/Volumes/X/b.mp4", done: 3, total: 9, errors: 3))
         log.record(try progress("meaning", meaning: #"{"total":1,"done":0,"embedded":0,"reused":0}"#))
-        log.finished("done")
+        log.finished(IndexDone(status: "done", progress: nil, error: nil))
         XCTAssertEqual(log.lines.map(\.text), [
             "Scanning folders",
             "~/Documents",
@@ -38,12 +38,27 @@ final class IndexLogTests: XCTestCase {
     func testAnUpdateOfChangedFilesAndEndings() throws {
         var log = IndexLog(home: "/Users/me")
         log.record(try progress("scan", partial: true))
-        log.finished("cancelled")
+        log.finished(IndexDone(status: "cancelled", progress: nil, error: nil))
         // A new run starts its phases over.
         log.record(try progress("scan"))
-        log.finished("error", error: "disk full")
-        log.finished("locked")
+        log.finished(IndexDone(status: "error", progress: nil, error: "disk full"))
+        log.finished(IndexDone(status: "locked", progress: nil, error: nil))
         XCTAssertEqual(log.lines.map(\.text), ["Checking changed files", "Stopped", "Scanning folders", "Failed: disk full", "Another zsearch process is updating the index"])
+    }
+
+    func testSemanticFailureIsLoggedWhenFileIndexFinished() throws {
+        // The engine leaves the outer status as "done" when the semantic helper fails.
+        let done = try JSONDecoder().decode(IndexDone.self, from: Data(#"{"status":"done","progress":{"phase":"done","scanned":10,"added":0,"updated":0,"removed":0,"contentTotal":1,"contentDone":1,"contentBytes":100,"contentErrors":0,"current":"","elapsedMs":10,"meaning":{"total":0,"done":0,"embedded":0,"reused":0,"error":"embedding helper crashed"}}}"#.utf8))
+        var log = IndexLog()
+        log.record(try progress("meaning"))
+        log.finished(done)
+        // A retry must start a fresh phase, even when it starts with meaning again.
+        log.record(try progress("meaning"))
+        XCTAssertEqual(log.lines.map(\.text), [
+            "Building the semantic index",
+            "Semantic indexing failed: embedding helper crashed",
+            "Building the semantic index",
+        ])
     }
 
     func testKeepsTheNewestLines() {

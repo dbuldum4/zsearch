@@ -285,7 +285,7 @@ final class SearchModel {
             indexing = false
             refreshingChangedFiles = false
             activity.progress = nil
-            activity.log.finished(done.status, error: done.error)
+            activity.log.finished(done)
             let followUp = indexAfterCurrentRun
             indexAfterCurrentRun = false
             switch done.status {
@@ -293,7 +293,9 @@ final class SearchModel {
                 // Settings changed during the run still wait for the next one, as they do after
                 // an update of changed files only.
                 if indexedRevision == settingsRevision, done.progress?.partial != true { needsReindex = false }
-                if let p = done.progress, let m = p.meaning, p.scanned == 0 {
+                if let error = done.progress?.meaning?.error {
+                    show("Semantic indexing failed: \(error)")
+                } else if let p = done.progress, let m = p.meaning, p.scanned == 0 {
                     show("Semantic index updated · \(m.done.formatted()) files read · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused")
                 } else if let p = done.progress {
                     let changed = p.added + p.updated + p.removed

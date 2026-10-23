@@ -36,13 +36,18 @@ public struct IndexLog: Sendable {
         if !p.current.isEmpty, p.current != last?.current { note(shown(p.current), at: time) }
     }
 
-    /// A run ended: `status` as the engine says ("done", "cancelled", "error", "locked").
-    public mutating func finished(_ status: String, error: String? = nil, at time: Date = Date()) {
-        switch status {
-        case "done": note("Finished", at: time)
+    /// A run ended. The file index can finish while its semantic pass reports an error.
+    public mutating func finished(_ done: IndexDone, at time: Date = Date()) {
+        switch done.status {
+        case "done":
+            if let error = done.progress?.meaning?.error {
+                note("Semantic indexing failed: \(error)", at: time)
+            } else {
+                note("Finished", at: time)
+            }
         case "cancelled": note("Stopped", at: time)
         case "locked": note("Another zsearch process is updating the index", at: time)
-        default: note("Failed: \(error ?? "unknown error")", at: time)
+        default: note("Failed: \(done.error ?? "unknown error")", at: time)
         }
         last = nil
     }
