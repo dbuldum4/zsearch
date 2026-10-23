@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { fetchIdentity } from "../src/util/fetch.ts"
 
 const HF = "https://huggingface.co/datasets"
 
@@ -70,7 +71,7 @@ for (const name of wanted) if (!SETS[name]) throw new Error(`unknown set ${name}
 
 async function get(url: string): Promise<string> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, { redirect: "follow" })
+    const res = await fetchIdentity(url, { redirect: "follow" })
     if (res.ok) return await res.text()
     if (attempt >= 3 || res.status < 500) throw new Error(`${url}: HTTP ${res.status}`)
     await Bun.sleep(1000 * 2 ** attempt)
@@ -78,7 +79,7 @@ async function get(url: string): Promise<string> {
 }
 
 async function download(url: string, to: string): Promise<void> {
-  const res = await fetch(url, { redirect: "follow" })
+  const res = await fetchIdentity(url, { redirect: "follow" })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   await Bun.write(to, res)
 }
