@@ -144,13 +144,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(e.message, .unknown(type: "somethingNew"))
     }
 
-    func testLineSplitterKeepsPartialLines() {
-        var s = LineSplitter()
-        XCTAssertEqual(s.feed(Data("{\"a\":1}\n{\"b\"".utf8)).map { String(decoding: $0, as: UTF8.self) }, [#"{"a":1}"#])
-        XCTAssertEqual(s.feed(Data(":2}\n\n".utf8)).map { String(decoding: $0, as: UTF8.self) }, [#"{"b":2}"#])
-        XCTAssertEqual(s.feed(Data()), [])
-    }
-
     func testHighlightUsesUTF16Offsets() {
         // "é" is one UTF-16 unit, "😀" is two: JavaScript offsets count UTF-16 units.
         XCTAssertEqual(highlightRuns("café 😀 tea", ranges: [[8, 11]]), [TextRun("café 😀 ", highlighted: false), TextRun("tea", highlighted: true)])

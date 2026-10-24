@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { home } from "../src/config.ts"
 import { fuzzyMatch, matchPath, parseFuzzyTerms } from "../src/search/fuzzy.ts"
 import { parseDuration, parseQuery, parseSize } from "../src/search/query.ts"
@@ -215,13 +215,18 @@ describe("regex requirements", () => {
 })
 
 describe("vocabulary and FTS mapping", () => {
-  const db = new Database(":memory:")
-  db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
+  let db: Database
+  let v: Vocab
   const addChunk = (terms: string[]) => db.query("INSERT INTO vocab_chunks(terms) VALUES (?)").run(compressText(terms.join("\n")))
-  addChunk(["getusername", "username", "user", "setuser"])
-  addChunk(["rename", "names", "foo", "bar", "café"])
-  const v = new Vocab()
-  v.load(db, false)
+  beforeEach(() => {
+    db = new Database(":memory:")
+    db.exec("CREATE TABLE vocab_chunks (id INTEGER PRIMARY KEY, terms BLOB NOT NULL)")
+    addChunk(["getusername", "username", "user", "setuser"])
+    addChunk(["rename", "names", "foo", "bar", "café"])
+    v = new Vocab()
+    v.load(db, false)
+  })
+  afterEach(() => db.close())
 
   test("substring and suffix lookups", () => {
     expect(v.containing("user")!.sort()).toEqual(["getusername", "setuser", "user", "username"])
@@ -249,10 +254,10 @@ describe("vocabulary and FTS mapping", () => {
   })
 
   test("literal to FTS expression", () => {
-    expect(literalToFts("foo bar", v)).toBe('"foo"* AND "bar"*'.replace('"foo"*', `("foo")`).replace("(", "").replace(")", "") === "" ? "" : literalToFts("foo bar", v))
+    expect(literalToFts("foo bar", v)).toBe('"foo" AND "bar"*')
     // whole token in the middle, prefix at the end
     expect(literalToFts("x foo bar", v)).toBe('"foo" AND "bar"*')
-    expect(literalToFts("UserName", v)).toBe('("getusername" OR "username" OR "username2")')
+    expect(literalToFts("UserName", v)).toBe('("getusername" OR "username")')
     expect(literalToFts("qqq", v)).toBe("__no_match__")
     expect(literalToFts("ab", v)).toBeNull()
   })

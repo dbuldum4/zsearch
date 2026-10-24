@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,7 +11,7 @@ import { acquireLock } from "../src/index/lock.ts"
 const MAIN = join(import.meta.dir, "..", "src", "main.ts")
 let dir: string, root: string
 const previousHome = process.env.ZSEARCH_HOME
-beforeAll(() => {
+beforeEach(() => {
   dir = mkdtempSync(join(process.env.ZSEARCH_TEST_TMP || tmpdir(), "zsearch-partial-wait-"))
   root = join(dir, "files")
   mkdirSync(root)
@@ -20,7 +20,7 @@ beforeAll(() => {
   process.env.ZSEARCH_HOME = join(dir, "data")
   saveConfig({ ...defaultConfig(), roots: [root], semantic: { ...defaultConfig().semantic, enabled: false } })
 })
-afterAll(() => {
+afterEach(() => {
   if (previousHome === undefined) delete process.env.ZSEARCH_HOME
   else process.env.ZSEARCH_HOME = previousHome
   rmSync(dir, { recursive: true, force: true })
@@ -43,26 +43,31 @@ test("a run asked for waits for a refresh of changed paths to let go of the lock
   const seen: IndexProgress[] = []
   let ended = false
   const run = new IndexRun(config, dbPath, lockPath, { onProgress: (p) => seen.push(p) })
-  void run.done.then(() => { ended = true })
-  for (let i = 0; i < 100 && !seen.length; i++) await Bun.sleep(50)
-  expect(seen[0]?.phase).toBe("starting")
-  await Bun.sleep(300)
-  expect(ended).toBe(false)
-  release()
-  const outcome = await run.done
-  expect(outcome.status).toBe("done")
-  if (outcome.status === "done") expect(outcome.progress.scanned).toBe(2)
-  const db = openDb(dbPath, { readonly: true })
-  expect(getMeta(db, PARTIAL_RUN)).toBe("")
-  db.close()
+  try {
+    void run.done.then(() => { ended = true })
+    for (let i = 0; i < 100 && !seen.length; i++) await Bun.sleep(50)
+    expect(seen[0]?.phase).toBe("starting")
+    await Bun.sleep(300)
+    expect(ended).toBe(false)
+    release()
+    const outcome = await run.done
+    expect(outcome.status).toBe("done")
+    if (outcome.status === "done") expect(outcome.progress.scanned).toBe(2)
+    const db = openDb(dbPath, { readonly: true })
+    expect(getMeta(db, PARTIAL_RUN)).toBe("")
+    db.close()
+  } finally {
+    run.kill()
+    release()
+  }
 
   // A run that started on its own does not wait, nor does any run for a full one holding the lock.
   release = hold(dbPath, lockPath, true)
-  expect((await new IndexRun(config, dbPath, lockPath, {}, false, true).done).status).toBe("locked")
-  release()
+  const background = new IndexRun(config, dbPath, lockPath, {}, false, true)
+  try { expect((await background.done).status).toBe("locked") } finally { background.kill(); release() }
   release = hold(dbPath, lockPath, false)
-  expect((await new IndexRun(config, dbPath, lockPath).done).status).toBe("locked")
-  release()
+  const full = new IndexRun(config, dbPath, lockPath)
+  try { expect((await full.done).status).toBe("locked") } finally { full.kill(); release() }
 }, 30_000)
 
 test("zsearch index waits for a refresh of changed paths, then walks every folder", async () => {
@@ -83,12 +88,19 @@ test("zsearch index waits for a refresh of changed paths, then walks every folde
       err += decoder.decode(value, { stream: true })
     }
   })()
-  // The child announces it is waiting before the lock is let go, however long its startup takes.
-  const deadline = Date.now() + 20_000
-  while (!err.includes("Waiting for the update of changed files to finish") && Date.now() < deadline) await Bun.sleep(20)
-  expect(err).toContain("Waiting for the update of changed files to finish")
-  release()
-  expect(await proc.exited).toBe(0)
-  await drain
-  expect(err).toContain("2 items scanned")
+  try {
+    // The child announces it is waiting before the lock is let go, however long its startup takes.
+    const deadline = Date.now() + 20_000
+    while (!err.includes("Waiting for the update of changed files to finish") && Date.now() < deadline) await Bun.sleep(20)
+    expect(err).toContain("Waiting for the update of changed files to finish")
+    release()
+    expect(await proc.exited).toBe(0)
+    await drain
+    expect(err).toContain("2 items scanned")
+  } finally {
+    release()
+    if (proc.exitCode === null) proc.kill()
+    await proc.exited
+    await drain
+  }
 }, 30_000)

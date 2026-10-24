@@ -35,6 +35,7 @@ console.log(JSON.stringify({start: 95, text: "Bring the blue notebook"}))
 console.log(JSON.stringify({complete: true, truncated: false}))
 unlinkSync(lock)
 `)
+  writeFileSync(join(dir, "calls"), "")
   process.env.ZSEARCH_TRANSCRIBE = helper
   process.env.ZSEARCH_HOME = join(dir, "private-index")
 })
@@ -137,7 +138,7 @@ test("transcripts are searchable, serial, reused, and hidden immediately on opt-
   const config = { ...defaultConfig(), roots: [root], indexLoad: 100, workers: 3 }
   const db = openDb(join(dir, "speech-index.db"))
   try {
-    const before = readFileSync(join(dir, "calls"), "utf8").trim().split("\n").length
+    const before = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean).length
     const p = await new Indexer(db, config).run()
     expect(p.phase).toBe("done")
     expect(p.contentErrors).toBe(0) // The helper rejects any overlapping invocation.
@@ -150,7 +151,7 @@ test("transcripts are searchable, serial, reused, and hidden immediately on opt-
     expect(read()?.source).toBe("index")
     const again = await new Indexer(db, config).run()
     expect(again.contentDone).toBe(0)
-    expect(readFileSync(join(dir, "calls"), "utf8").trim().split("\n").length).toBe(before + 3)
+    expect(readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean).length).toBe(before + 3)
     const embedded: string[] = []
     const meanings = await new SemanticIndexer(db, config, null, { vectorVersion: 1, embedder: () => ({
       async embedTexts(texts) {
@@ -278,7 +279,10 @@ test("speech settings default on, preserve older configs, validate locale, and i
   expect(withConfigSetting(config, "content.transcribe", "false").content.transcribe).toBe(false)
   expect(withConfigSetting(config, "content.transcriptionLocale", "tr-TR").content.transcriptionLocale).toBe("tr-TR")
   expect(() => withConfigSetting(config, "content.transcriptionLocale", "not a locale")).toThrow("language code")
-  const e = estimateFolder(join(dir, "media"), { ...config, roots: [join(dir, "media")] })
+  const root = join(dir, "estimate-media")
+  mkdirSync(root)
+  for (const name of ["a.mp3", "b.mp4", "c.wav"]) writeFileSync(join(root, name), "stand-in media")
+  const e = estimateFolder(root, { ...config, roots: [root] })
   expect(e.mediaFiles).toBe(3)
   expect(describeEstimate(e)).toContain("depends on duration")
 })

@@ -198,7 +198,8 @@ describe("diagnosis of empty results", () => {
 
   test("explaining is not held up by a search that overruns its budget", async () => {
     const original = engine.search.bind(engine)
-    engine.search = (query, mode, opts = {}) => opts.explain === false ? new Promise((r) => setTimeout(() => r(original(query, mode, opts)), 4000)) : original(query, mode, opts)
+    let delayed: ReturnType<typeof setTimeout> | undefined
+    engine.search = (query, mode, opts = {}) => opts.explain === false ? new Promise((r) => { delayed = setTimeout(() => r(original(query, mode, opts)), 4000) }) : original(query, mode, opts)
     try {
       const started = performance.now()
       const r = await engine.search("pancaks", "find", { limit: 50 })
@@ -206,6 +207,7 @@ describe("diagnosis of empty results", () => {
       expect(r.diagnosis?.modes).toBeUndefined()
       expect(r.diagnosis?.suggestion).toBe("pancakes")
     } finally {
+      clearTimeout(delayed)
       delete (engine as Partial<SearchEngine>).search
     }
   })

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -9,10 +9,10 @@ import { makeCorpus } from "./helpers/corpus.ts"
 const MAIN = join(import.meta.dir, "..", "src", "main.ts")
 let corpus: ReturnType<typeof makeCorpus>
 
-beforeAll(() => {
+beforeEach(() => {
   corpus = makeCorpus()
 })
-afterAll(() => corpus.cleanup())
+afterEach(() => corpus.cleanup())
 
 function env(): Record<string, string | undefined> {
   return { ...process.env, HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, ".zsearch-data"), NO_COLOR: "1" }
@@ -42,6 +42,7 @@ describe("index --rebuild", () => {
   }, 60000)
 
   test("starts over from a file that is no database", async () => {
+    expect((await zs("index", "--home", "-q")).code).toBe(0)
     writeFileSync(join(corpus.home, ".zsearch-data", "index.db"), "not an SQLite database, ".repeat(64))
     const r = await zs("index", "--rebuild", "-q")
     expect({ code: r.code, err: r.code ? r.err : "" }).toEqual({ code: 0, err: "" })

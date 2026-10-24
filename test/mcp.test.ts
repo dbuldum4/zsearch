@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -10,6 +10,7 @@ import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { readIndexed } from "../src/search/read.ts"
 import { homeConfig, makeCorpus } from "./helpers/corpus.ts"
+import { jsonLines } from "./helpers/json-lines.ts"
 
 type Msg = Record<string, any>
 
@@ -192,6 +193,12 @@ beforeAll(() => {
 })
 afterAll(() => corpus.cleanup())
 
+const clients = new Set<ReturnType<typeof jsonLines>>()
+afterEach(async () => {
+  for (const client of clients) await client.dispose()
+  clients.clear()
+})
+
 /** Start `zsearch mcp` and talk JSON-RPC to it. */
 function client(local: Config = { ...defaultConfig(), roots: ["~"] }, data = ".zsearch-mcp", env: Record<string, string> = {}) {
   const previous = process.env.ZSEARCH_HOME
@@ -206,34 +213,9 @@ function client(local: Config = { ...defaultConfig(), roots: ["~"] }, data = ".z
     stdout: "pipe",
     stderr: "pipe",
   })
-  const reader = proc.stdout.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  const waiting = new Map<number, (m: Msg) => void>()
-  const notes: Msg[] = []
-  void (async () => {
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) return
-      buffer += decoder.decode(value, { stream: true })
-      for (let nl = buffer.indexOf("\n"); nl >= 0; nl = buffer.indexOf("\n")) {
-        const m = JSON.parse(buffer.slice(0, nl)) as Msg
-        buffer = buffer.slice(nl + 1)
-        if (typeof m.id === "number" && waiting.has(m.id)) {
-          waiting.get(m.id)!(m)
-          waiting.delete(m.id)
-        } else notes.push(m)
-      }
-    }
-  })()
-  let nextId = 0
-  const request = (method: string, params: unknown = {}): Promise<Msg> => {
-    const id = ++nextId
-    const reply = new Promise<Msg>((r) => waiting.set(id, r))
-    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
-    proc.stdin.flush()
-    return reply
-  }
+  const transport = jsonLines(proc)
+  clients.add(transport)
+  const { request, notes } = transport
   const tools = new Map<string, Msg>()
   /** Call a tool; check its structured result against its output schema. */
   const call = async (name: string, args: Record<string, unknown> = {}, meta?: Record<string, unknown>) => {
@@ -253,7 +235,7 @@ function client(local: Config = { ...defaultConfig(), roots: ["~"] }, data = ".z
     for (const t of (await request("tools/list")).result.tools) tools.set(t.name, t)
     return init.result
   }
-  return { proc, request, call, start, notes, tools }
+  return { proc, request, call, start, notes, tools, stderr: transport.stderr }
 }
 
 test("mcp: index, search, read and configure over stdio", async () => {
@@ -435,7 +417,7 @@ test("mcp: index, search, read and configure over stdio", async () => {
   // Closing stdin ends the server.
   c.proc.stdin.end()
   expect(await c.proc.exited).toBe(0)
-  expect(await new Response(c.proc.stderr).text()).not.toContain("Error")
+  expect(await c.stderr).not.toContain("Error")
 }, 120_000)
 
 test("mcp: an update asked for during a refresh of changed files is queued and waited for", async () => {

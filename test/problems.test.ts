@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { rmSync } from "node:fs"
 import { join } from "node:path"
@@ -12,7 +12,7 @@ let corpus: ReturnType<typeof makeCorpus>
 let db: Database
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME, ZSEARCH_OCR: process.env.ZSEARCH_OCR, ZSEARCH_TRANSCRIBE: process.env.ZSEARCH_TRANSCRIBE }
 
-beforeAll(() => {
+beforeEach(async () => {
   corpus = makeCorpus()
   process.env.HOME = corpus.home
   process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-data")
@@ -25,9 +25,16 @@ beforeAll(() => {
   corpus.write("Documents/huge.txt", "x".repeat(4096))
   corpus.write("Downloads/blob", new Uint8Array(1024))
   db = openDb(":memory:")
+  expect((await new Indexer(db, config(), { inProcess: true }).run()).phase).toBe("done")
+  // States the corpus cannot produce here (no OCR, transcription or long files).
+  setRow("notes/journal-2024.md", ContentState.Indexed, "truncated")
+  setRow("Documents/paper.pdf", ContentState.Error, "PDF parsing timed out after 60s")
+  setRow("Music/song.mp3", ContentState.Error, "Apple speech is not ready: asset preparation timed out")
+  setRow("Pictures/holiday-beach.jpg", ContentState.Skipped, "dataset")
+  setRow("Documents/report.docx", ContentState.Skipped, "empty")
 })
 
-afterAll(() => {
+afterEach(() => {
   db.close()
   corpus.cleanup()
   for (const [k, v] of Object.entries(env)) {
@@ -50,15 +57,7 @@ function setRow(rel: string, state: number, note: string | null) {
 }
 
 describe("indexing problems", () => {
-  test("files are sorted into categories with plain-language reasons", async () => {
-    expect((await new Indexer(db, config(), { inProcess: true }).run()).phase).toBe("done")
-    // States the corpus cannot produce here (no OCR, transcription or long files).
-    setRow("notes/journal-2024.md", ContentState.Indexed, "truncated")
-    setRow("Documents/paper.pdf", ContentState.Error, "PDF parsing timed out after 60s")
-    setRow("Music/song.mp3", ContentState.Error, "Apple speech is not ready: asset preparation timed out")
-    setRow("Pictures/holiday-beach.jpg", ContentState.Skipped, "dataset")
-    setRow("Documents/report.docx", ContentState.Skipped, "empty")
-
+  test("files are sorted into categories with plain-language reasons", () => {
     const list = listProblems(db, config(), { limit: 1000 })
     const by = new Map(list.problems.map((p) => [p.path, p]))
     const broken = by.get(at("Documents/broken.docx"))!

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -38,7 +38,7 @@ function ftsHits(word: string): number {
   return (db.query("SELECT count(*) AS n FROM fts WHERE fts MATCH ?").get(word) as { n: number }).n
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
   home = mkdtempSync(join(process.env.ZSEARCH_TEST_TMP || tmpdir(), "zsearch-live-"))
   process.env.HOME = home
   process.env.ZSEARCH_HOME = join(home, ".zsearch-data")
@@ -56,7 +56,7 @@ beforeAll(async () => {
   expect(first.phase).toBe("done")
 })
 
-afterAll(() => {
+afterEach(() => {
   db.close()
   rmSync(home, { recursive: true, force: true })
   process.env.HOME = env.HOME
@@ -123,6 +123,8 @@ test("a new folder is walked whole, even when events name only part of it", asyn
 })
 
 test("a rename within the roots keeps the extracted text", async () => {
+  write("a/new.txt", "a brand new note about hedgehog\n")
+  await run()
   const file = row("a/new.txt")!.id
   const kept = row("a/folder/kept.txt")!.id
   renameSync(at("a/new.txt"), at("b/moved.txt"))
@@ -187,8 +189,7 @@ test("the timed refresh goes by the last full walk, not by event refreshes", asy
   const walked = Date.now() - 2 * hour
   setMeta(db, "last_full_walk_at", String(walked))
   write("a/stale-check.txt", "an event refresh after the full walk\n")
-  // The settings of the last full walk (the previous test's).
-  const r = await run([at("a/stale-check.txt")], config(["*.log", "many/"]))
+  const r = await run([at("a/stale-check.txt")])
   expect(r.scanned).toBe(1)
   const stats = indexStats(db)
   // Status shows the event refresh, while a full walk is still due.
@@ -214,13 +215,15 @@ test("an index from before event refreshes counts its last run as a full walk, a
 test("event updates leave the index as a full walk finds it", async () => {
   const c = config()
   c.exclude = ["*.log", "many/"]
+  write("a/fresh/nested/named.txt", "a note about ibis\n")
+  await run(undefined, c)
   write("a/proj/src/added.txt", "added next to main\n")
   write("a/proj/src/main.txt", "main source, edited to be about kiwi\n")
-  rmSync(at("a/renamed/kept.txt"))
+  rmSync(at("a/folder/kept.txt"))
   write("a/proj/.gitignore", "*.tmp\n")
   write("a/proj/build/scratch.tmp", "scratch\n")
   renameSync(at("a/fresh"), at("b/fresh"))
-  await run([at("a/proj/src/added.txt"), at("a/proj/src/main.txt"), at("a/renamed/kept.txt"), at("a/proj/.gitignore"), at("a/proj/build/scratch.tmp"), at("a/fresh"), at("b/fresh")], c)
+  await run([at("a/proj/src/added.txt"), at("a/proj/src/main.txt"), at("a/folder/kept.txt"), at("a/proj/.gitignore"), at("a/proj/build/scratch.tmp"), at("a/fresh"), at("b/fresh")], c)
   const snapshot = () => db.query("SELECT path, is_dir, size, mtime, ino, content_state AS state FROM files ORDER BY path").all()
   const before = snapshot()
   const full = await run(undefined, c)

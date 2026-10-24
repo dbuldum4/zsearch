@@ -1,5 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
+import { RGBA, TextAttributes } from "@opentui/core"
+import { DARK } from "../src/tui/theme.ts"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
@@ -12,13 +14,13 @@ import { testServices } from "./helpers/services.ts"
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
 
-beforeAll(() => {
+beforeEach(() => {
   corpus = makeCorpus()
   process.env.HOME = corpus.home
   process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-data")
 })
 
-afterAll(() => {
+afterEach(() => {
   corpus.cleanup()
   process.env.HOME = env.HOME
   if (env.ZSEARCH_HOME === undefined) delete process.env.ZSEARCH_HOME
@@ -124,7 +126,8 @@ describe("search screen", () => {
   let s: Setup
   let exited: string | null | undefined
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    exited = undefined
     t = testServices(homeConfig())
     // Build the index up front so the app opens straight into search.
     await t.services.startIndex(homeConfig(), {}).done
@@ -133,7 +136,7 @@ describe("search screen", () => {
     await until(s, (f) => f.includes("Start typing") || f.includes("results"))
   })
 
-  afterAll(() => {
+  afterEach(() => {
     s.renderer.destroy()
     t.close()
   })
@@ -148,13 +151,20 @@ describe("search screen", () => {
   })
 
   test("highlights are styled", async () => {
+    await type(s, "calvin")
+    await until(s, (f) => f.includes("Calvin cycle") && f.includes("p.2"))
     const spans = s.captureSpans()
     const all = spans.lines.flatMap((l) => l.spans)
     const hit = all.find((sp) => sp.text.includes("Calvin") && sp.text.length <= 8)
     expect(hit).toBeDefined()
+    expect(hit!.fg).toEqual(RGBA.fromHex(DARK.match))
+    expect(hit!.bg).toEqual(RGBA.fromHex(DARK.matchBg))
+    expect(hit!.attributes & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
   })
 
   test("Enter opens the selected file; Ctrl-E edits at the matching line; Ctrl-Y copies", async () => {
+    await type(s, "calvin")
+    await until(s, (f) => f.includes("Calvin cycle") && f.includes("p.2"))
     s.mockInput.pressEnter()
     await until(s, (f) => f.includes("Opened"))
     expect(t.calls.open[0]).toEndWith("Documents/paper.pdf")
@@ -162,13 +172,12 @@ describe("search screen", () => {
     await until(s, (f) => f.includes("Copied"))
     expect(t.calls.copy[0]).toEndWith("Documents/paper.pdf")
     s.mockInput.pressKey("e", { ctrl: true })
-    await Bun.sleep(50)
+    await until(s, () => t.calls.edit.length > 0)
     expect(t.calls.edit[0]!.path).toEndWith("Documents/paper.pdf")
     expect(t.calls.edit[0]!.line).toBeUndefined() // documents open without a line number
   })
 
   test("arrow keys move the selection and update the preview", async () => {
-    await esc(s)
     await type(s, "budget")
     const list = listed(await until(s, (f) => f.includes("report.docx") && f.includes("3 results")))
     expect(list.sort()).toEqual(["budget.xlsx", "deck.pptx", "report.docx"])
@@ -176,12 +185,11 @@ describe("search screen", () => {
     s.mockInput.pressArrow("down")
     await until(s, (f) => f.includes(`~/Documents/${order[1]}`))
     s.mockInput.pressKey("e", { ctrl: true })
-    await Bun.sleep(50)
+    await until(s, () => t.calls.edit.length > 0)
     expect(t.calls.edit[t.calls.edit.length - 1]!.path).toEndWith(order[1]!)
   })
 
   test("mouse: click selects, wheel scrolls", async () => {
-    await esc(s)
     await type(s, "budget")
     const order = listed(await until(s, (f) => f.includes("report.docx") && f.includes("3 results")))
     // Rows: 3 (search box) + 1 (mode bar); the first result occupies rows 4-5, the second rows 6-7.
@@ -192,6 +200,8 @@ describe("search screen", () => {
   })
 
   test("Tab switches between find, fuzzy and semantic", async () => {
+    await type(s, "budget")
+    await until(s, (f) => f.includes("3 results"))
     s.mockInput.pressTab()
     await until(s, (f) => f.includes(" FUZZY ") && f.includes("fuzzy names"))
     s.mockInput.pressTab()
@@ -202,7 +212,6 @@ describe("search screen", () => {
   })
 
   test("filters and regex from the query box", async () => {
-    await esc(s)
     await type(s, "/MAX_\\w+/")
     const f = await until(s, (f) => f.includes("MAX_RETRIES = 42"))
     expect(f).toContain("parse_config.py")
@@ -244,7 +253,6 @@ describe("search screen", () => {
   })
 
   test("no results message suggests the other mode", async () => {
-    await esc(s)
     await type(s, "qqqzzzxxx")
     await until(s, (f) => f.includes("No matches") && f.includes("Tab for fuzzy search"))
     s.mockInput.pressTab()
@@ -256,7 +264,6 @@ describe("search screen", () => {
   })
 
   test("an empty result is explained once the query stays the same", async () => {
-    await esc(s)
     const asked = t.calls.explains.length
     await type(s, "pancakes type:pdf")
     const f = await until(s, (f) => f.includes("No matches") && f.includes("without the type filter: pancakes"))
@@ -270,7 +277,6 @@ describe("search screen", () => {
   })
 
   test("a live refresh drops the explanation and asks again", async () => {
-    await esc(s)
     await type(s, "pancakes type:pdf")
     await until(s, (f) => f.includes("without the type filter: pancakes"))
     const svc = t.services.search
@@ -298,7 +304,6 @@ describe("search screen", () => {
   })
 
   test("Ctrl-T toggles the preview; narrow terminals hide it", async () => {
-    await esc(s)
     await type(s, "pancakes")
     await until(s, (f) => f.includes("~/notes/recipes/pancakes.txt"))
     s.mockInput.pressKey("t", { ctrl: true })
@@ -312,7 +317,6 @@ describe("search screen", () => {
 
   test("Ctrl-R re-indexes and picks up new files", async () => {
     corpus.write("notes/brand-new.txt", "a note about narwhals")
-    await esc(s)
     s.mockInput.pressKey("r", { ctrl: true })
     await until(s, (f) => f.includes("Index ready") && f.includes("1 new"))
     await type(s, "narwhals")
@@ -329,8 +333,10 @@ describe("search screen", () => {
   })
 
   test("Esc clears, then quits", async () => {
+    await type(s, "pancakes")
+    await until(s, (f) => f.includes("pancakes.txt"))
     await esc(s)
-    await until(s, (f) => !f.includes("❯ narwhals"))
+    await until(s, (f) => !f.includes("❯ pancakes"))
     await esc(s)
     for (let i = 0; i < 40 && exited === undefined; i++) await Bun.sleep(25)
     expect(exited).toBeNull()
@@ -340,6 +346,8 @@ describe("search screen", () => {
 describe("print mode", () => {
   test("Enter returns the path instead of opening it", async () => {
     const t = testServices(homeConfig())
+    await t.services.startIndex(homeConfig(), {}).done
+    t.resetEngine()
     let exited: string | null | undefined
     const s = await testRender(() => <App services={t.services} initialQuery="pancakes" printMode onExit={(sel) => (exited = sel)} />, { width: 100, height: 30 })
     try {
