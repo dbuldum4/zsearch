@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { acquireLock } from "../src/index/lock.ts"
 import { makeCorpus } from "./helpers/corpus.ts"
+import { jsonLines } from "./helpers/json-lines.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 const MAIN = join(import.meta.dir, "..", "src", "main.ts")
@@ -11,6 +12,12 @@ beforeAll(() => {
   corpus = makeCorpus()
 })
 afterAll(() => corpus.cleanup())
+
+const servers = new Set<ReturnType<typeof jsonLines>>()
+afterEach(async () => {
+  for (const server of servers) await server.dispose()
+  servers.clear()
+})
 
 /** Start `zsearch serve` and read its replies one JSON line at a time. */
 function server(env: Record<string, string> = {}, data = ".zsearch-data") {
@@ -21,37 +28,9 @@ function server(env: Record<string, string> = {}, data = ".zsearch-data") {
     stdout: "pipe",
     stderr: "pipe",
   })
-  const reader = proc.stdout.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  const queue: Record<string, unknown>[] = []
-  const nextLine = async (): Promise<Record<string, unknown>> => {
-    while (!queue.length) {
-      const nl = buffer.indexOf("\n")
-      if (nl >= 0) {
-        queue.push(JSON.parse(buffer.slice(0, nl)))
-        buffer = buffer.slice(nl + 1)
-        continue
-      }
-      const { value, done } = await reader.read()
-      if (done) throw new Error("server closed stdout")
-      buffer += decoder.decode(value, { stream: true })
-    }
-    return queue.shift()!
-  }
-  /** Next message matching `pred`, skipping progress and refresh events. */
-  const until = async (pred: (m: Record<string, unknown>) => boolean) => {
-    for (;;) {
-      const m = await nextLine()
-      if (pred(m)) return m
-    }
-  }
-  const send = (m: unknown) => {
-    proc.stdin.write(typeof m === "string" ? m + "\n" : JSON.stringify(m) + "\n")
-    proc.stdin.flush()
-  }
-  const reply = (id: number) => until((m) => m.id === id)
-  return { proc, send, until, reply }
+  const transport = jsonLines(proc)
+  servers.add(transport)
+  return transport
 }
 
 test("serve: opting out of transcription cancels the active recording", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -197,7 +197,7 @@ describe("plain text handling", () => {
     expect(wantsContent("mp4", "video")).toBe(false)
   })
 
-  test("cleanup", () => rmSync(dir, { recursive: true, force: true }))
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
 })
 
 describe("helpers", () => {

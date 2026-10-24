@@ -5,7 +5,7 @@
  * Runs against `bun src/main.ts`, and also against `dist/zsearch` when it has been
  * built (`bun run build`).
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -44,11 +44,11 @@ for (const [name, cmd] of variants) {
     let corpus: ReturnType<typeof makeCorpus>
     let env: Record<string, string>
 
-    beforeAll(() => {
+    beforeEach(() => {
       corpus = makeCorpus()
       env = { HOME: corpus.home, ZSEARCH_HOME: join(corpus.home, ".zsearch-data"), LANG: "en_US.UTF-8" }
     })
-    afterAll(() => corpus.cleanup())
+    afterEach(() => corpus.cleanup())
 
     test("first run: setup, indexing, search, preview, quit", () => {
       const r = drive(cmd, env, [
@@ -83,61 +83,65 @@ for (const [name, cmd] of variants) {
       expect(r.stdout_tail).toContain("\x1b[?1049l")
     })
 
-    test("existing index: query and mode from the command line, regex, help", () => {
-      // The first run indexed Documents and Downloads; the rest of the tests search the whole home.
-      const idx = spawnSync(cmd[0]!, [...cmd.slice(1), "index", "--home", "-q"], { env: { ...process.env, ...env }, encoding: "utf8" })
-      if (idx.status !== 0) console.log(idx.stdout, idx.stderr)
-      expect(idx.status).toBe(0)
-      const r = drive([...cmd, "-m", "fuzzy", "/MAX_\\w+/"], env, [
-        { expect: "MAX_RETRIES = 42", timeout: 20 },
-        { snapshot: "regex" },
-        { key: "f1" },
-        { expect: "zsearch help", timeout: 5 },
-        { key: "esc" },
-        { expect_not: "zsearch help", timeout: 5 },
-        { key: "esc", delay: 0.3 },
-        { key: "esc", delay: 0.3 },
-        { wait_exit: 5 },
-      ])
-      expect(r.snapshots.regex).toContain("parse_config.py")
-      expect(r.snapshots.regex).toContain(" FIND ")
-      expect(r.snapshots.regex).toContain("regex (indexed)")
-      expect(r.exit).toBe(0)
-    })
+    describe("with an existing home index", () => {
+      beforeEach(() => {
+        const idx = spawnSync(cmd[0]!, [...cmd.slice(1), "index", "--home", "-q"], { env: { ...process.env, ...env }, encoding: "utf8" })
+        if (idx.status !== 0) console.log(idx.stdout, idx.stderr)
+        expect(idx.status).toBe(0)
+      })
 
-    test("print mode writes the chosen path", () => {
-      const r = drive([...cmd, "-p", "pancakes"], env, [{ expect: "pancakes.txt", timeout: 20 }, { sleep: 0.5 }, { key: "enter" }, { wait_exit: 5 }])
-      expect(r.exit).toBe(0)
-      expect(r.stdout_tail).toContain(join(corpus.home, "notes", "recipes", "pancakes.txt"))
-    })
+      test("existing index: query and mode from the command line, regex, help", () => {
+        const r = drive([...cmd, "-m", "fuzzy", "/MAX_\\w+/"], env, [
+          { expect: "MAX_RETRIES = 42", timeout: 20 },
+          { snapshot: "regex" },
+          { key: "f1" },
+          { expect: "zsearch help", timeout: 5 },
+          { key: "esc" },
+          { expect_not: "zsearch help", timeout: 5 },
+          { key: "esc", delay: 0.3 },
+          { key: "esc", delay: 0.3 },
+          { wait_exit: 5 },
+        ])
+        expect(r.snapshots.regex).toContain("parse_config.py")
+        expect(r.snapshots.regex).toContain(" FIND ")
+        expect(r.snapshots.regex).toContain("regex (indexed)")
+        expect(r.exit).toBe(0)
+      })
 
-    test("print mode with redirected stdout draws on the terminal", () => {
-      const out = join(corpus.home, "picked.txt")
-      const shell = `${cmd.map((c) => `'${c}'`).join(" ")} -p pancakes > '${out}'`
-      const r = drive(["sh", "-c", shell], env, [{ expect: "pancakes.txt", timeout: 20 }, { sleep: 0.5 }, { key: "enter" }, { wait_exit: 5 }])
-      expect(r.exit).toBe(0)
-      expect(readFileSync(out, "utf8").trim()).toBe(join(corpus.home, "notes", "recipes", "pancakes.txt"))
-    })
+      test("print mode writes the chosen path", () => {
+        const r = drive([...cmd, "-p", "pancakes"], env, [{ expect: "pancakes.txt", timeout: 20 }, { sleep: 0.5 }, { key: "enter" }, { wait_exit: 5 }])
+        expect(r.exit).toBe(0)
+        expect(r.stdout_tail).toContain(join(corpus.home, "notes", "recipes", "pancakes.txt"))
+      })
 
-    test("Ctrl-E opens a terminal editor at the matching line and returns", () => {
-      const log = join(corpus.home, "editor-args.txt")
-      const editor = join(corpus.home, "bin", "vim")
-      mkdirSync(join(corpus.home, "bin"), { recursive: true })
-      writeFileSync(editor, `#!/bin/sh\necho "$@" > ${log}\n`)
-      chmodSync(editor, 0o755)
-      const r = drive(cmd, { ...env, EDITOR: editor }, [
-        { type: "MAX_RETRIES" },
-        { expect: "parse_config.py", timeout: 20 },
-        { sleep: 0.4 },
-        { key: "ctrl-e", delay: 1 },
-        { expect: "parse_config.py", timeout: 10 },
-        { snapshot: "after" },
-        { key: "ctrl-c" },
-        { wait_exit: 5 },
-      ])
-      expect(readFileSync(log, "utf8").trim()).toBe(`+7 ${join(corpus.home, "code", "app", "src", "util", "parse_config.py")}`)
-      expect(r.snapshots.after).toContain("zsearch")
-      expect(r.exit).toBe(0)
+      test("print mode with redirected stdout draws on the terminal", () => {
+        const out = join(corpus.home, "picked.txt")
+        const shell = `${cmd.map((c) => `'${c}'`).join(" ")} -p pancakes > '${out}'`
+        const r = drive(["sh", "-c", shell], env, [{ expect: "pancakes.txt", timeout: 20 }, { sleep: 0.5 }, { key: "enter" }, { wait_exit: 5 }])
+        expect(r.exit).toBe(0)
+        expect(readFileSync(out, "utf8").trim()).toBe(join(corpus.home, "notes", "recipes", "pancakes.txt"))
+      })
+
+      test("Ctrl-E opens a terminal editor at the matching line and returns", () => {
+        const log = join(corpus.home, "editor-args.txt")
+        const editor = join(corpus.home, "bin", "vim")
+        mkdirSync(join(corpus.home, "bin"), { recursive: true })
+        writeFileSync(editor, `#!/bin/sh\necho "$@" > ${log}\n`)
+        chmodSync(editor, 0o755)
+        const r = drive(cmd, { ...env, EDITOR: editor }, [
+          { type: "MAX_RETRIES" },
+          { expect: "parse_config.py", timeout: 20 },
+          { sleep: 0.4 },
+          { key: "ctrl-e", delay: 1 },
+          { expect: "parse_config.py", timeout: 10 },
+          { snapshot: "after" },
+          { key: "ctrl-c" },
+          { wait_exit: 5 },
+        ])
+        expect(readFileSync(log, "utf8").trim()).toBe(`+7 ${join(corpus.home, "code", "app", "src", "util", "parse_config.py")}`)
+        expect(r.snapshots.after).toContain("zsearch")
+        expect(r.exit).toBe(0)
+      })
     })
   })
 }

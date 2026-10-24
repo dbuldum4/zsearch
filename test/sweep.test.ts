@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -15,6 +15,9 @@ import { ExtractPool } from "../src/index/pool.ts"
 import { withSetting } from "../src/mcp/server.ts"
 import { SearchClient } from "../src/search/client.ts"
 import { editorCommand } from "../src/platform.ts"
+import type { SearchOut } from "../src/search/protocol.ts"
+import { testClock } from "./helpers/clock.ts"
+import { waitFor } from "./helpers/wait.ts"
 
 async function fixture(run: (dir: string, c: ReturnType<typeof defaultConfig>, e: SearchEngine) => Promise<void>, files: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "zsearch-sweep-"))
@@ -191,10 +194,20 @@ describe("sweep regressions", () => {
     expect(withConfigSetting(c, "indexLoad", "10").indexLoad).toBe(10)
   })
 
-  test("database and its journals are private even with a public umask", async () => fixture(async (dir, _c, e) => {
-    for (const suffix of ["", "-wal", "-shm"]) expect(statSync(join(dir, "..", "index.db") + suffix).mode & 0o777).toBe(0o600)
-    expect(e.db.filename).toBeTruthy()
-  }))
+  test("database and its journals are private even with a public umask", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zsearch-umask-"))
+    const previous = process.umask(0)
+    let db: ReturnType<typeof openDb> | undefined
+    try {
+      const path = join(dir, "index.db")
+      db = openDb(path)
+      db.exec("INSERT INTO meta VALUES ('umask-test', 'written')")
+      for (const suffix of ["", "-wal", "-shm"]) expect(statSync(path + suffix).mode & 0o777).toBe(0o600)
+    } finally {
+      process.umask(previous)
+      try { db?.close() } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+  })
 
   test("the extraction deadline replaces a worker and later jobs still work", async () => fixture(async (dir) => {
     const tool = join(dir, "ocr")
@@ -316,21 +329,37 @@ test("new searches cannot postpone the watchdog for a superseded stuck search", 
 }, { "a.txt": "a".repeat(35) + "!" }))
 
 test("healthy superseded searches and previews leave no watchdog deadlines behind", async () => fixture(async (_dir, c, e) => {
+  const clock = testClock()
   const client = new SearchClient(e.db.filename, c, 250)
+  const protocol = client as unknown as { handle(message: SearchOut): void }
+  const deliver = protocol.handle.bind(client)
+  const held: SearchOut[] = []
+  let holdReplies = true
+  // Hold real replies until a second batch has superseded the first batch's callers.
+  const handle = spyOn(protocol, "handle").mockImplementation((message) => {
+    if (holdReplies && "qid" in message) held.push(message)
+    else deliver(message)
+  })
   let restarts = 0
   client.onRestart = () => { restarts++ }
   try {
     await client.waitReady()
     const { id } = e.db.query("SELECT id FROM files WHERE name = 'a.txt'").get() as { id: number }
-    const replies: Promise<unknown>[] = []
-    for (let i = 0; i < 20; i++) {
-      replies.push(client.search("alpha", "find"), client.preview(id, "alpha", "find"), client.previews([id], "alpha", "find"))
-      // Let requests reach the worker before newer ones supersede their callers.
-      await Bun.sleep(1)
-    }
-    await Promise.all(replies)
-    await Bun.sleep(400)
+    const batch = () => [client.search("alpha", "find"), client.preview(id, "alpha", "find"), client.previews([id], "alpha", "find")]
+    const superseded = batch()
+    await waitFor(() => held.filter((m) => m.type === "completed").length === 3, "the first worker batch to finish")
+    const current = batch()
+    holdReplies = false
+    for (const message of held) deliver(message)
+    expect(await Promise.all(superseded)).toEqual([null, null, null])
+    expect((await Promise.all(current)).every((reply) => reply !== null)).toBe(true)
+    await waitFor(() => handle.mock.calls.filter(([m]) => m.type === "completed").length === 6, "all worker completion messages")
+    clock.advance(1000)
     expect(restarts).toBe(0)
     expect((await client.stats())?.stats.files).toBe(1)
-  } finally { client.close() }
+  } finally {
+    client.close()
+    handle.mockRestore()
+    clock.restore()
+  }
 }, { "a.txt": "alpha beta" }))

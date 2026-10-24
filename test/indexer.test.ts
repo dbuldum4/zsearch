@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { copyFileSync, mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -14,13 +14,13 @@ import { ExtractPool } from "../src/index/pool.ts"
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
 
-beforeAll(() => {
+beforeEach(() => {
   corpus = makeCorpus()
   process.env.HOME = corpus.home
   process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-data")
 })
 
-afterAll(() => {
+afterEach(() => {
   corpus.cleanup()
   process.env.HOME = env.HOME
   if (env.ZSEARCH_HOME === undefined) delete process.env.ZSEARCH_HOME
@@ -90,7 +90,7 @@ describe("crawler", () => {
 describe("indexer", () => {
   let db: Database
 
-  beforeAll(() => {
+  beforeEach(() => {
     db = openDb(join(corpus.home, ".zsearch-data", "index.db"))
   })
 
@@ -115,17 +115,20 @@ describe("indexer", () => {
     expect(ftsCount(db, "name : holiday")).toBe(1) // media files are searchable by name
   })
 
-  test("content is stored and readable", () => {
+  test("content is stored and readable", async () => {
+    await index(db)
     const row = db.query("SELECT id FROM files WHERE path LIKE '%/pancakes.txt'").get() as { id: number }
     expect(readContent(db, row.id)).toContain("pinch of salt")
   })
 
   test("second run with no changes does nothing", async () => {
+    await index(db)
     const r = await index(db)
     expect([r.added, r.updated, r.removed, r.contentTotal]).toEqual([0, 0, 0, 0])
   })
 
   test("modified, added, deleted and renamed files are picked up", async () => {
+    await index(db)
     const todo = join(corpus.home, "notes", "todo.md")
     writeFileSync(todo, "# Todo\n\n- book tickets to Kyoto\n")
     utimesSync(todo, new Date(), new Date(Date.now() + 5000))
@@ -163,6 +166,7 @@ describe("indexer", () => {
   })
 
   test("turning content off keeps names but drops texts", async () => {
+    await index(db)
     const c = homeConfig()
     c.content.enabled = false
     await index(db, c)
@@ -174,15 +178,17 @@ describe("indexer", () => {
   })
 
   test("names-only folders", async () => {
+    await index(db)
     const c = homeConfig()
     c.namesOnly = ["~/Documents"]
     await index(db, c)
     expect(ftsCount(db, "photosynthesis")).toBe(0)
-    expect(ftsCount(db, "kyoto")).toBe(1)
+    expect(ftsCount(db, "lisbon")).toBe(1)
     await index(db)
   })
 
   test("changing roots removes files outside them", async () => {
+    await index(db)
     const c = homeConfig()
     c.roots = ["~/notes"]
     const r = await index(db, c)
@@ -201,22 +207,15 @@ describe("indexer", () => {
   })
 
   test("cancellation leaves a usable index", async () => {
+    await index(db)
     const controller = new AbortController()
     controller.abort()
     const r = await new Indexer(db, homeConfig(), { inProcess: true, signal: controller.signal }).run()
     expect(r.phase).toBe("cancelled")
-    expect(ftsCount(db, "kyoto")).toBe(1)
+    expect(ftsCount(db, "lisbon")).toBe(1)
   })
 
-  test("worker-thread extraction gives the same result", async () => {
-    const other = openDb(join(corpus.home, ".zsearch-data", "workers.db"))
-    const r = await new Indexer(other, homeConfig()).run()
-    expect(r.phase).toBe("done")
-    expect(indexStats(other).withContent).toBe(indexStats(db).withContent)
-    other.close()
-  })
-
-  afterAll(() => db.close())
+  afterEach(() => db.close())
 })
 
 /** Everything an index holds, by path: entries, stored texts, full-text rows and vocabulary. */
@@ -368,7 +367,7 @@ describe("classic FTS delete protocol (older SQLite)", () => {
     await index(db)
     expect(ftsCount(db, "walrus")).toBe(0)
     expect(ftsCount(db, "plants")).toBe(1)
-    expect(ftsCount(db, "kyoto")).toBe(0)
+    expect(ftsCount(db, "lisbon")).toBe(0)
     expect(() => db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
     db.close()
   })

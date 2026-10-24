@@ -40,6 +40,9 @@ jobs:
       - run: bun run typecheck
       - run: bun run build
       - run: bun test --timeout 120000
+        env:
+          # These native runners provide the libraries and permission for disk priority.
+          ZSEARCH_TEST_DISK_PRIORITY: "1"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zsearch-${{ runner.os }}-${{ runner.arch }}

@@ -9,10 +9,12 @@ final class LineSplitterTests: XCTestCase {
 
     func testSplitsLinesAcrossChunks() {
         var splitter = LineSplitter()
+        XCTAssertEqual(splitter.feed(Data()), [])
         XCTAssertEqual(strings(splitter.feed(Data("{\"a\":1}\n{\"b\"".utf8))), ["{\"a\":1}"])
         XCTAssertEqual(strings(splitter.feed(Data(":2".utf8))), [])
         XCTAssertEqual(strings(splitter.feed(Data("}\n\n{\"c\":3}\n{".utf8))), ["{\"b\":2}", "{\"c\":3}"])
         XCTAssertEqual(strings(splitter.feed(Data("}\n".utf8))), ["{}"])
+        XCTAssertEqual(splitter.feed(Data()), [])
     }
 
     func testLongLineInManySmallChunks() {

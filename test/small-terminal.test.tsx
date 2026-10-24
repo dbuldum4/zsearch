@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { join } from "node:path"
 import { defaultConfig } from "../src/config.ts"
@@ -8,12 +8,12 @@ import { testServices } from "./helpers/services.ts"
 
 let corpus: ReturnType<typeof makeCorpus>
 const env = { HOME: process.env.HOME, ZSEARCH_HOME: process.env.ZSEARCH_HOME }
-beforeAll(() => {
+beforeEach(() => {
   corpus = makeCorpus()
   process.env.HOME = corpus.home
   process.env.ZSEARCH_HOME = join(corpus.home, ".zsearch-data")
 })
-afterAll(() => {
+afterEach(() => {
   corpus.cleanup()
   process.env.HOME = env.HOME
   if (env.ZSEARCH_HOME === undefined) delete process.env.ZSEARCH_HOME

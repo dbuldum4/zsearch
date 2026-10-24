@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs, progressLine } from "../src/cli.ts"
@@ -8,10 +8,10 @@ import { makeCorpus } from "./helpers/corpus.ts"
 let corpus: ReturnType<typeof makeCorpus>
 const MAIN = join(import.meta.dir, "..", "src", "main.ts")
 
-beforeAll(() => {
+beforeEach(() => {
   corpus = makeCorpus()
 })
-afterAll(() => corpus.cleanup())
+afterEach(() => corpus.cleanup())
 
 async function zs(...args: string[]): Promise<{ code: number; out: string; err: string }> {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
@@ -85,127 +85,133 @@ describe("zsearch command line", () => {
     expect((await zs("search", "-l", "pancakes")).out).toContain(join(corpus.home, "notes", "recipes", "pancakes.txt"))
   })
 
-  test("search prints matches with line numbers", async () => {
-    const r = await zs("search", "budget")
-    expect(r.code).toBe(0)
-    const lines = r.out.split("\n")
-    expect(lines[0]).toContain("Documents/budget.xlsx")
-    expect(r.out).toContain("The marketing budget for the northern region")
-  })
+  describe("with an existing home index", () => {
+    beforeEach(async () => {
+      expect((await zs("index", "--home", "--quiet")).code).toBe(0)
+    })
 
-  test("search modes, JSON and paths-only output", async () => {
-    const regex = await zs("search", "--regex", "MAX_\\w+")
-    expect(regex.code).toBe(0)
-    expect(regex.out).toContain("MAX_RETRIES = 42")
-    const json = await zs("search", "--json", "calvin")
-    const parsed = JSON.parse(json.out)
-    expect(parsed.hits[0].path).toEndWith("Documents/paper.pdf")
-    expect(parsed.hits[0].lines[0].page).toBe(2)
-    const files = await zs("search", "-l", "type:slides")
-    expect(files.out.trim().split("\n").sort()).toEqual(
-      [join(corpus.home, "Documents/deck.pptx"), join(corpus.home, "Documents/old/basic_test_ppt_file.ppt"), join(corpus.home, "Documents/slides.odp")].sort(),
-    )
-  })
-
-  test("no matches exits 1; bad regex and bad mode exit 2", async () => {
-    expect((await zs("search", "qqqzzzxxyy")).code).toBe(1)
-    const bad = await zs("search", "re:foo(")
-    expect(bad.code).toBe(2)
-    expect(bad.err).toContain("invalid regex")
-    expect((await zs("search", "-m", "nonsense", "x")).code).toBe(2)
-    expect((await zs("search", "-m", "regex", "x")).code).toBe(2)
-  })
-
-  test("command help, NUL/CSV output, sorting and negated CLI filters", async () => {
-    expect((await zs("search", "--help")).out).toContain("--csv")
-    expect((await zs("duplicates", "--help")).out).toContain("duplicates [--json]")
-    const nul = await zs("search", "-0", "type:slides", "--sort", "name")
-    expect(nul.code).toBe(0)
-    expect(nul.out.endsWith("\0")).toBe(true)
-    expect(nul.out.slice(0, -1).split("\0")).toHaveLength(3)
-    const csv = await zs("search", "--csv", "name:paper.pdf")
-    expect(csv.code).toBe(0)
-    expect(csv.out.split("\n")[0]).toBe("path,kind,size,mtime,match_count")
-    expect(csv.out).toContain('"' + join(corpus.home, "Documents/paper.pdf") + '","pdf",')
-    const inverse = await zs("search", "--json", "budget", "-ext:xlsx")
-    expect(JSON.parse(inverse.out).hits.every((h: { path: string }) => !h.path.endsWith(".xlsx"))).toBe(true)
-    expect((await zs("duplicates", "--json")).code).toBe(0)
-  })
-
-  test("status and doctor", async () => {
-    const s = await zs("status")
-    expect(s.code).toBe(0)
-    expect(s.out).toMatch(/Files\s+\d+ files, \d+ folders/)
-    const d = await zs("doctor")
-    expect(d.code).toBe(0)
-    expect(d.out).toContain("FTS5")
-  })
-
-  test("indexing problems: status --errors, why and retry", async () => {
-    corpus.write("Documents/broken.docx", "not really a docx")
-    expect((await zs("index", "--quiet")).code).toBe(0)
-    const s = await zs("status", "--errors")
-    expect(s.code).toBe(0)
-    expect(s.out).toContain("Could not be read (1) · zsearch retry unreadable")
-    expect(s.out).toContain("It is not in the format its name suggests, or it is damaged.")
-    expect(s.out).toContain("~/Documents/broken.docx (not a valid Office file")
-    const only = await zs("status", "--errors=secret", "--json")
-    expect(JSON.parse(only.out).problems.every((p: { category: string }) => p.category === "secret")).toBe(true)
-    expect((await zs("status", "--errors=bogus")).code).toBe(2)
-
-    const why = await zs("why", "~/Documents/broken.docx")
-    expect(why.out).toContain("only its name is searchable")
-    expect(why.out).toContain('zsearch retry "~/Documents/broken.docx"')
-    expect(JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt")).out).searchable).toBe("content")
-    // Several files: each is explained, not one path made of them all.
-    const both = await zs("why", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")
-    expect(both.code).toBe(0)
-    expect(both.out).toContain("~/notes/recipes/pancakes.txt: its name and text are searchable.")
-    expect(both.out).toContain("~/Documents/broken.docx: only its name is searchable.")
-    const json = JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")).out) as { searchable: string }[]
-    expect(json.map((e) => e.searchable)).toEqual(["content", "name"])
-
-    expect((await zs("retry", "secret")).err).toContain("never read")
-    const retry = await zs("retry", "unreadable", "--quiet")
-    expect(retry.code).toBe(0)
-    expect(retry.err).toContain("1 file is read again with the next index update.")
-    expect((await zs("retry", "~/notes/recipes/pancakes.txt")).code).toBe(1)
-  })
-
-  test("retry while another process holds the lock says the files wait for it", async () => {
-    corpus.write("Documents/stuck.docx", "not really a docx")
-    expect((await zs("index", "--quiet")).code).toBe(0)
-    // Held from here, as another zsearch process would hold it.
-    const release = acquireLock(join(corpus.home, ".zsearch-data", "index.lock"))!
-    try {
-      const r = await zs("retry", "unreadable")
+    test("search prints matches with line numbers", async () => {
+      const r = await zs("search", "budget")
       expect(r.code).toBe(0)
-      expect(r.err).toContain("read again with the next index update")
-      expect(r.err).toContain("is updating the index")
-    } finally {
-      release()
-    }
-  })
+      const lines = r.out.split("\n")
+      expect(lines[0]).toContain("Documents/budget.xlsx")
+      expect(r.out).toContain("The marketing budget for the northern region")
+    })
 
-  test("config get/set/path with validation", async () => {
-    expect((await zs("config", "set", "includeHidden", "true")).code).toBe(0)
-    expect((await zs("config", "get", "includeHidden")).out.trim()).toBe("true")
-    expect((await zs("config", "set", "content.maxTextMB", "4")).code).toBe(0)
-    expect((await zs("config", "get", "content.maxTextMB")).out.trim()).toBe("4")
-    const bad = await zs("config", "set", "nope", "1")
-    expect(bad.code).toBe(2)
-    expect(bad.err).toContain("unknown config key")
-    expect((await zs("config", "set", "includeHidden", "maybe")).code).toBe(2)
-    expect((await zs("config", "path")).out.trim()).toEndWith("config.json")
-  })
+    test("search modes, JSON and paths-only output", async () => {
+      const regex = await zs("search", "--regex", "MAX_\\w+")
+      expect(regex.code).toBe(0)
+      expect(regex.out).toContain("MAX_RETRIES = 42")
+      const json = await zs("search", "--json", "calvin")
+      const parsed = JSON.parse(json.out)
+      expect(parsed.hits[0].path).toEndWith("Documents/paper.pdf")
+      expect(parsed.hits[0].lines[0].page).toBe(2)
+      const files = await zs("search", "-l", "type:slides")
+      expect(files.out.trim().split("\n").sort()).toEqual(
+        [join(corpus.home, "Documents/deck.pptx"), join(corpus.home, "Documents/old/basic_test_ppt_file.ppt"), join(corpus.home, "Documents/slides.odp")].sort(),
+      )
+    })
 
-  test("index a specific folder, then reset", async () => {
-    const r = await zs("index", join(corpus.home, "notes"), "--quiet")
-    expect(r.code).toBe(0)
-    expect((await zs("search", "-l", "budget")).out).not.toContain("Documents")
-    expect((await zs("index", "/does/not/exist")).code).toBe(2)
-    const reset = await zs("reset")
-    expect(reset.code).toBe(0)
-    expect(existsSync(join(corpus.home, ".zsearch-data", "index.db"))).toBe(false)
+    test("no matches exits 1; bad regex and bad mode exit 2", async () => {
+      expect((await zs("search", "qqqzzzxxyy")).code).toBe(1)
+      const bad = await zs("search", "re:foo(")
+      expect(bad.code).toBe(2)
+      expect(bad.err).toContain("invalid regex")
+      expect((await zs("search", "-m", "nonsense", "x")).code).toBe(2)
+      expect((await zs("search", "-m", "regex", "x")).code).toBe(2)
+    })
+
+    test("command help, NUL/CSV output, sorting and negated CLI filters", async () => {
+      expect((await zs("search", "--help")).out).toContain("--csv")
+      expect((await zs("duplicates", "--help")).out).toContain("duplicates [--json]")
+      const nul = await zs("search", "-0", "type:slides", "--sort", "name")
+      expect(nul.code).toBe(0)
+      expect(nul.out.endsWith("\0")).toBe(true)
+      expect(nul.out.slice(0, -1).split("\0")).toHaveLength(3)
+      const csv = await zs("search", "--csv", "name:paper.pdf")
+      expect(csv.code).toBe(0)
+      expect(csv.out.split("\n")[0]).toBe("path,kind,size,mtime,match_count")
+      expect(csv.out).toContain('"' + join(corpus.home, "Documents/paper.pdf") + '","pdf",')
+      const inverse = await zs("search", "--json", "budget", "-ext:xlsx")
+      expect(JSON.parse(inverse.out).hits.every((h: { path: string }) => !h.path.endsWith(".xlsx"))).toBe(true)
+      expect((await zs("duplicates", "--json")).code).toBe(0)
+    })
+
+    test("status and doctor", async () => {
+      const s = await zs("status")
+      expect(s.code).toBe(0)
+      expect(s.out).toMatch(/Files\s+\d+ files, \d+ folders/)
+      const d = await zs("doctor")
+      expect(d.code).toBe(0)
+      expect(d.out).toContain("FTS5")
+    })
+
+    test("indexing problems: status --errors, why and retry", async () => {
+      corpus.write("Documents/broken.docx", "not really a docx")
+      expect((await zs("index", "--quiet")).code).toBe(0)
+      const s = await zs("status", "--errors")
+      expect(s.code).toBe(0)
+      expect(s.out).toContain("Could not be read (1) · zsearch retry unreadable")
+      expect(s.out).toContain("It is not in the format its name suggests, or it is damaged.")
+      expect(s.out).toContain("~/Documents/broken.docx (not a valid Office file")
+      const only = await zs("status", "--errors=secret", "--json")
+      expect(JSON.parse(only.out).problems.every((p: { category: string }) => p.category === "secret")).toBe(true)
+      expect((await zs("status", "--errors=bogus")).code).toBe(2)
+
+      const why = await zs("why", "~/Documents/broken.docx")
+      expect(why.out).toContain("only its name is searchable")
+      expect(why.out).toContain('zsearch retry "~/Documents/broken.docx"')
+      expect(JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt")).out).searchable).toBe("content")
+      // Several files: each is explained, not one path made of them all.
+      const both = await zs("why", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")
+      expect(both.code).toBe(0)
+      expect(both.out).toContain("~/notes/recipes/pancakes.txt: its name and text are searchable.")
+      expect(both.out).toContain("~/Documents/broken.docx: only its name is searchable.")
+      const json = JSON.parse((await zs("why", "--json", "~/notes/recipes/pancakes.txt", "~/Documents/broken.docx")).out) as { searchable: string }[]
+      expect(json.map((e) => e.searchable)).toEqual(["content", "name"])
+
+      expect((await zs("retry", "secret")).err).toContain("never read")
+      const retry = await zs("retry", "unreadable", "--quiet")
+      expect(retry.code).toBe(0)
+      expect(retry.err).toContain("1 file is read again with the next index update.")
+      expect((await zs("retry", "~/notes/recipes/pancakes.txt")).code).toBe(1)
+    })
+
+    test("retry while another process holds the lock says the files wait for it", async () => {
+      corpus.write("Documents/stuck.docx", "not really a docx")
+      expect((await zs("index", "--quiet")).code).toBe(0)
+      // Held from here, as another zsearch process would hold it.
+      const release = acquireLock(join(corpus.home, ".zsearch-data", "index.lock"))!
+      try {
+        const r = await zs("retry", "unreadable")
+        expect(r.code).toBe(0)
+        expect(r.err).toContain("read again with the next index update")
+        expect(r.err).toContain("is updating the index")
+      } finally {
+        release()
+      }
+    })
+
+    test("config get/set/path with validation", async () => {
+      expect((await zs("config", "set", "includeHidden", "true")).code).toBe(0)
+      expect((await zs("config", "get", "includeHidden")).out.trim()).toBe("true")
+      expect((await zs("config", "set", "content.maxTextMB", "4")).code).toBe(0)
+      expect((await zs("config", "get", "content.maxTextMB")).out.trim()).toBe("4")
+      const bad = await zs("config", "set", "nope", "1")
+      expect(bad.code).toBe(2)
+      expect(bad.err).toContain("unknown config key")
+      expect((await zs("config", "set", "includeHidden", "maybe")).code).toBe(2)
+      expect((await zs("config", "path")).out.trim()).toEndWith("config.json")
+    })
+
+    test("index a specific folder, then reset", async () => {
+      const r = await zs("index", join(corpus.home, "notes"), "--quiet")
+      expect(r.code).toBe(0)
+      expect((await zs("search", "-l", "budget")).out).not.toContain("Documents")
+      expect((await zs("index", "/does/not/exist")).code).toBe(2)
+      const reset = await zs("reset")
+      expect(reset.code).toBe(0)
+      expect(existsSync(join(corpus.home, ".zsearch-data", "index.db"))).toBe(false)
+    })
   })
 })

@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type Config, configKeys, defaultConfig, saveConfig } from "../src/config.ts"
 import { checkArgs } from "../src/mcp/rpc.ts"
 import { CONFIG_KEYS, withSetting } from "../src/mcp/server.ts"
+import { jsonLines } from "./helpers/json-lines.ts"
 
 type Msg = Record<string, any>
 
@@ -26,6 +27,12 @@ function saveLocal(config: Config) {
   else process.env.ZSEARCH_HOME = previous
 }
 
+const clients = new Set<ReturnType<typeof jsonLines>>()
+afterEach(async () => {
+  for (const client of clients) await client.dispose()
+  clients.clear()
+})
+
 /** Start `zsearch mcp` on the test home and talk JSON-RPC to it. */
 async function client() {
   const proc = Bun.spawn(["bun", MAIN, "mcp"], {
@@ -35,30 +42,9 @@ async function client() {
     stdout: "pipe",
     stderr: "pipe",
   })
-  const reader = proc.stdout.getReader()
-  const decoder = new TextDecoder()
-  const waiting = new Map<number, (m: Msg) => void>()
-  void (async () => {
-    let buffer = ""
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) return
-      buffer += decoder.decode(value, { stream: true })
-      for (let nl = buffer.indexOf("\n"); nl >= 0; nl = buffer.indexOf("\n")) {
-        const m = JSON.parse(buffer.slice(0, nl)) as Msg
-        buffer = buffer.slice(nl + 1)
-        if (typeof m.id === "number") waiting.get(m.id)?.(m)
-      }
-    }
-  })()
-  let nextId = 0
-  const request = (method: string, params: unknown = {}): Promise<Msg> => {
-    const id = ++nextId
-    const reply = new Promise<Msg>((r) => waiting.set(id, r))
-    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
-    proc.stdin.flush()
-    return reply
-  }
+  const transport = jsonLines(proc)
+  clients.add(transport)
+  const { request } = transport
   const schemas = new Map<string, Msg>()
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r = await request("tools/call", { name, arguments: args })
@@ -69,11 +55,7 @@ async function client() {
   }
   await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })
   for (const t of (await request("tools/list")).result.tools) schemas.set(t.name, t)
-  const close = async () => {
-    proc.stdin.end()
-    await proc.exited
-  }
-  return { call, close }
+  return { call, close: transport.close }
 }
 
 beforeAll(() => {
