@@ -127,7 +127,10 @@ enum PreviewPreparation {
             }
         }
         guard p.message == nil else { return nil }
-        if !p.isDir, PreviewPane.visualKinds.contains(p.kind), !defaults.bool(forKey: AppSettings.imageShowsText) { return nil }
+        let preference = QuickLookPreview.isOffice(p) ? AppSettings.officeShowsText
+            : (p.kind == "audio" || p.kind == "video" ? AppSettings.mediaShowsTranscript : AppSettings.imageShowsText)
+        if QuickLookPreview.showsFile(p, showsText: defaults.bool(forKey: preference)),
+           FileManager.default.fileExists(atPath: p.path) { return nil }
         return TextPreviews.shared.styled(for: p) == nil ? .text : nil
     }
 }

@@ -327,6 +327,7 @@ struct PreviewPane: View {
     @AppStorage(AppSettings.pdfShowsText) private var pdfShowsText = false
     /// Word documents show their formatting unless the reader picked the extracted text instead.
     @AppStorage(AppSettings.documentShowsText) private var documentShowsText = false
+    @AppStorage(AppSettings.officeShowsText) private var officeShowsText = false
     @AppStorage(AppSettings.ebookShowsText) private var ebookShowsText = false
     /// Images show themselves unless the reader picked the text OCR read from them.
     @AppStorage(AppSettings.imageShowsText) private var imageShowsText = false
@@ -334,9 +335,6 @@ struct PreviewPane: View {
 
     /// Bumped when a document this pane waited on is ready (see `PreviewPreparation`).
     @State private var documentsLoaded = 0
-
-    /// Kinds Quick Look shows better than any text could.
-    static let visualKinds: Set<String> = ["image", "video", "audio", "font"]
 
     private struct Showing: Equatable {
         var preview: FilePreview
@@ -355,10 +353,11 @@ struct PreviewPane: View {
             let wordFile = pdf == nil && WordDocuments.handles(p)
             let word = wordFile && (!documentShowsText || p.message != nil) ? WordDocuments.shared.document(for: p) : nil
             let ebook = EbookPreviewView.handles(p)
-            // Images, video and audio, and other files without text: Quick Look shows them.
-            let visual = p.contentAllowed != false && pdf == nil && word == nil && !p.isDir && (Self.visualKinds.contains(p.kind) || p.message != nil) && FileManager.default.fileExists(atPath: p.path)
+            // Office slides and sheets keep their layout through Quick Look, even with indexed text.
+            let office = QuickLookPreview.isOffice(p)
+            let visual = pdf == nil && word == nil && QuickLookPreview.handles(p) && FileManager.default.fileExists(atPath: p.path)
             let media = p.kind == "audio" || p.kind == "video"
-            let visualShowsText = media ? mediaShowsTranscript : imageShowsText
+            let visualShowsText = office ? officeShowsText : (media ? mediaShowsTranscript : imageShowsText)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -404,7 +403,7 @@ struct PreviewPane: View {
                         .fixedSize()
                         .help("Show a reflowed excerpt, or the line-numbered text zsearch read from the book")
                     } else if visual, p.message == nil {
-                        Picker("Show", selection: media ? $mediaShowsTranscript : $imageShowsText) {
+                        Picker("Show", selection: office ? $officeShowsText : (media ? $mediaShowsTranscript : $imageShowsText)) {
                             Text(p.kind == "image" ? "Image" : "File").tag(false)
                             Text(media ? "Transcript" : "Text").tag(true)
                         }
@@ -424,7 +423,7 @@ struct PreviewPane: View {
                     DocumentPreviewView(preview: p, document: word)
                 } else if ebook, !ebookShowsText {
                     EbookPreviewView(preview: p)
-                } else if visual, !visualShowsText || p.message != nil {
+                } else if visual, QuickLookPreview.showsFile(p, showsText: visualShowsText) {
                     if media, Playback.shared.isPlaying(p) {
                         MediaPlayerView()
                     } else {
