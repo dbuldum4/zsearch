@@ -1,31 +1,37 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 import ZSearchKit
 
-/// First-run setup: what zsearch does before search opens, step by step, with the time left.
+/// First-run setup: each step of the first index, with its counts and the time left, and a log.
 /// Shown in the main window until `SearchModel.setupComplete`.
 struct SetupProgressView: View {
     @Environment(SearchModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 28) {
+        VStack(spacing: 24) {
             Spacer(minLength: 0)
-            VStack(spacing: 10) {
-                Image(systemName: "sparkle.magnifyingglass")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.tint)
-                Text("Getting zsearch ready")
-                    .font(.title.bold())
-                Text("zsearch is reading your files so you can find them by describing what they're about. Search opens as soon as this is done. Everything stays on this Mac.")
-                    .multilineTextAlignment(.center)
+            VStack(spacing: 6) {
+                Text("Building the index")
+                    .font(.title2.bold())
+                if let roots = model.config?.roots, !roots.isEmpty {
+                    Text(roots.joined(separator: ", "))
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text("Search opens when the semantic index is complete. Everything runs on this Mac.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
             SetupSteps(activity: model.activity)
+            SetupLog(activity: model.activity)
             SetupControls()
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: 460)
+        .frame(maxWidth: 520)
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -35,7 +41,7 @@ private enum StepState {
     case waiting, active, done, failed
 }
 
-/// The steps, and how far each has got. The only part of setup that observes indexing progress.
+/// The steps, and how far each has got.
 private struct SetupSteps: View {
     @Environment(SearchModel.self) private var model
     let activity: IndexActivity
@@ -45,12 +51,12 @@ private struct SetupSteps: View {
     var body: some View {
         let p = model.indexing ? activity.progress : nil
         let semanticRuns = model.semantic?.helper != nil && model.config?.content.enabled != false
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             if semanticRuns { download }
-            step("Find your files", state: findState(p), detail: findDetail(p), fraction: nil)
-            step("Read what's inside them", state: readState(p), detail: readDetail(p), fraction: p?.phase == "content" ? p?.fraction : nil)
+            step("Scan folders", state: scanState(p), detail: scanDetail(p), fraction: nil)
+            step("Extract text", state: extractState(p), detail: extractDetail(p), fraction: p?.phase == "content" ? p?.fraction : nil)
             if semanticRuns {
-                step("Learn what each one is about", state: learnState(p), detail: learnDetail(p), fraction: p?.phase == "meaning" ? p?.fraction : nil)
+                step("Build the semantic index", state: embedState(p), detail: embedDetail(p), fraction: p?.phase == "meaning" ? p?.fraction : nil)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,7 +69,7 @@ private struct SetupSteps: View {
         }
     }
 
-    /// What the time left is measured on: files read, then files learned.
+    /// What the time left is measured on: files read, then files embedded.
     private func counts(_ p: IndexProgress) -> (done: Int, total: Int)? {
         switch p.phase {
         case "content": return (p.contentDone, p.contentTotal)
@@ -72,7 +78,7 @@ private struct SetupSteps: View {
         }
     }
 
-    /// Where a run is: 0 finding files, 1 reading them, 2 learning them.
+    /// Where a run is: 0 scanning, 1 extracting text, 2 embedding.
     private func stage(_ p: IndexProgress?) -> Int? {
         switch p?.phase {
         case nil: return nil
@@ -85,56 +91,59 @@ private struct SetupSteps: View {
     private var indexedOnce: Bool { model.stats?.lastIndexedAt != nil }
 
     @ViewBuilder private var download: some View {
-        if model.semantic?.model.ready == true {
-            step("Download the language model", state: .done, detail: nil, fraction: nil)
+        let title = "Granite embedding model"
+        if let s = model.semantic, s.model.ready {
+            step(title, state: .done, detail: "Installed · \(bytes(s.model.bytes))", fraction: nil)
         } else if model.downloadingModel {
             let d = model.semanticDownload
-            step("Download the language model", state: .active,
-                 detail: d.map { "\(bytes($0.received)) of \(bytes($0.total))" } ?? "Starting the download…",
+            step(title, state: .active,
+                 detail: d.map { "Downloading \($0.file) · \(bytes($0.received)) of \(bytes($0.total))" } ?? "Starting the download",
                  fraction: d.flatMap { $0.total > 0 ? Double($0.received) / Double($0.total) : nil })
         } else if let error = model.installError {
-            step("Download the language model", state: .failed, detail: error, fraction: nil)
+            step(title, state: .failed, detail: "Download failed: \(error)", fraction: nil)
         } else {
-            step("Download the language model", state: .waiting, detail: model.semantic.map { bytes($0.model.bytes) }, fraction: nil)
+            step(title, state: .waiting, detail: model.semantic.map { "\(bytes($0.model.bytes)) to download" }, fraction: nil)
         }
     }
 
-    private func findState(_ p: IndexProgress?) -> StepState {
+    private func scanState(_ p: IndexProgress?) -> StepState {
         if stage(p) == 0 { return .active }
         return indexedOnce || stage(p) != nil ? .done : .waiting
     }
 
-    private func findDetail(_ p: IndexProgress?) -> String? {
-        if let p, stage(p) == 0 { return "\(p.scanned.formatted()) found" }
-        return model.stats.map { "\($0.files.formatted()) files" }
+    private func scanDetail(_ p: IndexProgress?) -> String? {
+        if let p, stage(p) == 0 { return "\(p.scanned.formatted()) items scanned" }
+        return model.stats.map { "\($0.files.formatted()) files · \($0.folders.formatted()) folders" }
     }
 
-    private func readState(_ p: IndexProgress?) -> StepState {
+    private func extractState(_ p: IndexProgress?) -> StepState {
         if stage(p) == 1 { return .active }
         return indexedOnce || (stage(p) ?? 0) > 1 ? .done : .waiting
     }
 
-    private func readDetail(_ p: IndexProgress?) -> String? {
-        guard let p, stage(p) == 1 else { return nil }
+    private func extractDetail(_ p: IndexProgress?) -> String? {
+        guard let p, stage(p) == 1 else { return model.stats.map { "\($0.withContent.formatted()) files with text" } }
         if let waiting = p.waiting { return "Paused: \(waiting)" }
-        if p.phase == "cleanup" { return "Tidying up…" }
-        return "\(p.contentDone.formatted()) of \(p.contentTotal.formatted())" + timeLeft
+        if p.phase == "cleanup" { return "Removing deleted files from the index" }
+        var parts = ["\(p.contentDone.formatted()) of \(p.contentTotal.formatted()) files to read in this pass", "\(bytes(p.contentBytes)) of text"]
+        if p.contentErrors > 0 { parts.append("\(p.contentErrors.formatted()) unreadable") }
+        return parts.joined(separator: " · ") + timeLeft
     }
 
-    private func learnState(_ p: IndexProgress?) -> StepState {
+    private func embedState(_ p: IndexProgress?) -> StepState {
         if stage(p) == 2 { return .active }
         if let c = model.stats?.semantic, c.pending == 0 { return .done }
         return .waiting
     }
 
-    private func learnDetail(_ p: IndexProgress?) -> String? {
+    private func embedDetail(_ p: IndexProgress?) -> String? {
         if let p, stage(p) == 2 {
             if let waiting = p.waiting { return "Paused: \(waiting)" }
             guard let m = p.meaning else { return nil }
-            return "\(m.done.formatted()) of \(m.total.formatted())" + timeLeft
+            return "\(m.done.formatted()) of \(m.total.formatted()) files · \(m.embedded.formatted()) passages embedded, \(m.reused.formatted()) reused" + timeLeft
         }
-        guard let c = model.stats?.semantic, c.pending > 0 else { return nil }
-        return "\(c.current.formatted()) of \(c.files.formatted()) files"
+        guard let c = model.stats?.semantic else { return nil }
+        return c.pending == 0 ? "\(c.files.formatted()) files embedded" : "\(c.current.formatted()) of \(c.files.formatted()) files embedded"
     }
 
     private var timeLeft: String {
@@ -170,8 +179,57 @@ private struct SetupSteps: View {
                         .foregroundStyle(state == .failed ? Color.orange : Color.secondary)
                         .monospacedDigit()
                         .lineLimit(2)
+                        .textSelection(.enabled)
                 }
             }
+        }
+    }
+}
+
+/// The indexing log (`IndexLog`), folded away until opened.
+private struct SetupLog: View {
+    let activity: IndexActivity
+    @AppStorage("setupLogExpanded") private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .trailing, spacing: 6) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 1) {
+                            ForEach(activity.log.lines) { line in
+                                Text("\(IndexLog.clock(line.time))  \(line.text)")
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(line.id)
+                            }
+                        }
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(8)
+                    }
+                    .frame(height: 180)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    .onChange(of: activity.log.lines.last?.id) { _, id in
+                        if let id { proxy.scrollTo(id, anchor: .bottom) }
+                    }
+                    .onAppear {
+                        if let id = activity.log.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    }
+                }
+                Button("Copy Log") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(activity.log.text(), forType: .string)
+                }
+                .controlSize(.small)
+                .disabled(activity.log.lines.isEmpty)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Log")
+                .font(.callout)
         }
     }
 }
