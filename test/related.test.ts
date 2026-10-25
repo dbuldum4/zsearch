@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { type Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type Config, defaultConfig, saveConfig } from "../src/config.ts"
-import { clearIndex, getMeta, openDb } from "../src/index/db.ts"
+import { clearIndex, ContentState, getMeta, openDb, readContent } from "../src/index/db.ts"
+import { ExtractPool } from "../src/index/pool.ts"
 import { Indexer } from "../src/index/indexer.ts"
 import { SearchEngine } from "../src/search/engine.ts"
 import { SearchClient } from "../src/search/client.ts"
@@ -37,18 +38,7 @@ beforeEach(async () => {
   await new Indexer(db, config, { inProcess: true }).run()
   config = { ...config, semantic: { enabled: true, declined: false, code: false } }
   saveConfig(config)
-  const store = openSemanticDb(semanticDbPath(db.filename))!
-  setMeta(store, "fingerprint", semanticFingerprint(1))
-  setMeta(store, "generation", mainGeneration(db, true)!)
-  setMeta(store, "complete_seq", getMeta(db, "change_seq") ?? "0")
-  for (const f of semanticCandidates(db, config)) {
-    const hash = new Uint8Array(32).fill(f.id)
-    const vector = f.path === source ? vec(1, 0) : f.path === notes ? vec(0.98, 0.2) : f.path === contract ? vec(0.9, 0.43) : vec(0.68, Math.sqrt(1 - 0.68 ** 2))
-    store.query("INSERT INTO vectors(hash, vec) VALUES (?, ?)").run(hash, packVector(vector, 0, vector.length))
-    store.query("INSERT INTO passages(file, n, hash, start, end) VALUES (?, 0, ?, 0, ?)").run(f.id, hash, f.len)
-    store.query("INSERT INTO files(file, sig, upto, total) VALUES (?, ?, 1, 1)").run(f.id, f.sig)
-  }
-  store.close()
+  seedVectors()
   engine = new SearchEngine(db, config)
   // Related discovery must never call a query embedder (nor require installed model/helper files).
   engine.embedQuery = () => { throw new Error("must not embed") }
@@ -61,6 +51,34 @@ afterEach(async () => {
   else process.env.ZSEARCH_HOME = previousHome
   rmSync(work, { recursive: true, force: true })
 })
+
+/** Test vectors represent the text signatures currently in the main index, without a model. */
+function seedVectors() {
+  const store = openSemanticDb(semanticDbPath(db.filename))!
+  store.exec("DELETE FROM passages; DELETE FROM files; DELETE FROM vectors")
+  setMeta(store, "fingerprint", semanticFingerprint(1))
+  setMeta(store, "generation", mainGeneration(db, true)!)
+  setMeta(store, "complete_seq", getMeta(db, "change_seq") ?? "0")
+  for (const f of semanticCandidates(db, config)) {
+    const hash = new Uint8Array(32).fill(f.id)
+    const vector = f.path === source ? vec(1, 0) : f.path === notes ? vec(0.98, 0.2) : f.path === contract ? vec(0.9, 0.43) : vec(0.68, Math.sqrt(1 - 0.68 ** 2))
+    store.query("INSERT INTO vectors(hash, vec) VALUES (?, ?)").run(hash, packVector(vector, 0, vector.length))
+    store.query("INSERT INTO passages(file, n, hash, start, end) VALUES (?, 0, ?, 0, ?)").run(f.id, hash, f.len)
+    store.query("INSERT INTO files(file, sig, upto, total) VALUES (?, ?, 1, 1)").run(f.id, f.sig)
+  }
+  store.close()
+}
+
+function preservedMetadataEdit(path: string) {
+  const before = statSync(path)
+  writeFileSync(path, "z".repeat(before.size))
+  utimesSync(path, before.atime, before.mtime)
+  const after = statSync(path)
+  expect(after.ino).toBe(before.ino)
+  expect(after.size).toBe(before.size)
+  expect(Math.floor(after.mtimeMs)).toBe(Math.floor(before.mtimeMs))
+  expect(after.ctimeMs).not.toBe(before.ctimeMs)
+}
 
 function changeStore(sql: string) {
   engine.closeSemantic()
@@ -92,8 +110,10 @@ test("related never uses stale, missing or partly embedded source/candidate vect
 
 test("replacement identities and a rebuild during ranking cannot return stale vectors", async () => {
   const before = statSync(notes)
-  rmSync(notes)
+  // Keep the old inode allocated: replacement identity must not depend on the allocator.
+  renameSync(notes, notes + ".old")
   writeFileSync(notes, "x".repeat(before.size))
+  expect(statSync(notes).ino).not.toBe(before.ino)
   utimesSync(notes, before.atime, before.mtime)
   expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([contract])
   const pending = engine.related(source)
@@ -101,6 +121,113 @@ test("replacement identities and a rebuild during ranking cannot return stale ve
   const response = await pending
   expect(response.status).toBe("pending")
   expect(response.hits).toEqual([])
+})
+
+test("indexed change time retains fractional precision rather than rounding to milliseconds", async () => {
+  const actual = statSync(notes).ctimeMs
+  const stored = db.query("SELECT ctime_ms FROM files WHERE path = ?").get(notes) as { ctime_ms: number }
+  expect(stored.ctime_ms).toBe(actual)
+  const different = Math.floor(actual) + (actual % 1 < 0.5 ? 0.75 : 0.25)
+  expect(Math.floor(different)).toBe(Math.floor(actual))
+  db.query("UPDATE files SET ctime_ms = ? WHERE path = ?").run(different, notes)
+  expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([contract])
+})
+
+test("delete/recreate with restored size and mtime cannot reuse obsolete vectors", async () => {
+  await Bun.sleep(5)
+  const before = statSync(notes)
+  rmSync(notes)
+  writeFileSync(notes, "x".repeat(before.size))
+  utimesSync(notes, before.atime, before.mtime)
+  // Works whether the filesystem reuses the inode (as on Ubuntu CI) or allocates a new one.
+  expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([contract])
+})
+
+for (const during of [false, true]) for (const changed of ["source", "candidate"] as const) {
+  test(`same-inode ${changed} edits with restored size/mtime are rejected ${during ? "during" : "before"} ranking`, async () => {
+    await Bun.sleep(5)
+    const pending = during ? engine.related(source) : null
+    preservedMetadataEdit(changed === "source" ? source : notes)
+    const result = await (pending ?? engine.related(source))
+    if (changed === "source") {
+      expect(result.status).toBe("pending")
+      expect(result.hits).toEqual([])
+    } else {
+      expect(result.status).toBe("ready")
+      expect(result.hits.map((h) => h.path)).toEqual([contract])
+    }
+  })
+}
+
+for (const changed of ["source", "candidate"] as const) {
+  test(`reindex rereads a metadata-restored ${changed}; only matching new vectors recover`, async () => {
+    await Bun.sleep(5)
+    const path = changed === "source" ? source : notes
+    const old = semanticCandidates(db, config).find((f) => f.path === path)!
+    preservedMetadataEdit(path)
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect(readContent(db, old.id)).toBe("z".repeat(statSync(path).size))
+    expect(semanticCandidates(db, config).find((f) => f.id === old.id)!.sig).not.toBe(old.sig)
+    const pending = await engine.related(source)
+    if (changed === "source") expect(pending.status).toBe("pending")
+    else expect(pending.hits.map((h) => h.path)).toEqual([contract])
+    engine.closeSemantic()
+    seedVectors()
+    const recovered = await engine.related(source)
+    expect(recovered.status).toBe("ready")
+    expect(recovered.hits.map((h) => h.path)).toEqual([notes, contract])
+    if (changed === "candidate") expect(recovered.hits[0]!.lines[0]!.text).toBe("z".repeat(statSync(notes).size))
+  })
+}
+
+for (const during of [false, true]) {
+  test(`an edit ${during ? "during extraction" : "after scanning"} cannot bind stale extracted text to a new identity`, async () => {
+    db.query("UPDATE files SET content_state = ? WHERE path = ?").run(ContentState.Pending, notes)
+    await Bun.sleep(5)
+    const run = ExtractPool.prototype.run
+    const extraction = spyOn(ExtractPool.prototype, "run").mockImplementation(async function(this: ExtractPool, job) {
+      const reply = await run.call(this, job)
+      if (during && job.path === notes) preservedMetadataEdit(notes)
+      return reply
+    })
+    let changed = false
+    try {
+      await new Indexer(db, config, { inProcess: true, onProgress: (p) => {
+        if (!during && !changed && p.phase === "content") { changed = true; preservedMetadataEdit(notes) }
+      } }).run()
+    } finally { extraction.mockRestore() }
+    const row = db.query("SELECT id, content_state, note FROM files WHERE path = ?").get(notes) as { id: number; content_state: number; note: string }
+    expect(row).toMatchObject({ content_state: ContentState.Error, note: "file changed during indexing" })
+    expect(readContent(db, row.id)).toBeNull()
+    expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([contract])
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect(readContent(db, row.id)).toBe("z".repeat(statSync(notes).size))
+    engine.closeSemantic(); seedVectors()
+    expect((await engine.related(source)).hits[0]!.lines[0]!.text).toBe("z".repeat(statSync(notes).size))
+  })
+}
+
+test("missing legacy change identity fails closed, migrates without trusting old text, and recovers", async () => {
+  engine.closeSemantic()
+  db.exec("DROP TRIGGER files_ctime_seq; ALTER TABLE files DROP COLUMN ctime_ms")
+  expect((await engine.related(source)).status).toBe("pending")
+  // A same-version index opens read-only without migration until the next writable open.
+  const reader = openDb(db.filename, { readonly: true })
+  const legacy = new SearchEngine(reader, config)
+  expect((await legacy.related(source)).status).toBe("pending")
+  legacy.closeSemantic(); reader.close()
+  const migrated = openDb(db.filename)
+  expect(migrated.query("SELECT ctime_ms FROM files WHERE path = ?").get(source)).toEqual({ ctime_ms: null })
+  expect((await engine.related(source)).status).toBe("pending")
+  await Bun.sleep(5)
+  preservedMetadataEdit(notes)
+  await new Indexer(migrated, config, { inProcess: true }).run()
+  migrated.close()
+  const note = semanticCandidates(db, config).find((f) => f.path === notes)!
+  expect(readContent(db, note.id)).toBe("z".repeat(statSync(notes).size))
+  expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([contract])
+  engine.closeSemantic(); seedVectors()
+  expect((await engine.related(source)).hits.map((h) => h.path)).toEqual([notes, contract])
 })
 
 test("index signatures, complete passage state, generation and fingerprint must match", async () => {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { defaultConfig, type Config } from "../src/config.ts"
@@ -240,6 +240,38 @@ esac
     expect(ocrCalls()).toBe(1)
     expect(count(rebuilt, "SELECT count(*) AS n FROM ocr_cache")).toBe(0)
     rebuilt.close()
+  })
+
+  test("same-size images with restored mtime do not reuse old OCR", async () => {
+    const { root, config, db } = setup("ocr-ctime", { "scan.png": png })
+    await new Indexer(db, config, { inProcess: true }).run()
+    const path = join(root, "scan.png"), before = statSync(path)
+    await Bun.sleep(5)
+    writeFileSync(path, png.slice(0, -1) + "x")
+    utimesSync(path, before.atime, before.mtime)
+    expect(statSync(path).ino).toBe(before.ino)
+    expect(statSync(path).size).toBe(before.size)
+    expect(Math.floor(statSync(path).mtimeMs)).toBe(Math.floor(before.mtimeMs))
+    writeFileSync(calls, "")
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect(ocrCalls()).toBe(1)
+    expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(1)
+    db.close()
+  })
+
+  test("legacy OCR identities are discarded before reindexing", async () => {
+    const { config, db, dbPath } = setup("ocr-legacy", { "scan.png": png })
+    await new Indexer(db, config, { inProcess: true }).run()
+    expect(count(db, "SELECT count(*) AS n FROM ocr_cache")).toBe(1)
+    db.exec("DROP TRIGGER files_ctime_seq; ALTER TABLE files DROP COLUMN ctime_ms; DROP INDEX ocr_cache_key; ALTER TABLE ocr_cache DROP COLUMN ctime_ms; CREATE UNIQUE INDEX ocr_cache_key ON ocr_cache(dev, ino, size, mtime)")
+    db.close()
+    const migrated = openDb(dbPath)
+    expect(count(migrated, "SELECT count(*) AS n FROM ocr_cache")).toBe(0)
+    writeFileSync(calls, "")
+    await new Indexer(migrated, config, { inProcess: true }).run()
+    expect(ocrCalls()).toBe(1)
+    expect(count(migrated, "SELECT count(*) AS n FROM ocr_cache")).toBe(1)
+    migrated.close()
   })
 
   test("are dropped when OCR is turned off", async () => {

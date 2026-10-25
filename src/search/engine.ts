@@ -2,7 +2,7 @@ import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
 import { type Stats, realpathSync, statSync } from "node:fs"
 import type { Config } from "../config.ts"
-import { decompressText, getMeta } from "../index/db.ts"
+import { decompressText, getMeta, hasFileIdentity } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
 import { segmentStart } from "../index/extract/transcribe.ts"
 import { crawlOptionsFor, pathPolicy, policyFor } from "../index/policy.ts"
@@ -26,6 +26,7 @@ import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { helperVectorVersion, mainGeneration, semanticCandidates, semanticFingerprint } from "../semantic/indexer.ts"
+import { fileIdentityCurrent, type FileIdentity } from "../index/identity.ts"
 import { relatedByFile } from "../semantic/related.ts"
 import { diagnose, type SearchDiagnosis } from "./diagnose.ts"
 
@@ -380,21 +381,18 @@ export class SearchEngine {
     const version = index?.fingerprint?.match(/ vectors(\d+) chunks\d+$/)?.[1]
     if (!index?.size || version === undefined || index.fingerprint !== semanticFingerprint(Number(version))) return finish("unavailable", "No compatible local passage vectors; update the semantic index first")
     const config = this.config, generation = mainGeneration(this.db), sequence = getMeta(this.db, "change_seq")
-    const current = new Map<number, { path: string; size: number; mtime: number; dev: number; ino: number }>()
+    if (!hasFileIdentity(this.db)) return finish("pending", "File change identities are missing; update the index first")
+    const current = new Map<number, FileIdentity & { path: string }>()
     const candidates = semanticCandidates(this.db, config, check)
-    const identity = this.db.query("SELECT dev, ino FROM files WHERE id = ?")
+    const identity = this.db.query("SELECT dev, ino, ctime_ms AS ctime FROM files WHERE id = ?")
     for (const f of candidates) {
       if (index.madeFrom(f.id) !== f.sig) continue
       const ci = this.catalog.indexOf(f.id)
       if (ci === undefined) continue
       const size = this.catalog.sizes[ci]!
-      try {
-        const st = statSync(f.path)
-        const indexed = identity.get(f.id) as { dev: number; ino: number } | null
-        if (st.isFile() && st.size === size && Math.floor(st.mtimeMs) === f.mtime && indexed && (!indexed.ino || (st.dev === indexed.dev && st.ino === indexed.ino))) {
-          current.set(f.id, { path: f.path, size, mtime: f.mtime, dev: st.dev, ino: st.ino })
-        }
-      } catch {}
+      const indexed = identity.get(f.id) as Pick<FileIdentity, "dev" | "ino" | "ctime"> | null
+      const expected = indexed && { ...indexed, path: f.path, size, mtime: f.mtime }
+      if (expected && fileIdentityCurrent(f.path, expected)) current.set(f.id, expected)
     }
     if (!current.has(id)) return finish("pending", "Source has no complete current passage vectors; update the index first")
     const rows = Uint8Array.from(index.file, (file, row) => file > 0 && index.start[row]! >= 0 && current.has(file) ? 1 : 0)
@@ -409,7 +407,7 @@ export class SearchEngine {
       if (!f) return false
       const ci = this.catalog.indexOf(file)
       if (ci === undefined || !this.contentAuthorized(ci, recheck)) return false
-      try { const st = statSync(f.path); return st.isFile() && st.size === f.size && Math.floor(st.mtimeMs) === f.mtime && st.dev === f.dev && st.ino === f.ino } catch { return false }
+      return fileIdentityCurrent(f.path, f)
     }
     if (!valid(id)) { res.source = undefined; return finish("pending", "Source changed or became inaccessible; update the index first") }
     const allowed = ranked.filter((r) => valid(r.file))

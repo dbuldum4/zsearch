@@ -1,4 +1,5 @@
 import type { Database, Statement } from "bun:sqlite"
+import { fileIdentityCurrent } from "./identity.ts"
 import { existsSync, realpathSync } from "node:fs"
 import { dirname } from "node:path"
 import { type Config, home, resolvePath } from "../config.ts"
@@ -75,6 +76,7 @@ interface Pending {
   dev: number
   ino: number
   mtime: number
+  ctime: number | null
 }
 
 /** Extraction jobs queued per worker: a deep queue keeps them busy while this thread is not. */
@@ -95,12 +97,13 @@ const MAX_HELD_BYTES = 64 * 1024 * 1024
  */
 const EARLY_JOBS = 2048
 
-type ExistingRow = { id: number; path: string; size: number; mtime: number; dev: number; ino: number; source_path: string; state: number; is_dir: number; kind: string; in_fts: number }
+type ExistingRow = { id: number; path: string; size: number; mtime: number; ctime: number | null; dev: number; ino: number; source_path: string; state: number; is_dir: number; kind: string; in_fts: number }
 
 interface Existing {
   id: number
   size: number
   mtime: number
+  ctime: number | null
   dev: number
   ino: number
   state: number
@@ -178,9 +181,9 @@ export class Indexer {
     }
     const q = (sql: string) => db.prepare(sql)
     this.st = {
-      insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, created, dev, ino, source_path, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+      insertFile: q("INSERT INTO files(path, name, ext, kind, is_dir, size, mtime, ctime_ms, created, dev, ino, source_path, content_state, in_fts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
       updateFile: q(
-        "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, created = ?, dev = ?, ino = ?, source_path = ?, content_state = ? WHERE id = ?",
+        "UPDATE files SET ext = ?, kind = ?, is_dir = ?, size = ?, mtime = ?, ctime_ms = ?, created = ?, dev = ?, ino = ?, source_path = ?, content_state = ? WHERE id = ?",
       ),
       setState: q("UPDATE files SET content_state = ?, content_len = ?, note = ?, in_fts = 1, metadata = '' WHERE id = ?"),
       inFts: q("SELECT in_fts FROM files WHERE id = ?"),
@@ -350,9 +353,9 @@ export class Indexer {
     this.progress.phase = "scan"
     this.emit(true)
     const existing = new Map<string, Existing>()
-    const columns = "SELECT id, path, size, mtime, dev, ino, source_path, content_state AS state, is_dir, kind, in_fts FROM files"
+    const columns = "SELECT id, path, size, mtime, ctime_ms AS ctime, dev, ino, source_path, content_state AS state, is_dir, kind, in_fts FROM files"
     const known = (r: ExistingRow) => {
-      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
+      existing.set(r.path, { id: r.id, size: r.size, mtime: r.mtime, ctime: r.ctime, dev: r.dev, ino: r.ino, sourcePath: r.source_path, state: r.state, isDir: r.is_dir === 1, kind: r.kind, inFts: r.in_fts })
       return r.id
     }
     /** With targets, the files under them: the only ones the run may find gone. */
@@ -465,6 +468,12 @@ export class Indexer {
           const body = this.storedBody(old.entry.id)
           this.ftsDelete(old.entry.id, old.path, body)
           this.db.query("UPDATE files SET path = ?, name = ?, ext = ?, created = ?, source_path = ? WHERE id = ?").run(e.path, e.name, ext, e.created ?? 0, storedSource, old.entry.id)
+          // A rename changes ctime too. Keep the file ID, but reread its contents rather
+          // than attaching the new identity to text that could have changed before the move.
+          if (old.entry.ctime !== e.ctime) {
+            this.st.updateFile.run(ext, kind, 0, e.size, e.mtime, e.ctime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, ContentState.Pending, old.entry.id)
+            waiting.push({ id: old.entry.id, path: e.path, ext, kind, size: e.size, inFts: 1, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime, ctime: e.ctime })
+          }
           this.db.query("UPDATE OR IGNORE frecency SET path = ? WHERE path = ?").run(e.path, old.path)
           const f = this.ftsFields(e.path); this.st.ftsInsert.run(old.entry.id, f.name, f.dirs, body ?? "")
         })
@@ -473,13 +482,13 @@ export class Indexer {
       const prev = existing.get(e.path)
       if (prev) {
         visited.add(prev.id)
-        const same = prev.size === e.size && prev.mtime === e.mtime && prev.isDir === e.isDir && prev.sourcePath === storedSource && (!prev.ino || (prev.ino === e.ino && prev.dev === e.dev))
+        const same = prev.size === e.size && prev.mtime === e.mtime && prev.ctime === e.ctime && prev.isDir === e.isDir && prev.sourcePath === storedSource && (!prev.ino || (prev.ino === e.ino && prev.dev === e.dev))
         if (same && prev.kind === kind) {
           // Content policy may have changed since the last run.
           if (wants && (prev.state === ContentState.None || policyChanged || (TRANSCRIBE_EXTS.has(ext) && (speechChanged || (retrySpeech && prev.state === ContentState.Error))) || ocrTimedOut.has(prev.id)))
             batch.push(() => {
               this.st.setState.run(ContentState.Pending, 0, null, prev.id)
-              waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+              waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime, ctime: e.ctime })
               if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
             })
           else if (!wants && prev.state !== idle) batch.push(() => this.dropContent(prev.id, e.path, idle, idleNote))
@@ -488,10 +497,10 @@ export class Indexer {
         this.progress.updated++
         batch.push(() => {
           if (!wants && prev.state !== ContentState.None) this.dropContent(prev.id, e.path, idle, idleNote)
-          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, prev.id)
+          this.st.updateFile.run(ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.ctime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, prev.id)
           if (secret) this.st.setState.run(idle, 0, idleNote, prev.id)
           if (wants) {
-            waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+            waiting.push({ id: prev.id, path: e.path, ext, kind, size: e.size, inFts: prev.inFts, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime, ctime: e.ctime })
             if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
           }
         })
@@ -500,13 +509,13 @@ export class Indexer {
         batch.push(() => {
           // Files waiting for their contents get their FTS row once, in the content phase.
           // run() and lastInsertRowid cost about half as much as RETURNING id.
-          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, wants ? 0 : 1)
+          const { lastInsertRowid } = this.st.insertFile.run(e.path, e.name, ext, kind, e.isDir ? 1 : 0, e.size, e.mtime, e.ctime, e.created ?? 0, e.dev ?? 0, e.ino ?? 0, storedSource, wants ? ContentState.Pending : idle, wants ? 0 : 1)
           if (!wants) {
             const f = this.ftsFields(e.path)
             this.st.ftsInsert.run(Number(lastInsertRowid), f.name, f.dirs, "")
             if (secret) this.st.setState.run(idle, 0, idleNote, Number(lastInsertRowid))
           } else {
-            waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime })
+            waiting.push({ id: Number(lastInsertRowid), path: e.path, ext, kind, size: e.size, inFts: 0, dev: e.dev ?? 0, ino: e.ino ?? 0, mtime: e.mtime, ctime: e.ctime })
             if (TRANSCRIBE_EXTS.has(ext)) attemptedSpeech = true
           }
         })
@@ -604,14 +613,17 @@ export class Indexer {
   private extract(pool: ExtractPool, p: Pending): Promise<ExtractReply> {
     if (this.datasets.size && OCR_EXTS.has(p.ext) && p.kind === "image" && this.datasets.has(p.path.slice(0, Math.max(1, p.path.lastIndexOf("/")))))
       return Promise.resolve({ id: p.id, status: "skip", reason: DATASET_NOTE })
+    const changed = (): ExtractReply => ({ id: p.id, status: "error", error: "file changed during indexing" })
+    if (!fileIdentityCurrent(p.path, p)) return Promise.resolve(changed())
     return pool.run({ id: p.id, path: p.path, ext: p.ext, kind: p.kind, size: p.size, run: this.runId, ocr: this.cachedOcr(p) })
+      .then((reply) => fileIdentityCurrent(p.path, p) ? reply : changed())
   }
 
   /** What OCR read in this file before, when it is the same file still (see `ocr_cache`). */
   private cachedOcr(p: Pending): string | undefined {
     if (!this.ocrTool || !p.ino || !(OCR_EXTS.has(p.ext) || p.kind === "pdf" || IWORK_EXTS.has(p.ext))) return undefined
-    this.ocrGet ??= this.db.prepare("SELECT data FROM ocr_cache WHERE dev = ? AND ino = ? AND size = ? AND mtime = ? AND version = ?")
-    const row = this.ocrGet.get(p.dev, p.ino, p.size, p.mtime, OCR_CACHE_VERSION) as { data: Uint8Array } | null
+    this.ocrGet ??= this.db.prepare("SELECT data FROM ocr_cache WHERE dev = ? AND ino = ? AND size = ? AND mtime = ? AND ctime_ms = ? AND version = ?")
+    const row = this.ocrGet.get(p.dev, p.ino, p.size, p.mtime, p.ctime, OCR_CACHE_VERSION) as { data: Uint8Array } | null
     return row ? decompressText(row.data) : undefined
   }
 
@@ -681,7 +693,7 @@ export class Indexer {
     this.readDatasets()
     if (this.ocrTool && this.config.skipDatasetOcr) this.findDatasets()
     const all = this.db
-      .query("SELECT id, path, ext, kind, size, in_fts AS inFts, dev, ino, mtime FROM files WHERE content_state = ? ORDER BY mtime DESC")
+      .query("SELECT id, path, ext, kind, size, in_fts AS inFts, dev, ino, mtime, ctime_ms AS ctime FROM files WHERE content_state = ? ORDER BY mtime DESC")
       .all(ContentState.Pending) as Pending[]
     this.progress.phase = "content"
     this.progress.contentTotal = all.length
@@ -753,7 +765,7 @@ export class Indexer {
         // The terms stay here: copying them to the writer would cost it for nothing.
         const reply = r.status === "ok" ? { id: r.id, status: r.status, chars: r.chars, body: r.body, compressed: r.compressed, hash: r.hash, ocr: r.ocr, truncated: r.truncated, metadata: r.metadata } : r
         const p = pending[i]!
-        items.push({ reply, name: f.name, dirs: f.dirs, inFts: p.inFts, identity: { dev: p.dev, ino: p.ino, size: p.size, mtime: p.mtime } })
+        items.push({ reply, name: f.name, dirs: f.dirs, inFts: p.inFts, identity: { dev: p.dev, ino: p.ino, size: p.size, mtime: p.mtime, ctime: p.ctime } })
       }
       const takeLate = () => {
         for (const i of lateDone.splice(0).sort((a, b) => pending[a]!.id - pending[b]!.id)) take(i)

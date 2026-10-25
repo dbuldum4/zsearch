@@ -1,3 +1,4 @@
+import type { FileIdentity } from "./identity.ts"
 import type { Database, Statement } from "bun:sqlite"
 import { ftsBody } from "../util/text.ts"
 import { compressText, ContentState, decompressText, getMeta, OCR_CACHE_VERSION, openDb } from "./db.ts"
@@ -17,13 +18,6 @@ export interface ContentItem {
   inFts: number
   /** The file's identity, under which what OCR read in it is kept (see `ocr_cache`). */
   identity?: FileIdentity
-}
-
-export interface FileIdentity {
-  dev: number
-  ino: number
-  size: number
-  mtime: number
 }
 
 /**
@@ -60,7 +54,7 @@ export class ContentWriter {
       contentPut: q("INSERT INTO content_map(id, text, hash) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET text = excluded.text, hash = excluded.hash"),
       contentDel: q("DELETE FROM content_map WHERE id = ?"),
       ocrPut: q(
-        "INSERT INTO ocr_cache(dev, ino, size, mtime, version, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(dev, ino, size, mtime) DO UPDATE SET version = excluded.version, data = excluded.data",
+        "INSERT INTO ocr_cache(dev, ino, size, mtime, ctime_ms, version, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dev, ino, size, mtime, ctime_ms) DO UPDATE SET version = excluded.version, data = excluded.data",
       ),
       vocabPut: q("INSERT INTO vocab_chunks(terms) VALUES (?)"),
     }
@@ -98,7 +92,7 @@ export class ContentWriter {
       const same = this.st.textFind.get(r.hash) as { text: number } | null
       const text = same ? same.text : Number(this.st.textPut.run(r.compressed).lastInsertRowid)
       this.st.contentPut.run(r.id, text, r.hash)
-      if (r.ocr && identity?.ino) this.st.ocrPut.run(identity.dev, identity.ino, identity.size, identity.mtime, OCR_CACHE_VERSION, r.ocr)
+      if (r.ocr && identity?.ino) this.st.ocrPut.run(identity.dev, identity.ino, identity.size, identity.mtime, identity.ctime, OCR_CACHE_VERSION, r.ocr)
       this.st.setState.run(ContentState.Indexed, r.chars, r.truncated ? "truncated" : null, r.metadata ? JSON.stringify(r.metadata) : "", Date.now(), r.id)
     } else {
       this.st.ftsInsert.run(r.id, name, dirs, "")

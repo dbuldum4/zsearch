@@ -29,10 +29,10 @@ export const REMOVED_KEPT = 100_000
  * changes; rows whose file is no longer indexed go at the end of each run (see `pruneOcrCache`).
  */
 const OCR_CACHE_TABLE = `CREATE TABLE IF NOT EXISTS ocr_cache (
-  id INTEGER PRIMARY KEY, dev INTEGER NOT NULL, ino INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY, dev INTEGER NOT NULL, ino INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, ctime_ms REAL,
   version INTEGER NOT NULL, data BLOB NOT NULL
 )`
-const OCR_CACHE_KEY = "CREATE UNIQUE INDEX IF NOT EXISTS ocr_cache_key ON ocr_cache(dev, ino, size, mtime)"
+const OCR_CACHE_KEY = "CREATE UNIQUE INDEX IF NOT EXISTS ocr_cache_key ON ocr_cache(dev, ino, size, mtime, ctime_ms)"
 
 /**
  * Stored texts are kept once however many files hold them (copies are common in Downloads):
@@ -88,6 +88,33 @@ export function openDb(path: string, opts: OpenOptions = {}): Database {
 
 const JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
 
+/** Old read-only indexes have no change identity; related discovery must wait for reindexing. */
+export function hasFileIdentity(db: Database): boolean {
+  return db.query("SELECT 1 FROM pragma_table_info('files') WHERE name = 'ctime_ms'").get() !== null
+}
+
+function migrateIdentity(db: Database) {
+  // Writer and checkpointer connections open together. An already migrated index must
+  // not take a new write lock merely to check its schema.
+  if (hasFileIdentity(db)
+    && db.query("SELECT 1 FROM pragma_table_info('ocr_cache') WHERE name = 'ctime_ms'").get()
+    && db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'files_ctime_seq'").get()) return
+  db.transaction(() => {
+    if (!hasFileIdentity(db)) db.exec("ALTER TABLE files ADD COLUMN ctime_ms REAL")
+    if (!db.query("SELECT 1 FROM pragma_table_info('ocr_cache') WHERE name = 'ctime_ms'").get()) {
+      // Legacy OCR results cannot be proven current, even after a main-index rebuild.
+      db.exec("DELETE FROM ocr_cache")
+      db.exec("ALTER TABLE ocr_cache ADD COLUMN ctime_ms REAL")
+      db.exec("DROP INDEX IF EXISTS ocr_cache_key")
+    }
+    db.exec(OCR_CACHE_KEY)
+    db.exec(`CREATE TRIGGER IF NOT EXISTS files_ctime_seq AFTER UPDATE OF ctime_ms ON files WHEN NEW.ctime_ms IS NOT OLD.ctime_ms BEGIN
+      INSERT INTO meta(key, value) VALUES ('change_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;
+      UPDATE files SET seq = (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'change_seq') WHERE id = NEW.id;
+    END`)
+  }).immediate()
+}
+
 /** `files.read_at` came after version 11: indexes opened read-only may not have it yet. */
 export function hasReadAt(db: Database): boolean {
   return db.query("SELECT 1 FROM pragma_table_info('files') WHERE name = 'read_at'").get() !== null
@@ -100,7 +127,7 @@ function migrate(db: Database, opts: OpenOptions) {
     // Added after version 8 without a rebuild: older indexes get it here.
     db.exec(REMOVED_TABLE)
     db.exec(OCR_CACHE_TABLE)
-    db.exec(OCR_CACHE_KEY)
+    migrateIdentity(db)
     if (!hasReadAt(db)) {
       // Another process opening the same index may add it first.
       try { db.exec("ALTER TABLE files ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0") } catch (e) { if (!hasReadAt(db)) throw e }
@@ -120,6 +147,8 @@ function migrate(db: Database, opts: OpenOptions) {
       is_dir INTEGER NOT NULL DEFAULT 0,
       size INTEGER NOT NULL DEFAULT 0,
       mtime INTEGER NOT NULL DEFAULT 0,
+      -- Unrounded filesystem change time; NULL until contents are safely reindexed.
+      ctime_ms REAL,
       created INTEGER NOT NULL DEFAULT 0,
       dev INTEGER NOT NULL DEFAULT 0,
       ino INTEGER NOT NULL DEFAULT 0,
@@ -144,7 +173,7 @@ function migrate(db: Database, opts: OpenOptions) {
     }
     createContentTables(db)
     db.exec(OCR_CACHE_TABLE)
-    db.exec(OCR_CACHE_KEY)
+    migrateIdentity(db)
     const sqliteVersion = (db.query("SELECT sqlite_version() AS v").get() as { v: string }).v
     const contentlessDelete = !opts.manualFtsDelete && versionAtLeast(sqliteVersion, 3, 43)
     // detail=column keeps which columns hold a term but not its positions: about a third of the
@@ -259,7 +288,7 @@ export function pruneOcrCache(db: Database, ocr: boolean): void {
     return
   }
   db.query(
-    "DELETE FROM ocr_cache WHERE (dev, ino, size, mtime) NOT IN (SELECT dev, ino, size, mtime FROM files WHERE content_state = ?)",
+    "DELETE FROM ocr_cache WHERE (dev, ino, size, mtime, ctime_ms) NOT IN (SELECT dev, ino, size, mtime, ctime_ms FROM files WHERE content_state = ?)",
   ).run(ContentState.Indexed)
 }
 

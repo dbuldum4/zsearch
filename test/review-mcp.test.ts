@@ -79,7 +79,8 @@ test("mcp: diagnostics follow current exclusions, and every advertised page can 
   const c = await client()
   try {
     expect((await c.call("set_config", { key: "skipDatasetOcr", value: "false" })).isError).toBe(true)
-    expect((await c.call("update_index", { wait_seconds: 60 })).data.status).toBe("done")
+    const update = await c.call("update_index", { wait_seconds: 60 })
+    expect(update.data.status, JSON.stringify(update)).toBe("done")
 
     const before = (await c.call("index_status", { errors: true })).data.unreadableFiles.map((f: Msg) => f.path)
     expect(before).toContain(join(home, "secret/confidential-merger.docx"))
