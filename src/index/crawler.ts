@@ -33,6 +33,7 @@ interface CrawlEntry {
   isDir: boolean
   size: number
   mtime: number
+  ctime: number
   created?: number
   dev?: number
   ino?: number
@@ -161,7 +162,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
     }
     const namesOnly = dirNamesOnly || (isLink ? !pathPolicy(path, opts).content : prefixed(path, namesOnlyPrefixes))
     if (isDir) {
-      const entry = { path, name, isDir: true, size: 0, mtime: Math.floor(st.mtimeMs), created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly }
+      const entry = { path, name, isDir: true, size: 0, mtime: Math.floor(st.mtimeMs), ctime: st.ctimeMs, created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly }
       if (opaque && PACKAGE_EXTS.has(extOf(name))) return { entry }
       if (opts.oneFileSystem && st.dev !== rootDev) return { entry }
       if (depth >= 64) return { entry }
@@ -178,7 +179,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
     }
     stats.files++
     const offline = st.size > 4096 && st.blocks === 0
-    return { entry: { path, name, isDir: false, size: st.size, mtime: Math.floor(st.mtimeMs), created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly, offline } }
+    return { entry: { path, name, isDir: false, size: st.size, mtime: Math.floor(st.mtimeMs), ctime: st.ctimeMs, created: Math.floor(st.birthtimeMs), dev: st.dev, ino: st.ino, namesOnly, offline } }
   }
 
   /** Folders yielded on the way to a target: several targets often share them. */
@@ -204,7 +205,7 @@ export function* crawl(opts: CrawlOptions, stats: CrawlStats = { dirs: 0, files:
       const name = root.split("/").pop() || root
       stats.files++
       const policy = pathPolicy(root, opts)
-      if (policy.allowed) yield { path: root, name, isDir: false, size: rootStat.size, mtime: Math.floor(rootStat.mtimeMs), created: Math.floor(rootStat.birthtimeMs), dev: rootStat.dev, ino: rootStat.ino, namesOnly: !policy.content }
+      if (policy.allowed) yield { path: root, name, isDir: false, size: rootStat.size, mtime: Math.floor(rootStat.mtimeMs), ctime: rootStat.ctimeMs, created: Math.floor(rootStat.birthtimeMs), dev: rootStat.dev, ino: rootStat.ino, namesOnly: !policy.content }
       continue
     }
     const rootDev = rootStat.dev

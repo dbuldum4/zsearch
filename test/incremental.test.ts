@@ -122,7 +122,7 @@ test("a new folder is walked whole, even when events name only part of it", asyn
   expect(ftsHits("jackal")).toBe(1)
 })
 
-test("a rename within the roots keeps the extracted text", async () => {
+test("a rename within the roots keeps file IDs and refreshes changed identities", async () => {
   write("a/new.txt", "a brand new note about hedgehog\n")
   await run()
   const file = row("a/new.txt")!.id
@@ -131,7 +131,7 @@ test("a rename within the roots keeps the extracted text", async () => {
   renameSync(at("a/folder"), at("a/renamed"))
   const r = await run([at("a/new.txt"), at("b/moved.txt"), at("a/folder"), at("a/renamed")])
   expect(r.phase).toBe("done")
-  expect(r.contentTotal).toBe(0)
+  expect(r.contentTotal).toBe(1) // the file rename changes ctime; moving its parent does not
   expect(row("b/moved.txt")?.id).toBe(file)
   expect(row("a/renamed/kept.txt")?.id).toBe(kept)
   expect(row("a/new.txt")).toBeNull()

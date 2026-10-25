@@ -503,6 +503,12 @@ export class VectorIndex {
     }
   }
 
+  /** A stored passage vector, for local document-to-document comparison without a model. */
+  passageVector(row: number): Float32Array {
+    const base = this.vector[row]! * this.dim
+    return this.values.slice(base, base + this.dim)
+  }
+
   /** Cosine similarity of `query` (L2-normalized) with every passage. */
   score(query: Float32Array): Float32Array {
     const dim = this.dim

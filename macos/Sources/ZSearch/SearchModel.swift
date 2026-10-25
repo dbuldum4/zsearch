@@ -21,11 +21,11 @@ final class IndexActivity {
 final class SearchModel {
     var query = "" {
         // Semantic search runs the model on the query: wait for a pause in typing.
-        didSet { if query != oldValue { scheduleSearch(delay: mode == .semantic ? 0.1 : 0.016) } }
+        didSet { if query != oldValue { leaveRelated(restore: false); scheduleSearch(delay: mode == .semantic ? 0.1 : 0.016) } }
     }
     /// Semantic, which the app is built around, unless switched for this session.
     var mode: Mode = .semantic {
-        didSet { if mode != oldValue { scheduleSearch(delay: 0) } }
+        didSet { if mode != oldValue { leaveRelated(restore: false); scheduleSearch(delay: 0) } }
     }
     var selection: SearchHit.ID? {
         didSet {
@@ -131,6 +131,12 @@ final class SearchModel {
     /// Opens the main window; set by a view that has the `openWindow` action.
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
+    private(set) var related = RelatedNavigation()
+    private(set) var relatedError: String?
+    @ObservationIgnored private var relatedTask: Task<Void, Never>?
+    private var previewQuery: String { related.source == nil ? query : "" }
+    private var previewMode: Mode { related.source == nil ? mode : .find }
+
     var hits: [SearchHit] { response?.hits ?? [] }
     /// Why the query as it is now found nothing, when the engine has said.
     var currentDiagnosis: SearchDiagnosis? { NoResultsHelp.current(diagnosis, sentQuery: query, mode: mode) }
@@ -219,6 +225,7 @@ final class SearchModel {
     }
 
     func stop() {
+        leaveRelated(restore: true)
         indexAfterCurrentRun = false
         indexCancellationGeneration += 1
         engineRestartTask?.cancel()
@@ -327,7 +334,79 @@ final class SearchModel {
 
     // MARK: - Searching
 
+    func findRelated(_ hit: SearchHit) {
+        guard !hit.isDir else { return }
+        searchTask?.cancel()
+        explainTask?.cancel()
+        refreshTask?.cancel()
+        refreshTask = nil
+        diagnosis = nil
+        relatedError = nil
+        related.begin(hit, response: response, selection: picks)
+        response = nil
+        pick(ResultSelection())
+        clearPreviewCache()
+        loadPreview()
+        loadRelated()
+    }
+
+    func backFromRelated() {
+        leaveRelated(restore: true)
+        // A rebuild while exploring may have reassigned file IDs. Keep the saved paths and
+        // picks visible, then carry them onto a fresh response before showing any new previews.
+        scheduleSearch(delay: 0)
+    }
+
+    private func leaveRelated(restore: Bool) {
+        guard related.source != nil else { return }
+        relatedTask?.cancel()
+        relatedTask = nil
+        relatedError = nil
+        let token = related.revision
+        let origin = related.leave()
+        if let engine { Task { _ = try? await engine.request(.cancelRelated(token: token)) } }
+        preview = nil
+        clearPreviewCache()
+        if restore, let origin {
+            response = origin.response
+            pick(origin.selection)
+        } else {
+            response = nil
+            pick(ResultSelection())
+        }
+        loadPreview()
+    }
+
+    private func loadRelated() {
+        guard let source = related.source, let engine else { return }
+        relatedTask?.cancel()
+        relatedError = nil
+        let ticket = related.begin(source, response: response, selection: picks)
+        relatedTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            do {
+                let reply = try await engine.request(.related(file: source.path, limit: 100, token: ticket))
+                guard !Task.isCancelled, let self, self.related.finish(ticket) else { return }
+                guard case let .related(result) = reply else {
+                    self.relatedError = "Related-file discovery was interrupted; try again"
+                    return
+                }
+                let oldPaths = Dictionary(self.hits.map { ($0.id, $0.path) }, uniquingKeysWith: { first, _ in first })
+                self.response = result
+                let previous = self.selection
+                var next = self.picks
+                next.carry(over: oldPaths, to: result.hits.map { (id: $0.id, key: $0.path) })
+                self.pick(next)
+                if previous == self.selection { self.loadPreview() }
+            } catch {
+                guard !Task.isCancelled, let self, self.related.finish(ticket) else { return }
+                self.relatedError = error.localizedDescription
+            }
+        }
+    }
+
     func scheduleSearch(delay: Double = 0.016) {
+        if related.source != nil { loadRelated(); return }
         searchTask?.cancel()
         explainTask?.cancel()
         // Previews of the results around the selection can wait until the typing stops.
@@ -348,17 +427,20 @@ final class SearchModel {
         let delay: UInt64 = indexing ? 1_500_000_000 : 300_000_000
         refreshTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
             self?.refreshTask = nil
             await self?.runSearch()
         }
     }
 
     private func runSearch() async {
+        if related.source != nil { loadRelated(); return }
         guard let engine else { return }
+        let ticket = related.revision
         let (query, mode) = (self.query, self.mode)
         do {
             guard case let .results(r) = try await engine.request(.search(query: query, mode: mode, groupDuplicates: UserDefaults.standard.object(forKey: AppSettings.groupDuplicates) as? Bool ?? true)) else { return }
-            guard query == self.query, mode == self.mode else { return }
+            guard !Task.isCancelled, related.source == nil, ticket == related.revision, query == self.query, mode == self.mode else { return }
             // The explanation was for the index as it was: a refresh asks again after the delay.
             diagnosis = nil
             defer { scheduleExplain() }
@@ -385,7 +467,7 @@ final class SearchModel {
         explainTask?.cancel()
         explainTask = nil
         let (sent, mode) = (query, self.mode)
-        guard NoResultsHelp.shouldExplain(response, sentQuery: sent, mode: mode), let engine else { return }
+        guard related.source == nil, NoResultsHelp.shouldExplain(response, sentQuery: sent, mode: mode), let engine else { return }
         explainTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(NoResultsHelp.explainDelay * 1_000_000_000))
             guard !Task.isCancelled else { return }
@@ -406,7 +488,7 @@ final class SearchModel {
             preview = nil
             return
         }
-        let key = PreviewKey(hit, query: query, mode: mode)
+        let key = PreviewKey(hit, query: previewQuery, mode: previewMode)
         guard key != previewKey else { return }
         previewTask?.cancel()
         previewTask = nil
@@ -420,13 +502,13 @@ final class SearchModel {
             return
         }
         // The previous preview stays on screen until this one arrives, so switching files never flashes blank.
-        let request = Request.preview(file: hit.id, query: query, mode: mode, focusLine: focus)
+        let request = Request.preview(file: hit.id, query: previewQuery, mode: previewMode, focusLine: focus)
         let epoch = previewEpoch
         previewTask = Task { [weak self] in
             let reply = try? await engine.request(request)
             guard !Task.isCancelled, let self, self.previewKey == key, self.previewEpoch == epoch else { return }
             self.previewTask = nil
-            guard case let .preview(p)? = reply else { return }
+            guard case let .preview(p)? = reply, p.id == key.file, p.path == key.path else { return }
             if cacheable { self.remember(p, for: key) }
             self.display(p, for: key)
             self.prefetchAround()
@@ -455,7 +537,7 @@ final class SearchModel {
     /// previews nobody looks at, ahead of the searches in the engine's queue.
     private func prefetchAround() {
         guard let engine, let index = hits.firstIndex(where: { $0.id == selection }) else { return }
-        let (query, mode) = (self.query, self.mode)
+        let (query, mode) = (previewQuery, previewMode)
         let keys = hits[max(0, index - 2)..<min(hits.count, index + 4)]
             .map { PreviewKey($0, query: query, mode: mode) }
             .filter { previewCache[$0] == nil }
@@ -469,11 +551,11 @@ final class SearchModel {
             // find the match itself (a typo-tolerant one, say) and would show the top of the file.
             let request = Request.previews(files: keys.map(\.file), query: query, mode: mode, focusLines: keys.map(\.focus))
             guard case let .previews(list)? = try? await engine.request(request), !Task.isCancelled else { return }
-            guard let self, query == self.query, mode == self.mode, self.previewEpoch == epoch else { return }
+            guard let self, query == self.previewQuery, mode == self.previewMode, self.previewEpoch == epoch else { return }
             let byFile = Dictionary(keys.map { ($0.file, $0) }, uniquingKeysWith: { first, _ in first })
             var fetched: [FilePreview] = []
             for p in list {
-                guard let key = byFile[p.id] else { continue }
+                guard let key = byFile[p.id], p.path == key.path else { continue }
                 self.remember(p, for: key)
                 fetched.append(p)
             }
@@ -597,6 +679,7 @@ final class SearchModel {
 
     /// A result was opened: keep the search it came from in the history.
     private func rememberSearch() {
+        guard related.source == nil else { return }
         guard config?.searchHistory ?? true else { return }
         guard SavedSearches.shouldRemember(query: query, mode: mode, recent: searches.recent) else { return }
         changeSearches(.rememberSearch(query: query, mode: mode), quietly: true)

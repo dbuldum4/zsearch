@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
-import { copyFileSync, mkdirSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Config } from "../src/config.ts"
 import { clearIndex, ContentState, decompressText, indexStats, loadVocabTerms, openDb, readContent, compressText, setMeta } from "../src/index/db.ts"
@@ -138,7 +138,7 @@ describe("indexer", () => {
     renameSync(join(corpus.home, "notes", "recipes", "pancakes.txt"), join(corpus.home, "notes", "recipes", "crepes.txt"))
     const r = await index(db)
     expect(r.updated).toBe(4) // todo.md, the rename and the two folders whose listing changed
-    expect(r.contentTotal).toBe(2) // the renamed file keeps its extracted content
+    expect(r.contentTotal).toBe(3) // rename changes ctime: reread before trusting the new identity
     expect(r.added).toBe(1) // new-idea
     expect(r.removed).toBe(1) // journal
     expect((db.query("SELECT id FROM files WHERE path = ?").get(join(corpus.home, "notes", "recipes", "crepes.txt")) as { id: number }).id).toBe(oldId)
@@ -151,6 +151,22 @@ describe("indexer", () => {
     expect(paths(db)).not.toContain("notes/recipes/pancakes.txt")
     expect((db.query("SELECT count(*) AS n FROM content WHERE id NOT IN (SELECT id FROM files)").get() as { n: number }).n).toBe(0)
     expect(() => db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 0)")).not.toThrow()
+  })
+
+  test("a renamed same-size edit with restored mtime rereads content while keeping its ID", async () => {
+    await index(db)
+    const old = join(corpus.home, "notes", "recipes", "pancakes.txt")
+    const dest = join(corpus.home, "notes", "recipes", "crepes.txt")
+    const row = db.query("SELECT id FROM files WHERE path = ?").get(old) as { id: number }
+    const before = statSync(old)
+    await Bun.sleep(5)
+    writeFileSync(old, "z".repeat(before.size))
+    utimesSync(old, before.atime, before.mtime)
+    renameSync(old, dest)
+    await index(db)
+    expect(db.query("SELECT id FROM files WHERE path = ?").get(dest)).toEqual(row)
+    expect(readContent(db, row.id)).toBe("z".repeat(before.size))
+    expect(ftsCount(db, "flour")).toBe(0)
   })
 
   test("unreadable documents are recorded as errors, not fatal", async () => {
@@ -324,7 +340,8 @@ describe("threaded indexing (extraction workers, writer thread, extraction durin
     const both = async () => {
       expect((await index(inline)).phase).toBe("done")
       // Removed files are deleted right after the writer thread closes, on the indexer's own connection.
-      expect((await new Indexer(threaded, homeConfig(), { inProcess: false }).run()).phase).toBe("done")
+      const result = await new Indexer(threaded, homeConfig(), { inProcess: false }).run()
+      expect(result.phase, JSON.stringify(result)).toBe("done")
       expect(dump(threaded)).toEqual(dump(inline))
     }
     const later = new Date(Date.now() + 10_000)

@@ -2,7 +2,7 @@
  * `zsearch mcp`: the search engine as a Model Context Protocol server on stdio, so AI
  * assistants (Claude Desktop, Claude Code and other MCP clients) can search the user's files.
  *
- * Tools: search, read_file, index_status, update_index, cancel_index, get_config, set_config.
+ * Tools: search, related_files, read_file, index_status, update_index, cancel_index, get_config, set_config.
  * Resources: the index status, the settings, the query syntax, and each indexed file's text
  * (file:// URIs). Prompts: find_files, summarize_file.
  */
@@ -22,7 +22,7 @@ import { KIND_ALIASES, type Kind } from "../kinds.ts"
 import { pdftotextPath } from "../platform.ts"
 import { SearchClient } from "../search/client.ts"
 import { explainDiagnosis } from "../search/diagnose.ts"
-import type { SearchHit, SearchResponse } from "../search/engine.ts"
+import type { RelatedResponse, SearchHit, SearchResponse } from "../search/engine.ts"
 import type { Mode } from "../search/query.ts"
 import type { ReadOptions, ReadResult } from "../search/read.ts"
 import { formatBytes, formatCount, formatDate, formatDuration } from "../util/text.ts"
@@ -46,6 +46,7 @@ const INSTRUCTIONS = `zsearch searches the user's indexed files on this computer
 
 - \`search\` finds the exact text you give in file names and contents by default (case-insensitive unless the query has a capital letter); set \`regex\` for a regular expression, or mode "fuzzy" for a file name you only half remember. Narrow results with \`type\` (doc, pdf, sheet, slides, code, image, folder…), \`ext\`, \`folder\`, \`modified\` and \`size\`. An empty query lists recently opened and modified files.
 - \`read_file\` reads the text zsearch extracted, so it works for PDFs and Office files too. Give the same \`query\` to jump to the matches, or \`matches_only\` to see just the matching lines.
+- \`related_files\` discovers other indexed files from an indexed source using current local passage vectors, within the same content permissions. It does not download or run a model.
 - When a file the user expects is not found by its contents, \`index_status\` with \`errors\` (or \`errors_category\`) says which files could not be read and why.
 - Everything stays on this computer.`
 
@@ -155,6 +156,16 @@ class Host {
   search(query: string, mode: Mode, limit: number, explain = true): Promise<SearchResponse> {
     this.reloadConfig()
     return this.exclusive(() => this.client.search(query, mode, limit, explain))
+  }
+
+  async related(path: string, limit: number, signal: AbortSignal): Promise<RelatedResponse> {
+    this.reloadConfig()
+    return this.exclusive(async () => {
+      if (signal.aborted) throw new ToolError("Related-file discovery cancelled")
+      const response = await this.client.related(resolvePath(path.trim()), limit, signal)
+      if (!response) throw new ToolError("Related-file discovery cancelled or interrupted")
+      return response
+    })
   }
 
   private pools = new Map<string, { res: SearchResponse; at: number }>()
@@ -723,6 +734,19 @@ Each result gives the file's absolute path, kind, size, modification time and it
     },
   }
 
+  const related: Tool = {
+    name: "related_files",
+    title: "Find related files",
+    description: "Find other indexed files related to an indexed file's contents, across folders. Uses only complete current local passage vectors and existing content permissions. Never downloads or runs a model. Pending, excluded, names-only and semantic-disabled files are omitted; results are semantic suggestions, not verified links. Update the index locally if vectors are missing.",
+    inputSchema: obj({ path: str("Absolute or ~/ path of an indexed source file"), limit: int("Maximum related files", 1, 200, 20) }, ["path"]),
+    outputSchema: loose({ status: str("ready, missing, unavailable, pending or cancelled"), hits: { type: "array", items: { type: "object" } }, total: int("Related files found", 0, Number.MAX_SAFE_INTEGER), notice: str("Availability or omitted-file details") }, ["status", "hits", "total"]),
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    async run(args, ctx) {
+      const response = await host.related(String(args.path), args.limit as number, ctx.signal)
+      return { text: [response.source ? `Related to ${response.source.display}` : "Related files", response.notice, ...response.hits.map((h) => `${h.path}\n${h.lines.map((l) => `  ${l.line}: ${l.text}`).join("\n")}`), response.status === "ready" && !response.hits.length ? "No related files found" : undefined].filter(Boolean).join("\n"), structured: { ...response } }
+    },
+  }
+
   const readFile: Tool = {
     name: "read_file",
     title: "Read a file's text",
@@ -1002,7 +1026,7 @@ Give query (the same text or regex as in search) to mark the matching lines and 
       return { text: `Excluded ${args.path}. Index refresh: ${indexing.status}.`, structured: { exclude: next.exclude, indexing } }
     },
   }
-  return [search, readFile, status, update, cancel, getConfig, setConfig, exclude]
+  return [search, related, readFile, status, update, cancel, getConfig, setConfig, exclude]
 }
 
 /* ------------------------------------------------------------- resources -- */

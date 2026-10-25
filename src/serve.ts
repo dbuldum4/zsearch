@@ -4,7 +4,8 @@
  * Requests arrive on stdin and replies and events leave on stdout, one JSON object per line.
  * A request may carry a numeric `id`; its reply carries the same `id`. Search and preview
  * requests supersede older ones of the same type, which then reply `cancelled`; a search also
- * supersedes an `explain` request.
+ * supersedes an `explain` request. Search and related requests also supersede older related
+ * discovery; `cancelRelated` optionally targets its navigation `token`.
  * The server exits when stdin closes.
  */
 import type { Database } from "bun:sqlite"
@@ -20,13 +21,15 @@ import { type Explanation, isProblemCategory, listProblems, type ProblemList, ex
 import { RootWatcher } from "./index/watch.ts"
 import { SearchClient } from "./search/client.ts"
 import type { SearchDiagnosis } from "./search/diagnose.ts"
-import type { Preview, SearchResponse } from "./search/engine.ts"
+import type { Preview, RelatedResponse, SearchResponse } from "./search/engine.ts"
 import { MODES, type Mode } from "./search/query.ts"
 import { clearRecent, deleteSearch, loadSearches, rememberSearch, renameSearch, saveSearch, type Searches } from "./searches.ts"
 import { removeSemantic, type SemanticStatus, semanticStatus } from "./semantic/manage.ts"
 import { downloadModels } from "./semantic/model.ts"
 
 type ServeIn =
+  | { id?: number; type: "related"; file: number | string; limit?: number; token?: number }
+  | { id?: number; type: "cancelRelated"; token?: number }
   | { id?: number; type: "search"; query: string; mode?: Mode; limit?: number; explain?: boolean; groupDuplicates?: boolean }
   | { id?: number; type: "explain"; query: string; mode?: Mode; limit?: number }
   | { id?: number; type: "preview"; file: number; query: string; mode?: Mode; focusLine?: number }
@@ -54,6 +57,7 @@ type ServeIn =
   | { id?: number; type: "clearRecent" }
 
 type ServeOut =
+  | { id?: number; type: "related"; response: RelatedResponse }
   | { type: "ready"; version: string; files: number; firstRun: boolean; config: Config }
   | { id?: number; type: "results"; response: SearchResponse }
   | { id?: number; type: "diagnosis"; query: string; mode: Mode; diagnosis?: SearchDiagnosis }
@@ -239,6 +243,7 @@ export async function serve(version: string): Promise<number> {
     })
   }
 
+  let relatedToken: number | undefined
   const handle = async (msg: ServeIn) => {
     const id = typeof msg.id === "number" ? msg.id : undefined
     const stamp = configStamp()
@@ -250,6 +255,16 @@ export async function serve(version: string): Promise<number> {
       }
     }
     switch (msg.type) {
+      case "related": {
+        if ((typeof msg.file !== "number" || !Number.isSafeInteger(msg.file)) && (typeof msg.file !== "string" || !msg.file.trim())) return send({ id, type: "error", error: "related needs an indexed file ID or absolute path" })
+        if (msg.limit !== undefined && (!Number.isInteger(msg.limit) || msg.limit < 1 || msg.limit > 200)) return send({ id, type: "error", error: "related limit must be 1–200" })
+        relatedToken = msg.token
+        const response = await client.related(msg.file, msg.limit)
+        return send(response ? { id, type: "related", response } : { id, type: "cancelled" })
+      }
+      case "cancelRelated":
+        if (msg.token === undefined || msg.token === relatedToken) client.cancelRelated()
+        return send({ id, type: "ok" })
       case "search": {
         // Searches come per keystroke: an empty result is explained on request (`explain`), once
         // the query has stayed the same for a moment, so the reply never waits for it.
