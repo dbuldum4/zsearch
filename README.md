@@ -105,6 +105,23 @@ Every passage is scored against the query on its model's scale. A file can be fo
 
 Granite's vectors are used for every file whose text is unchanged since it was embedded. Files that are new, edited or not fully embedded yet (during indexing, after an edit, or following cancellation) are ranked by their words in the same results until Granite catches up, and the status line says how many are pending (`semantic + words · 9,812 of 9,830 files current; 18 pending, 3 found by words`). A file that is deleted, excluded, made names-only, or no longer embedded under the settings (code with `semantic.code` off, recordings with transcription off) is never found by its old vectors. With `semantic.code` off, code and data files stay out of the semantic tab altogether, word matches included, unless the query asks for them (`type:code`); Find still finds them. Only when no vectors can be used at all (another model or helper made them, the index was rebuilt, or none are current) does the whole tab fall back to word matches. Interrupted indexing resumes from stored passages and reuses existing vectors. Lean proofs (`.lean`) and directories remain available in find and fuzzy, but are excluded from the semantic tab.
 
+### Related files
+
+In the Mac app, right-click any file result and choose **Find Related Files**. The source stays in the heading; results retain passage previews, Open, Quick Look, Show in Finder and Copy Path. Follow another result to explore further, then use **Back to Search** (or Escape) to restore the original search and selection. Typing a query leaves related files and starts a search.
+
+```sh
+zsearch related ~/Documents/proposal.pdf
+zsearch related ./proposal.pdf -n 10 --json
+```
+
+The MCP tool is `related_files` with `path` and optional `limit` (default 20, maximum 200). All three entry points share the same engine operation and current roots, exclusions, names-only, transcription and semantic-code policies. MCP cannot change those content permissions.
+
+Discovery compares existing local **text passage vectors** across folders. It makes no cloud requests, downloads no models and does not run the embedding helper. Enable semantic search and update the index first; an unavailable or pending source reports why instead of falling back to a filename or word search. Other files without complete current vectors are omitted. Images without indexed text, folders and files excluded from semantic indexing cannot participate. Similarity suggests shared subject matter; it does not establish a supporting-document or contractual relationship, and identical copies can appear.
+
+Ranking samples at most eight distinct, evenly spaced source passages. For each source passage it takes each candidate's best cosine similarity (at least 0.75), subtracts `0.025 × log(candidate passage count)` and `0.06 × log(shared passage count)` (the larger sharing count of source and candidate), then combines the best vote plus one quarter of the second-best vote. Votes at or below zero are dropped. This bounds the influence of source length, candidate length and repeated boilerplate; it can miss a minor topic in a long source. Scores are affinities, not probabilities. Only permitted current passages count toward sharing. Comparison uses one stored model/helper/chunker snapshot and requires the current model/chunker fingerprint, main-index generation, complete passage state and content signature. File identity, size and modification time are checked before ranking and again before returning; edits that preserve both can require an explicit reindex. Up to eight scans of the local vector index are needed, so large collections may take longer.
+
+CLI JSON and serve replies include `status` (`ready`, `missing`, `unavailable`, `pending`, `cancelled`), optional `source` and `notice`, and the normal search result fields. CLI exits 0 for a completed discovery (including no matches), 1 for an unavailable source/index, 2 for invalid arguments, and 130 for cancellation. The serve request is `{"type":"related","file":"/absolute/indexed/path","limit":20,"token":1}` (`file` can also be an indexed numeric ID); its reply is `{"type":"related","response":…}`. New searches and related requests supersede earlier discovery. `{"type":"cancelRelated","token":1}` cancels that navigation generation; omitting `token` cancels any discovery. Superseded/cancelled serve requests reply `cancelled`. Clients should use paths when retaining a source across index rebuilds and ignore replies for old navigation generations.
+
 `scripts/semantic-eval.ts` evaluates words-only and complete Granite with the installed model, package-document distractors, optional handbook PDFs and separate validation queries. Run `bun scripts/semantic-eval.ts --stage=all --pdf-dir=~/Downloads --json=results.json`; add `--holdout` for validation queries or `--audit` for audit queries. See [ranking choices and measured results](docs/semantic-ranking.md), and [results on public benchmarks](docs/public-benchmarks.md) (BEIR, LongEmbed, EnronQA; `scripts/bench-data.ts` fetches them, `scripts/semantic-bench.ts` runs them).
 
 Reading files for meaning is the slow part, so zsearch does much less of it than DigUp does for the same results:
@@ -366,6 +383,7 @@ Other MCP clients (Cursor, VS Code, Zed, …) take the same command: `zsearch mc
 | Tool | What it does |
 | --- | --- |
 | `search` | Find files by name and contents, with everything the query syntax offers: exact text, `regex`, `fuzzy` mode, and filters as arguments (`type`, `exclude_type`, `ext`, `folder`, `path`, `modified`, `after`, `before`, `size`) or in the query (`type:pdf mtime:<30d`). Returns paths, kinds, sizes, dates and the matching lines with line and page numbers; `offset` pages through long result lists |
+| `related_files` | Find indexed files related to an indexed source, using current local passage vectors (`path`, `limit`) |
 | `read_file` | Read an indexed file's text with line numbers: the extracted text of PDFs and Office files (with page, slide and sheet markers), or the file itself for code and text. `query` marks the matches and starts at the first one; `matches_only` returns just the matching lines with context |
 | `index_status` | What is indexed, when it was last updated, indexing progress, counts of indexing problems by category, and (with `errors`) the files that could not be read, with the reason in plain words and the reader's error (`errors_category` lists another category, such as `too-large` or `secret`) |
 | `update_index` | Update the locally configured roots in the background, or rebuild the index; `wait_seconds` waits for it with progress notifications |
@@ -379,6 +397,7 @@ Resources: `zsearch://status`, `zsearch://config`, `zsearch://query-syntax`, and
 
 ```text
 zsearch [query]                 open the interactive search
+zsearch related <file>          related indexed files (-n 1..200, --json)
 zsearch search <query>          print matches and exit (-m find|fuzzy|semantic, -e regex, -n limit, -l paths only, -0, --csv, --sort, --json, --group-duplicates)
 zsearch index [folders...]      build or update the index (--docs, --home, --disk, --hidden, --rebuild, -q)
 zsearch status [--errors]       what is indexed (--json); --errors[=<category>] lists indexing problems and why

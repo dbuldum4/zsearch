@@ -24,7 +24,7 @@ struct ContentView: View {
                 SetupProgressView()
             } else {
                 SearchBar(focused: $searchFocused)
-                FilterBar()
+                if model.related.source == nil { FilterBar() } else { RelatedFilesBar() }
                 Divider()
                 if let failure = model.engineFailure {
                     EngineFailureView(message: failure)
@@ -62,6 +62,27 @@ struct ContentView: View {
     }
 }
 
+private struct RelatedFilesBar: View {
+    @Environment(SearchModel.self) private var model
+
+    var body: some View {
+        if let source = model.related.source {
+            HStack(spacing: 10) {
+                Button("Back to Search", systemImage: "chevron.left") { model.backFromRelated() }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Related to \(source.name)").font(.headline).lineLimit(1)
+                    Text(source.display).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                if model.related.loading { ProgressView().controlSize(.small) }
+                Button("Refresh", systemImage: "arrow.clockwise") { model.scheduleSearch(delay: 0) }
+                    .labelStyle(.iconOnly)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+        }
+    }
+}
+
 struct SearchBar: View {
     @Environment(SearchModel.self) private var model
     @Environment(\.dismissPanel) private var dismissPanel
@@ -86,6 +107,7 @@ struct SearchBar: View {
                     return .handled
                 }
                 .onKeyPress(.escape) {
+                    if model.related.source != nil { model.backFromRelated(); return .handled }
                     if model.collapseSelection() { return .handled }
                     if model.query.isEmpty {
                         // In the panel, a second Esc puts it away.
@@ -126,11 +148,11 @@ struct ResultsList: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-            HStack {
+            if model.related.source == nil { HStack {
                 ForEach(["name", "size", "date", "path"], id: \.self) { key in
                     Button(key.capitalized) { model.sortResults(key) }.buttonStyle(.plain)
                 }
-            }.font(.caption).padding(.horizontal)
+            }.font(.caption).padding(.horizontal) }
             List(model.hits, selection: Binding(get: { model.picks.ids }, set: { model.listPicked($0) })) { hit in
                 ResultRow(hit: hit).equatable()
                     // Drag results into Mail, Slack, Finder or any app that takes files. On the row
@@ -157,6 +179,9 @@ struct ResultsList: View {
                             Playback.shared.play(hit.path, from: start)
                         }
                     }
+                    if !hit.isDir {
+                        Button("Find Related Files") { model.findRelated(hit) }
+                    }
                     Button("Show in Finder") { model.reveal(hit) }
                     Button("Copy Path") { model.copyPath(hit) }
                     Button("Exclude from Index") { model.exclude(hit) }
@@ -175,7 +200,10 @@ struct ResultsList: View {
                 model.toggleQuickLook()
                 return .handled
             }
-            .onKeyPress(.escape) { model.collapseSelection() ? .handled : .ignored }
+            .onKeyPress(.escape) {
+                if model.related.source != nil { model.backFromRelated(); return .handled }
+                return model.collapseSelection() ? .handled : .ignored
+            }
             .overlay { NoResultsNote() }
             SelectionBar()
             }
@@ -201,7 +229,11 @@ private struct NoResultsNote: View {
 
     var body: some View {
         // A query the engine could not run (`re:[`, say) comes back with its reason and no hits.
-        if model.hits.isEmpty, let error = model.response?.error, !error.isEmpty {
+        if model.hits.isEmpty, model.related.source != nil {
+            if model.related.loading { ProgressView("Finding related files…") }
+            else { Text(model.relatedError ?? model.response?.notice ?? "No related files found with current passage vectors")
+                .foregroundStyle(.secondary).multilineTextAlignment(.center).padding() }
+        } else if model.hits.isEmpty, let error = model.response?.error, !error.isEmpty {
             Text(error)
                 .foregroundStyle(.orange)
                 .multilineTextAlignment(.center)

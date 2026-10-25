@@ -1,7 +1,7 @@
 import type { Config } from "../config.ts"
 import type { IndexStats } from "../index/db.ts"
 import type { SearchDiagnosis } from "./diagnose.ts"
-import type { Preview, SearchResponse, SemanticCoverage } from "./engine.ts"
+import type { Preview, RelatedResponse, SearchResponse, SemanticCoverage } from "./engine.ts"
 import type { Mode } from "./query.ts"
 import type { ReadOptions, ReadResult } from "./read.ts"
 
@@ -11,6 +11,8 @@ export type StatsWithSemantic = IndexStats & { semantic: Omit<SemanticCoverage, 
 export type SearchIn =
   | { type: "init"; dbPath: string; config: Config }
   | { type: "search"; qid: number; query: string; mode: Mode; limit: number; explain: boolean; groupDuplicates?: boolean }
+  | { type: "related"; qid: number; source: number | string; limit: number }
+  | { type: "cancelRelated"; request?: number }
   | { type: "explain"; qid: number; query: string; mode: Mode; limit: number }
   | { type: "preview"; qid: number; id: number; query: string; mode: Mode; focusLine?: number }
   | { type: "previews"; qid: number; ids: number[]; query: string; mode: Mode; focusLines?: (number | null)[] }
@@ -25,6 +27,7 @@ export type SearchOut =
   | { type: "ready"; files: number }
   | { type: "completed"; qid: number }
   | { type: "results"; qid: number; response: SearchResponse }
+  | { type: "related"; qid: number; response: RelatedResponse }
   | { type: "diagnosis"; qid: number; diagnosis?: SearchDiagnosis }
   | { type: "preview"; qid: number; preview: Preview }
   | { type: "previews"; qid: number; previews: Preview[] }

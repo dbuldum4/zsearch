@@ -2,6 +2,7 @@ import { combine, describeEstimate, estimateFolders } from "./index/estimate.ts"
 import { progressLine } from "./util/progress.ts"
 export { progressLine } from "./util/progress.ts"
 import { existsSync, rmSync } from "node:fs"
+import { resolve } from "node:path"
 import { Database } from "bun:sqlite"
 import pkg from "../package.json" with { type: "json" }
 import {
@@ -43,6 +44,7 @@ const HELP = `zsearch ${VERSION} — fast search for your files (names and conte
 Usage
   zsearch [query]                 open the interactive search
   zsearch search <query>          print matches and exit
+  zsearch related <file>          find related indexed files (-n 20, --json)
   zsearch index [folders...]      build or update the index
   zsearch status                  show what is indexed
   zsearch status --errors         files whose contents search cannot find, and why
@@ -180,6 +182,28 @@ export async function main(argv: string[]): Promise<number> {
       case "search":
       case "s":
         return await cmdSearch(rest.join(" "), args)
+      case "related": {
+        if (rest.length !== 1) throw new UsageError("related needs one indexed file path (quote paths containing spaces)")
+        const limit = Number(flag(args, "limit", "n") ?? 20)
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new UsageError("related limit must be 1–200")
+        const db = openDb(paths().db)
+        const engine = new SearchEngine(db, loadConfig())
+        let cancelled = false
+        const cancel = () => { cancelled = true }
+        process.once("SIGINT", cancel)
+        try {
+          const path = rest[0]!.startsWith("~") ? resolvePath(rest[0]!) : resolve(rest[0]!)
+          const result = await engine.related(path, { limit, cancelled: () => cancelled })
+          if (flag(args, "json")) console.log(JSON.stringify(result, null, 2))
+          else {
+            if (result.source) console.log(`Related to ${result.source.display}`)
+            for (const hit of result.hits) console.log(`${hit.display}\n${hit.lines.map((l) => `  ${l.line}: ${l.text}`).join("\n")}`)
+            if (result.notice) console.error(result.notice)
+            if (result.status === "ready" && !result.hits.length) console.log("No related files with current passage vectors found")
+          }
+          return result.status === "cancelled" ? 130 : result.status === "ready" ? 0 : 1
+        } finally { process.removeListener("SIGINT", cancel); engine.closeSemantic(); db.close() }
+      }
       case "index":
       case "i":
         return await cmdIndex(rest, args)
@@ -875,6 +899,6 @@ function cmdDoctor(): number {
 export type { Config }
 
 function commandHelp(command?: string): string {
-  const usage: Record<string, string> = { semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path] [--group-duplicates]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors[=<category>]] [--json]", why: "why <path...> [--json]", retry: "retry <path...|unreadable|timeout|transcription|no-text> [-q]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>", saved: "saved [list [--json]|add <name> <query> [-e] [--sort key] [-m mode, default find]|rename <name> <new name>|rm <name>|run <name> [search options]]", history: "history [list [--json]|clear]" }
+  const usage: Record<string, string> = { related: "related <indexed file> [-n 1..200] [--json] (local passage vectors only; update the semantic index first)", semantic: "semantic [status [--json]|install|remove]", search: "search <query> [-m find|fuzzy|semantic] [-e] [-n N] [-l|-0|--csv|--json] [--sort name|size|date|path] [--group-duplicates]", index: "index [folders...] [--docs|--home|--disk] [--hidden] [--no-content] [--rebuild] [-q]", status: "status [--errors[=<category>]] [--json]", why: "why <path...> [--json]", retry: "retry <path...|unreadable|timeout|transcription|no-text> [-q]", estimate: "estimate [folders...] [--docs|--home|--disk] [--json]", config: "config [show|get <key>|set <key> <value>|path|reset]", reset: "reset", doctor: "doctor", serve: "serve (JSON lines on stdin/stdout)", mcp: "mcp (MCP JSON-RPC on stdin/stdout)", duplicates: "duplicates [--json]", exclude: "exclude <indexed file or folder>", saved: "saved [list [--json]|add <name> <query> [-e] [--sort key] [-m mode, default find]|rename <name> <new name>|rm <name>|run <name> [search options]]", history: "history [list [--json]|clear]" }
   return command && usage[command] ? `zsearch ${usage[command]}\n` : HELP
 }

@@ -13,6 +13,8 @@ zsearch.app/Contents/
 
 ## What it does
 
+- **Find Related Files** in a file result’s context menu explores indexed text across folders using existing local passage vectors. The source heading, matching-passage previews and normal file actions stay visible. Back to Search (or Escape) restores the prior query and picks; typing starts a new search. Missing or pending vectors report why; discovery does not download models. See [related-file ranking and limitations](../README.md#related-files).
+
 - **Setup** on first launch: choose what to index, then a setup screen shows each step (Granite embedding model, scan folders, extract text, build the semantic index) with its counts, progress and the time left, and a log of what indexing is doing (phases, the files it reports working on, waits and read errors; Copy Log copies it). Search opens once the semantic index is complete; later updates run behind the search window. Pause, Continue Now (when waiting on power) and Change Folders… are on the same screen.
 - **Search** as you type, by meaning (Semantic, ⌘1, the default), in names and contents (Find, ⌘2) or forgiving names (Fuzzy, ⌘3). ↑/↓ or ⌘J/⌘K move through results, Return opens, ⇧⌘R shows in Finder, ⇧⌘C copies the path, ⌘L returns to the search field.
 - **Filter** with the row under the search field: type, extension, folder, modified date, size and regex. Each control writes the same filter you could type (`type:pdf`, `in:~/Documents`, `re:`…), so the row and the query always agree.

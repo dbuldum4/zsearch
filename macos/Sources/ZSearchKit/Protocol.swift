@@ -61,6 +61,9 @@ public struct SearchResponse: Decodable, Hashable, Sendable {
     public var partial: Bool
     public var notice: String?
     public var error: String?
+    /// Present on related-file responses.
+    public var source: FileCopy?
+    public var status: String?
 }
 
 public struct PreviewLine: Decodable, Hashable, Sendable {
@@ -411,8 +414,10 @@ public struct Searches: Decodable, Hashable, Sendable {
 public enum Request: Sendable {
     /// `groupDuplicates`: one hit per set of byte-identical files, listing the others as `copies`.
     case search(query: String, mode: Mode, limit: Int = 200, groupDuplicates: Bool = false)
-    /// Why a search finds nothing (`diagnosis`): asked once its query has stayed the same for a
-    /// moment (see `NoResultsHelp.shouldExplain`), so typing never waits for it.
+    /// Discover from stored passage vectors; the token identifies a cancellable navigation generation.
+    case related(file: String, limit: Int = 20, token: Int)
+    case cancelRelated(token: Int)
+    /// Why a search finds nothing, once its query has stayed the same for a moment.
     case explain(query: String, mode: Mode, limit: Int = 200)
     case preview(file: Int, query: String, mode: Mode, focusLine: Int? = nil)
     case stats
@@ -531,14 +536,26 @@ public struct ConfigPatch: Encodable, Hashable, Sendable {
 }
 
 extension Request {
+    private enum FileReference: Encodable {
+        case id(Int), path(String)
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case let .id(value): try container.encode(value)
+            case let .path(value): try container.encode(value)
+            }
+        }
+    }
+
     private struct Wire: Encodable {
         var id: Int
         var type: String
         var query: String?
         var mode: Mode?
         var limit: Int?
-        var file: Int?
+        var file: FileReference?
         var focusLine: Int?
+        var token: Int?
         var config: ConfigPatch?
         var path: String?
         var files: [Int]?
@@ -562,10 +579,14 @@ extension Request {
         case let .search(query, mode, limit, groupDuplicates):
             w.type = "search"; w.query = query; w.mode = mode; w.limit = limit
             if groupDuplicates { w.groupDuplicates = true }
+        case let .related(file, limit, token):
+            w.type = "related"; w.file = .path(file); w.limit = limit; w.token = token
+        case let .cancelRelated(token):
+            w.type = "cancelRelated"; w.token = token
         case let .explain(query, mode, limit):
             w.type = "explain"; w.query = query; w.mode = mode; w.limit = limit
         case let .preview(file, query, mode, focusLine):
-            w.type = "preview"; w.file = file; w.query = query; w.mode = mode; w.focusLine = focusLine
+            w.type = "preview"; w.file = .id(file); w.query = query; w.mode = mode; w.focusLine = focusLine
         case .stats:
             w.type = "stats"
         case .config:
@@ -630,6 +651,7 @@ extension Request {
 public enum Message: Hashable, Sendable {
     case ready(Ready)
     case results(SearchResponse)
+    case related(SearchResponse)
     case diagnosis(DiagnosisReply)
     case preview(FilePreview)
     case previews([FilePreview])
@@ -683,6 +705,7 @@ public struct Envelope: Hashable, Sendable {
         let message: Message
         switch head.type {
         case "ready": message = .ready(try d.decode(Ready.self, from: line))
+        case "related": message = .related(try d.decode(ResultsBody.self, from: line).response)
         case "results": message = .results(try d.decode(ResultsBody.self, from: line).response)
         case "diagnosis": message = .diagnosis(try d.decode(DiagnosisReply.self, from: line))
         case "preview": message = .preview(try d.decode(PreviewBody.self, from: line).preview)

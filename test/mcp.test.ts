@@ -243,7 +243,7 @@ test("mcp: index, search, read and configure over stdio", async () => {
   const init = await c.start()
   expect(init.serverInfo.name).toBe("zsearch")
   expect(init.instructions).toContain("search")
-  expect([...c.tools.keys()]).toEqual(["search", "read_file", "index_status", "update_index", "cancel_index", "get_config", "set_config", "exclude_path"])
+  expect([...c.tools.keys()]).toEqual(["search", "related_files", "read_file", "index_status", "update_index", "cancel_index", "get_config", "set_config", "exclude_path"])
   for (const t of c.tools.values()) {
     expect(t.inputSchema.type).toBe("object")
     expect(t.description.length).toBeGreaterThan(40)

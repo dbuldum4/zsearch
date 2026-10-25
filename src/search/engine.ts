@@ -1,6 +1,6 @@
 import { boundedFile } from "../util/files.ts"
 import type { Database } from "bun:sqlite"
-import { type Stats, statSync } from "node:fs"
+import { type Stats, realpathSync, statSync } from "node:fs"
 import type { Config } from "../config.ts"
 import { decompressText, getMeta } from "../index/db.ts"
 import { looksBinary, decodeText } from "../index/extract/text.ts"
@@ -26,6 +26,7 @@ import { GRANITE, installedModel } from "../semantic/model.ts"
 import { bestByFile, CODE_WORD_WEIGHT, coverageGate, RANKING, type Ranking, isLookup, kindHints, meaning, QueryEmbedder, queryTerms, rank, SemanticVectors, VectorIndex, WORD_WEIGHT, wordShares, Z_GATE } from "../semantic/search.ts"
 import { semanticDbPath } from "../semantic/store.ts"
 import { helperVectorVersion, mainGeneration, semanticCandidates, semanticFingerprint } from "../semantic/indexer.ts"
+import { relatedByFile } from "../semantic/related.ts"
 import { diagnose, type SearchDiagnosis } from "./diagnose.ts"
 
 type Source = "name" | "content"
@@ -89,6 +90,11 @@ export interface SemanticCoverage {
   pending: number
   /** Pending files among this search's results. */
   matched: number
+}
+
+export interface RelatedResponse extends SearchResponse {
+  source?: FileCopy
+  status: "ready" | "missing" | "unavailable" | "pending" | "cancelled"
 }
 
 export interface PreviewLine {
@@ -336,6 +342,89 @@ export class SearchEngine {
       if (diagnosis) res.diagnosis = diagnosis
     }
     return res
+  }
+
+  /** Related indexed text files, using only a homogeneous stored vector snapshot: no model runs. */
+  async related(source: number | string, opts: { limit?: number; cancelled?: () => boolean } = {}): Promise<RelatedResponse> {
+    const start = performance.now()
+    const res: RelatedResponse = { query: "", mode: "semantic", resolved: "semantic", strategy: "related passages", hits: [], total: 0, elapsedMs: 0, partial: false, status: "ready" }
+    const finish = (status: RelatedResponse["status"], notice?: string) => {
+      res.status = status; res.notice = notice; res.elapsedMs = performance.now() - start
+      return res
+    }
+    if (opts.cancelled?.()) return finish("cancelled", "Related-file discovery cancelled")
+    this.refresh(true)
+    const check = policyFor(crawlOptionsFor(this.config))
+    let id = typeof source === "number" ? source : (this.db.query("SELECT id FROM files WHERE path = ?").get(source) as { id: number } | null)?.id
+    // macOS aliases such as /var → /private/var: a relative CLI path may name the physical
+    // location of an indexed path. Resolve only an unambiguous, permitted indexed source.
+    if (id === undefined && typeof source === "string") {
+      try {
+        const real = realpathSync(source)
+        if (source === real || check(source).allowed) {
+          const aliases = this.db.query("SELECT id FROM files WHERE path = ? OR source_path = ? LIMIT 2").all(real, real) as { id: number }[]
+          if (aliases.length === 1) id = aliases[0]!.id
+        }
+      } catch {}
+    }
+    const i = id === undefined ? undefined : this.catalog.indexOf(id)
+    if (id === undefined || i === undefined || this.catalog.isDir[i] || !check(this.catalog.paths[i]!).allowed) return finish("missing", "Source is not an accessible indexed content file")
+    if (!this.config.content.enabled) return finish("unavailable", "Related files needs file contents enabled in settings")
+    if (!this.contentAuthorized(i, check)) return finish("missing", "Source is not an accessible indexed content file")
+    const sourceHit = this.hit(id, 0, [])
+    res.source = { id, path: sourceHit.path, display: sourceHit.display, mtime: sourceHit.mtime }
+    if (!this.config.semantic.enabled) return finish("unavailable", "Related files needs semantic search enabled in settings")
+    const vectors = (this.vectors ??= new SemanticVectors(semanticDbPath(this.db.filename || ":memory:")))
+    const index = vectors.get(mainGeneration(this.db), getMeta(this.db, "change_seq") ?? "0")
+    // All comparisons use stored vectors from one model/helper/chunker, never query vectors.
+    const version = index?.fingerprint?.match(/ vectors(\d+) chunks\d+$/)?.[1]
+    if (!index?.size || version === undefined || index.fingerprint !== semanticFingerprint(Number(version))) return finish("unavailable", "No compatible local passage vectors; update the semantic index first")
+    const config = this.config, generation = mainGeneration(this.db), sequence = getMeta(this.db, "change_seq")
+    const current = new Map<number, { path: string; size: number; mtime: number; dev: number; ino: number }>()
+    const candidates = semanticCandidates(this.db, config, check)
+    const identity = this.db.query("SELECT dev, ino FROM files WHERE id = ?")
+    for (const f of candidates) {
+      if (index.madeFrom(f.id) !== f.sig) continue
+      const ci = this.catalog.indexOf(f.id)
+      if (ci === undefined) continue
+      const size = this.catalog.sizes[ci]!
+      try {
+        const st = statSync(f.path)
+        const indexed = identity.get(f.id) as { dev: number; ino: number } | null
+        if (st.isFile() && st.size === size && Math.floor(st.mtimeMs) === f.mtime && indexed && (!indexed.ino || (st.dev === indexed.dev && st.ino === indexed.ino))) {
+          current.set(f.id, { path: f.path, size, mtime: f.mtime, dev: st.dev, ino: st.ino })
+        }
+      } catch {}
+    }
+    if (!current.has(id)) return finish("pending", "Source has no complete current passage vectors; update the index first")
+    const rows = Uint8Array.from(index.file, (file, row) => file > 0 && index.start[row]! >= 0 && current.has(file) ? 1 : 0)
+    const cancelled = () => opts.cancelled?.() === true || this.config !== config
+    const ranked = await relatedByFile(index, id, rows, cancelled)
+    if (!ranked || cancelled()) return finish("cancelled", "Related-file discovery cancelled")
+    // An index rebuild/change during a yielded scan invalidates IDs and stored text offsets.
+    if (mainGeneration(this.db) !== generation || getMeta(this.db, "change_seq") !== sequence) return finish("pending", "Index changed during discovery; try again")
+    const recheck = policyFor(crawlOptionsFor(config))
+    const valid = (file: number) => {
+      const f = current.get(file)
+      if (!f) return false
+      const ci = this.catalog.indexOf(file)
+      if (ci === undefined || !this.contentAuthorized(ci, recheck)) return false
+      try { const st = statSync(f.path); return st.isFile() && st.size === f.size && Math.floor(st.mtimeMs) === f.mtime && st.dev === f.dev && st.ino === f.ino } catch { return false }
+    }
+    if (!valid(id)) { res.source = undefined; return finish("pending", "Source changed or became inaccessible; update the index first") }
+    const allowed = ranked.filter((r) => valid(r.file))
+    res.total = allowed.length
+    const limit = Math.max(1, Math.min(200, Math.trunc(opts.limit ?? 20) || 20))
+    res.hits = allowed.slice(0, limit).map((r) => {
+      const hit = this.hit(r.file, r.score, ["content"])
+      const text = this.storedText(r.file)
+      if (text !== null) hit.lines = passageLines(text, index.start[r.row]!, index.end[r.row]!, null)
+      hit.matchCount = hit.lines.length
+      this.markSegments(hit)
+      return hit
+    })
+    const pending = candidates.length - current.size
+    return finish("ready", pending ? `${pending} files without current vectors were omitted` : undefined)
   }
 
   /**
